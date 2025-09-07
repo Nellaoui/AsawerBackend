@@ -9,9 +9,9 @@ const app = express();
 // Middleware
 app.use(cors({
   origin: [
-    'http://localhost:8081',
-    'http://192.168.0.157:8081',
-    'http://localhost:3000',
+    process.env.CORS_ORIGIN_LOCALHOST || 'http://localhost:5000',
+    process.env.CORS_ORIGIN_NETWORK || 'http://192.168.0.157:5000',
+    process.env.CORS_ORIGIN_WEB || 'http://localhost:3000',
   ],
   credentials: true
 }));
@@ -58,7 +58,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
+  console.log(`Server running on ${process.env.HOST}:${PORT}`);
   console.log(`Local access: http://localhost:${PORT}`);
   console.log(`Network access: http://192.168.0.157:${PORT}`);
 });
