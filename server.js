@@ -10,7 +10,7 @@ const app = express();
 app.use(cors({
   origin: [
     process.env.CORS_ORIGIN_LOCALHOST || 'http://localhost:5000',
-    process.env.CORS_ORIGIN_NETWORK || 'http://192.168.0.157:5000',
+    process.env.CORS_ORIGIN_NETWORK || 'https://asawerbackend.onrender.com',
     process.env.CORS_ORIGIN_WEB || 'http://localhost:3000',
   ],
   credentials: true
