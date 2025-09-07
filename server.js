@@ -50,6 +50,16 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/wishlist', require('./routes/wishlist'));
 
+// Root route for health check
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Asawer Backend API is running!',
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
@@ -58,7 +68,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on ${process.env.HOST}:${PORT}`);
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Local access: http://localhost:${PORT}`);
   console.log(`Network access: http://192.168.0.157:${PORT}`);
 });
