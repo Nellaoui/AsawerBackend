@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { auth } = require('../middlewares/auth');
+const cloudinary = require('../cloudinaryConfig');
 
 const router = express.Router();
 
@@ -47,7 +48,7 @@ const upload = multer({
 });
 
 // POST /api/upload/image - Upload single image
-router.post('/image', auth, upload.single('image'), (req, res) => {
+router.post('/image', auth, upload.single('image'), async (req, res) => {
   try {
     console.log('Upload request received from:', req.user.email);
     console.log('Request file:', req.file ? 'File present' : 'No file');
@@ -57,22 +58,26 @@ router.post('/image', auth, upload.single('image'), (req, res) => {
       return res.status(400).json({ message: 'No image file provided' });
     }
 
-    // Get the server's base URL
-    const protocol = req.protocol;
-    const host = req.get('host');
-    const imageUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+    // Upload to Cloudinary
+    const result = await cloudinary.uploader.upload(req.file.path, {
+      folder: 'products',
+      public_id: path.parse(req.file.filename).name,
+    });
 
-    console.log('Image uploaded successfully:', {
+    // Delete local file after upload
+    fs.unlinkSync(req.file.path);
+
+    console.log('Image uploaded successfully to Cloudinary:', {
       originalName: req.file.originalname,
       filename: req.file.filename,
       size: req.file.size,
-      url: imageUrl,
+      url: result.secure_url,
       uploadedBy: req.user.email
     });
 
     res.json({
       message: 'Image uploaded successfully',
-      imageUrl: imageUrl,
+      imageUrl: result.secure_url,
       filename: req.file.filename,
       originalName: req.file.originalname,
       size: req.file.size
@@ -85,7 +90,7 @@ router.post('/image', auth, upload.single('image'), (req, res) => {
 });
 
 // POST /api/upload/image-base64 - Upload base64 encoded image (simpler approach)
-router.post('/image-base64', auth, (req, res) => {
+router.post('/image-base64', auth, async (req, res) => {
   try {
     console.log('Base64 upload request received from:', req.user.email);
 
@@ -96,40 +101,27 @@ router.post('/image-base64', auth, (req, res) => {
       return res.status(400).json({ message: 'Image data and filename are required' });
     }
 
-    // Generate unique filename
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const extension = path.extname(filename) || '.jpg';
-    const newFilename = 'product-' + uniqueSuffix + extension;
-    const filePath = path.join(uploadsDir, newFilename);
+    // Upload to Cloudinary directly from base64
+    const dataURI = `data:${mimetype || 'image/jpeg'};base64,${image}`;
+    const result = await cloudinary.uploader.upload(dataURI, {
+      folder: 'products',
+      public_id: path.parse(filename).name,
+    });
 
-    // Convert base64 to buffer and save
-    const buffer = Buffer.from(image, 'base64');
-    fs.writeFileSync(filePath, buffer);
-
-    // Get the server's base URL - fix localhost issue for mobile devices
-    const protocol = req.protocol;
-    const host = req.get('host');
-
-    // Replace localhost with network IP for mobile access
-    const networkHost = host.includes('localhost') ? '192.168.0.157:5000' : host;
-    const imageUrl = `${protocol}://${networkHost}/uploads/${newFilename}`;
-
-    console.log('Generated image URL:', imageUrl);
-
-    console.log('Base64 image saved successfully:', {
+    console.log('Base64 image saved successfully to Cloudinary:', {
       originalName: filename,
-      filename: newFilename,
-      size: buffer.length,
-      url: imageUrl,
+      filename: result.public_id,
+      size: Buffer.from(image, 'base64').length,
+      url: result.secure_url,
       uploadedBy: req.user.email
     });
 
     res.json({
       message: 'Image uploaded successfully',
-      imageUrl: imageUrl,
-      filename: newFilename,
+      imageUrl: result.secure_url,
+      filename: result.public_id,
       originalName: filename,
-      size: buffer.length
+      size: Buffer.from(image, 'base64').length
     });
 
   } catch (error) {
