@@ -237,4 +237,44 @@ router.put('/:id/status', auth, async (req, res) => {
   }
 });
 
+// PUT /:id/cancel - Cancel order (authenticated users)
+router.put('/:id/cancel', auth, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('userId', 'name email')
+      .populate('catalogId', 'name')
+      .populate('items.productId', 'name imageUrl');
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Check permissions - user can cancel their own orders, admin can cancel any order
+    if (req.user.role !== 'admin' && order.userId._id.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Check if order can be cancelled
+    if (order.status === 'delivered') {
+      return res.status(400).json({ message: 'Delivered orders cannot be cancelled' });
+    }
+
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Order is already cancelled' });
+    }
+
+    // Update order status to cancelled
+    order.status = 'cancelled';
+    order.updatedAt = new Date();
+    await order.save();
+
+    console.log(`Order ${order._id} cancelled by user ${req.user.email}`);
+
+    res.json(order);
+  } catch (error) {
+    console.error('Error cancelling order:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 module.exports = router;
