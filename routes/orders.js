@@ -204,36 +204,68 @@ router.get('/:id', auth, async (req, res) => {
 // PUT /:id/status - Update order status (admin only)
 router.put('/:id/status', auth, async (req, res) => {
   try {
+    console.log('=== STATUS UPDATE REQUEST ===');
+    console.log('Request body:', req.body);
+    console.log('Request body keys:', Object.keys(req.body || {}));
+    console.log('Request body status property:', req.body?.status);
+    console.log('Request body type:', typeof req.body);
+    console.log('Request content-type:', req.headers['content-type']);
+
     if (req.user.role !== 'admin') {
+      console.log('Access denied - user role:', req.user.role);
       return res.status(403).json({ message: 'Admin access required' });
     }
 
     const { status } = req.body;
+    console.log('Destructured status:', status);
+    console.log('Status type:', typeof status);
+
     const validStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
+    console.log('Valid statuses:', validStatuses);
+    console.log('Status in valid statuses:', validStatuses.includes(status));
 
     if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({ 
-        message: 'Valid status is required', 
-        validStatuses 
+      console.log('Invalid status validation failed');
+      return res.status(400).json({
+        message: 'Valid status is required',
+        receivedStatus: status,
+        validStatuses
       });
     }
 
+    console.log('Looking up order:', req.params.id);
     const order = await Order.findById(req.params.id);
     if (!order) {
+      console.log('Order not found');
       return res.status(404).json({ message: 'Order not found' });
     }
 
+    console.log('Current order status:', order.status);
     order.status = status;
+    console.log('Updated order status to:', order.status);
+
     await order.save();
+    console.log('Order saved successfully');
 
     await order.populate('userId', 'name email');
     await order.populate('catalogId', 'name');
     await order.populate('items.productId', 'name imageUrl');
 
+    console.log('Order populated and ready to return');
     res.json(order);
   } catch (error) {
-    console.error('Error updating order status:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('=== STATUS UPDATE ERROR ===');
+    console.error('Error type:', typeof error);
+    console.error('Error name:', error?.name);
+    console.error('Error message:', error?.message);
+    console.error('Error stack:', error?.stack);
+    console.error('Full error object:', error);
+
+    res.status(500).json({
+      message: 'Server error',
+      error: error?.message,
+      errorType: error?.name
+    });
   }
 });
 
