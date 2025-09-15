@@ -111,11 +111,24 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     });
 
     await order.save();
-    await order.populate('userId', 'name email');
-    await order.populate('catalogId', 'name');
-    await order.populate('items.productId', 'name imageUrl size');
+    
+    // Populate order with necessary fields
+    const populatedOrder = await Order.findById(order._id)
+      .populate('userId', 'name email')
+      .populate('catalogId', 'name')
+      .populate('items.productId', 'name imageUrl size');
 
-    res.status(201).json(order);
+    // Ensure size is properly set in the response
+    const orderWithSizes = {
+      ...populatedOrder.toObject(),
+      items: populatedOrder.items.map(item => ({
+        ...item.toObject(),
+        // Ensure size comes from the order item first, then from the product
+        size: item.size || (item.productId?.size || '')
+      }))
+    };
+
+    res.status(201).json(orderWithSizes);
   } catch (error) {
     console.error('Error creating order:', error);
     res.status(500).json({ message: 'Server error' });
@@ -141,7 +154,17 @@ router.get('/', auth, async (req, res) => {
       limit: parseInt(limit) 
     };
 
-    const orders = await Order.findWithFilters(filters, options);
+    let orders = await Order.findWithFilters(filters, options);
+    
+    // Ensure size is properly set in the response for each order
+    orders = orders.map(order => ({
+      ...order.toObject(),
+      items: order.items.map(item => ({
+        ...item.toObject(),
+        // Ensure size comes from the order item first, then from the product
+        size: item.size || (item.productId?.size || '')
+      }))
+    }));
     
     // Get total count for pagination
     const totalCount = await Order.countDocuments(filters);
@@ -195,7 +218,17 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    res.json(order);
+    // Ensure size is properly set in the response
+    const orderWithSizes = {
+      ...order.toObject(),
+      items: order.items.map(item => ({
+        ...item.toObject(),
+        // Ensure size comes from the order item first, then from the product
+        size: item.size || (item.productId?.size || '')
+      }))
+    };
+
+    res.json(orderWithSizes);
   } catch (error) {
     console.error('Error fetching order:', error);
     res.status(500).json({ message: 'Server error' });
