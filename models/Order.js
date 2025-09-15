@@ -19,6 +19,10 @@ const orderItemSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true
+  },
+  size: {
+    type: String,
+    trim: true
   }
 });
 
@@ -97,7 +101,7 @@ orderSchema.statics.findByUser = function(userId, options = {}) {
   return query.sort({ createdAt: -1 })
     .populate('userId', 'name email')
     .populate('catalogId', 'name')
-    .populate('items.productId', 'name imageUrl');
+    .populate('items.productId', 'name imageUrl size serialNumber');
 };
 
 // Static method for admin to find all orders with filtering
@@ -134,7 +138,7 @@ orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
     .limit(limit)
     .populate('userId', 'name email')
     .populate('catalogId', 'name')
-    .populate('items.productId', 'name imageUrl');
+    .populate('items.productId', 'name imageUrl size serialNumber');
 };
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -88,7 +88,8 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         productId: item.productId,
         quantity: item.quantity,
         price: product.price,
-        name: product.name
+        name: product.name,
+        size: item.size
       };
       console.log('Adding order item:', orderItem);
       orderItems.push(orderItem);
@@ -112,7 +113,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     await order.save();
     await order.populate('userId', 'name email');
     await order.populate('catalogId', 'name');
-    await order.populate('items.productId', 'name imageUrl');
+    await order.populate('items.productId', 'name imageUrl size');
 
     res.status(201).json(order);
   } catch (error) {
@@ -183,7 +184,7 @@ router.get('/:id', auth, async (req, res) => {
     const order = await Order.findById(req.params.id)
       .populate('userId', 'name email')
       .populate('catalogId', 'name')
-      .populate('items.productId', 'name imageUrl price');
+      .populate('items.productId', 'name imageUrl price size');
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
@@ -249,18 +250,12 @@ router.put('/:id/status', auth, async (req, res) => {
 
     await order.populate('userId', 'name email');
     await order.populate('catalogId', 'name');
-    await order.populate('items.productId', 'name imageUrl');
+    await order.populate('items.productId', 'name imageUrl size');
 
     console.log('Order populated and ready to return');
     res.json(order);
   } catch (error) {
     console.error('=== STATUS UPDATE ERROR ===');
-    console.error('Error type:', typeof error);
-    console.error('Error name:', error?.name);
-    console.error('Error message:', error?.message);
-    console.error('Error stack:', error?.stack);
-    console.error('Full error object:', error);
-
     res.status(500).json({
       message: 'Server error',
       error: error?.message,
@@ -275,7 +270,7 @@ router.put('/:id/cancel', auth, async (req, res) => {
     const order = await Order.findById(req.params.id)
       .populate('userId', 'name email')
       .populate('catalogId', 'name')
-      .populate('items.productId', 'name imageUrl');
+      .populate('items.productId', 'name imageUrl size');
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
