@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Catalog = require('../models/Catalog');
 const Product = require('../models/Product');
 const { auth } = require('../middlewares/auth');
@@ -73,33 +74,26 @@ router.get('/', auth, async (req, res) => {
       // Regular users can see:
       // 1. Public catalogs (isPublic: true)
       // 2. Private catalogs they have permission for (allowedUserIds includes their ID)
-      catalogs = await Catalog.find({
-        $or: [
-          { isPublic: true },
-          { allowedUserIds: req.user.id }
-        ]
-      })
+      // 3. Their own catalogs (ownerId equals their ID)
+      const orConditions = [{ isPublic: true }];
+
+      if (mongoose.Types.ObjectId.isValid(req.user.id)) {
+        orConditions.push({ allowedUserIds: req.user.id });
+        orConditions.push({ ownerId: req.user.id });
+      } else {
+        console.log('Non-ObjectId user id detected, skipping ObjectId-based filters:', req.user.id);
+      }
+
+      catalogs = await Catalog.find({ $or: orConditions })
         .populate('products', 'name imageUrl price')
         .populate('ownerId', 'name email')
         .sort({ createdAt: -1 });
 
-      console.log('Regular user - showing accessible catalogs:', catalogs.length);
-      console.log('User can access catalogs:', catalogs.map(c => ({ name: c.name, isPublic: c.isPublic })));
     }
 
-    console.log('Accessible catalogs found:', catalogs.length);
-    console.log('User ID for filtering:', req.user.id);
-    console.log('User role for filtering:', req.user.role);
 
-    // Debug: Show what the query should match
-    if (req.user.role !== 'admin') {
-      console.log('For regular user, looking for catalogs where:');
-      console.log('- ownerId equals:', req.user.id);
-      console.log('- OR isPublic equals: true');
-      console.log('- OR allowedUserIds contains:', req.user.id);
-    }
 
-    console.log(`Found ${catalogs.length} accessible catalogs`);
+  
 
     // Transform catalogs to include catalogId field for frontend compatibility
     const transformedCatalogs = catalogs.map(catalog => {
@@ -157,18 +151,6 @@ router.get('/:id', auth, async (req, res) => {
         productId: product._id.toString()
       })) || []
     };
-
-    console.log('Returning catalog with products:', {
-      catalogId: transformedCatalog.catalogId,
-      name: transformedCatalog.name,
-      productsCount: transformedCatalog.products?.length || 0,
-      products: transformedCatalog.products?.map(p => ({
-        id: p._id,
-        productId: p._id,
-        name: p.name,
-        serialNumber: p.serialNumber
-      })) || []
-    });
 
     res.json(transformedCatalog);
   } catch (error) {
@@ -314,7 +296,16 @@ router.post('/:id/products', auth, async (req, res) => {
       return res.status(403).json({ message: 'Permission denied' });
     }
 
-    const { name, description, type, serialNumber, imageUrl } = req.body;
+    const { 
+      name, 
+      description, 
+      type, 
+      serialNumber, 
+      imageUrl, 
+      price = 0, 
+      stock = 1, 
+      size 
+    } = req.body;
 
     if (!name || !serialNumber) {
       return res.status(400).json({ message: 'Name and serial number are required' });
@@ -324,10 +315,13 @@ router.post('/:id/products', auth, async (req, res) => {
     const Product = require('../models/Product');
     const product = new Product({
       name: name.trim(),
-      description: description?.trim() || '',
+      description: description?.trim() || `Type: ${type || 'Other'}, Serial: ${serialNumber.trim()}`,
       type: type || 'Other',
       serialNumber: serialNumber.trim(),
       imageUrl: imageUrl || 'https://via.placeholder.com/150',
+      price: Number(price) || 0,
+      stock: Number(stock) || 1,
+      size: size || null,
       catalogId: catalog._id,
       createdBy: req.user.id
     });

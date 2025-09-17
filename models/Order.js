@@ -28,7 +28,8 @@ const orderItemSchema = new mongoose.Schema({
 
 const orderSchema = new mongoose.Schema({
   userId: {
-    type: mongoose.Schema.Types.ObjectId,
+    // Mixed allows both ObjectId (real users) and string (test tokens)
+    type: mongoose.Schema.Types.Mixed,
     ref: 'User',
     required: true
   },
@@ -98,8 +99,9 @@ orderSchema.statics.findByUser = function(userId, options = {}) {
     query.limit(options.limit);
   }
   
-  return query.sort({ createdAt: -1 })
-    .populate('userId', 'name email')
+  // Do NOT populate userId here, because userId may be a string (test token)
+  return query
+    .sort({ createdAt: -1 })
     .populate('catalogId', 'name')
     .populate('items.productId', 'name imageUrl size serialNumber');
 };
@@ -136,7 +138,6 @@ orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
-    .populate('userId', 'name email')
     .populate('catalogId', 'name')
     .populate('items.productId', 'name imageUrl size serialNumber');
 };

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Product = require('../models/Product');
@@ -34,9 +35,6 @@ router.post('/', auth, validateOrderData, async (req, res) => {
   try {
     const { catalogId, items, notes } = req.body;
 
-    console.log('Creating order for user:', req.user.id, req.user.email);
-    console.log('Order data:', { catalogId, items: items.length, notes });
-
     // Check if catalog exists and user has access
     const catalog = await Catalog.findById(catalogId);
     if (!catalog) {
@@ -61,15 +59,10 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         });
       }
 
-      console.log('Found product:', {
-        id: product._id,
-        name: product.name,
-        price: product.price,
-        priceType: typeof product.price
-      });
-
-      // Check if product is in the catalog
-      if (!catalog.products.includes(item.productId)) {
+      // Check if product is in the catalog (compare as strings to avoid ObjectId vs string mismatches)
+      const productIdStr = item.productId.toString();
+      const inCatalog = (catalog.products || []).some(id => id.toString() === productIdStr);
+      if (!inCatalog) {
         console.log('Product not in catalog:', product.name);
         return res.status(400).json({
           message: `Product ${product.name} is not in this catalog`
@@ -91,15 +84,8 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         name: product.name,
         size: item.size
       };
-      console.log('Adding order item:', orderItem);
       orderItems.push(orderItem);
     }
-
-    console.log('Final order data:', {
-      totalAmount,
-      orderItemsCount: orderItems.length,
-      orderItems: orderItems
-    });
 
     // Create order
     const order = new Order({
@@ -113,10 +99,13 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     await order.save();
     
     // Populate order with necessary fields
-    const populatedOrder = await Order.findById(order._id)
-      .populate('userId', 'name email')
+    let query = Order.findById(order._id)
       .populate('catalogId', 'name')
       .populate('items.productId', 'name imageUrl size');
+    if (mongoose.Types.ObjectId.isValid(order.userId)) {
+      query = query.populate('userId', 'name email');
+    }
+    const populatedOrder = await query;
 
     // Ensure size is properly set in the response
     const orderWithSizes = {
@@ -204,17 +193,25 @@ router.get('/my', auth, async (req, res) => {
 // GET /:id - Get order details
 router.get('/:id', auth, async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id)
-      .populate('userId', 'name email')
+    let query = Order.findById(req.params.id)
       .populate('catalogId', 'name')
       .populate('items.productId', 'name imageUrl price size');
+    // Only populate userId when it's a valid ObjectId
+    const tempOrder = await Order.findById(req.params.id).select('userId');
+    if (tempOrder && mongoose.Types.ObjectId.isValid(tempOrder.userId)) {
+      query = query.populate('userId', 'name email');
+    }
+    const order = await query;
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
     // Check permissions - user can see their own orders, admin can see all
-    if (req.user.role !== 'admin' && order.userId._id.toString() !== req.user.id) {
+    const ownerId = (order.userId && typeof order.userId === 'object')
+      ? (order.userId._id || order.userId.id || order.userId).toString()
+      : (order.userId ? order.userId.toString() : '');
+    if (req.user.role !== 'admin' && ownerId !== req.user.id.toString()) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -354,3 +351,4 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+module.exports = router;
