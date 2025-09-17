@@ -337,4 +337,20 @@ router.put('/:id/cancel', auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+// DELETE /:id - Hard delete order (admin only)
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    const order = await Order.findByIdAndDelete(req.params.id);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+    res.json({ success: true, message: 'Order deleted successfully', order });
+  } catch (error) {
+    console.error('Error deleting order:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
