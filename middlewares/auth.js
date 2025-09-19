@@ -19,42 +19,34 @@ const auth = async (req, res, next) => {
     if (token.startsWith('test-token-')) {
       console.log('🧪 Auth middleware - Processing test token');
       
-      const testUsers = {
-        'test-token-admin-001': {
-          userId: 'admin-001',
-          email: 'admin@test.com',
-          name: 'Test Admin',
-          isAdmin: true,
-          role: 'admin'
-        },
-        'test-token-admin-002': {
-          userId: 'admin-002',
-          email: 'admin@asawer.com',
-          name: 'Asawer Admin',
-          isAdmin: true,
-          role: 'admin'
-        },
-        'test-token-user-001': {
-          userId: 'user-001',
-          email: 'user@test.com',
-          name: 'Test User',
-          isAdmin: false,
-          role: 'user'
+      // Extract email from token (format: test-token-{email})
+      const email = token.replace('test-token-', '') + (token.endsWith('@test.com') ? '' : '@test.com');
+      
+      try {
+        // Find user in database by email
+        const user = await User.findOne({ email });
+        
+        if (!user) {
+          console.log(`❌ Auth middleware - No user found with email: ${email}`);
+          return res.status(401).json({ message: 'Invalid test token - user not found' });
         }
-      };
-
-      const testUser = testUsers[token];
-      if (testUser) {
+        
         req.user = {
-          ...testUser,
-          id: testUser.userId,
-          _id: testUser.userId
+          id: user._id.toString(),
+          _id: user._id,
+          userId: user._id.toString(),
+          email: user.email,
+          name: user.name || 'Test User',
+          isAdmin: user.role === 'admin',
+          role: user.role || 'user'
         };
-        console.log('✅ Auth middleware - Test user authenticated:', req.user.email);
+        
+        console.log(`✅ Auth middleware - Test user authenticated: ${req.user.email} (${req.user.id})`);
         return next();
-      } else {
-        console.log('❌ Auth middleware - Invalid test token');
-        return res.status(401).json({ message: 'Invalid test token' });
+        
+      } catch (error) {
+        console.error('Error authenticating test user:', error);
+        return res.status(500).json({ message: 'Error authenticating test user' });
       }
     }
 
