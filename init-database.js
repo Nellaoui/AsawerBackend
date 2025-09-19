@@ -47,15 +47,7 @@ async function initializeDatabase() {
 
     const users = await User.insertMany([
       {
-        email: 'admin@asawer.com',
-        password: adminPassword,
-        name: 'Admin User',
-        isAdmin: true,
-        role: 'admin',
-        isActive: true,
-        createdAt: new Date()
-      },
-      {
+        _id: '68b97fe0c003065249f86241',
         email: 'admin@test.com',
         password: testPassword,
         name: 'Test Admin',
@@ -65,6 +57,17 @@ async function initializeDatabase() {
         createdAt: new Date()
       },
       {
+        _id: '68b97fe0c003065249f86242',
+        email: 'admin@asawer.com',
+        password: adminPassword,
+        name: 'Admin User',
+        isAdmin: true,
+        role: 'admin',
+        isActive: true,
+        createdAt: new Date()
+      },
+      {
+        _id: '68b97fe0c003065249f86243',
         email: 'user@test.com',
         password: testPassword,
         name: 'Test User',

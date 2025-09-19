@@ -19,8 +19,21 @@ const auth = async (req, res, next) => {
     if (token.startsWith('test-token-')) {
       console.log('🧪 Auth middleware - Processing test token');
       
-      // Extract email from token (format: test-token-{email})
-      const email = token.replace('test-token-', '') + (token.endsWith('@test.com') ? '' : '@test.com');
+      // Extract email from token (format: test-token-{email} or test-token-{email}@test.com)
+      let email = token.replace('test-token-', '');
+      
+      // If the token already contains an @, use it as is, otherwise add @test.com
+      if (!email.includes('@')) {
+        // If it's a simple ID (like user-001), convert to email
+        if (email.includes('-')) {
+          const [userType, id] = email.split('-');
+          email = `${userType}@test.com`;
+        } else {
+          email += '@test.com';
+        }
+      }
+      
+      console.log(`🧪 Extracted email from token: ${email}`);
       
       try {
         // Find user in database by email
