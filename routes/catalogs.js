@@ -77,33 +77,66 @@ router.get('/', auth, async (req, res) => {
       const userId = req.user.id;
       const userIdStr = userId.toString();
       
+      console.log('🔍 Fetching catalogs for user:', {
+        userId,
+        userIdStr,
+        userRole: req.user.role,
+        userEmail: req.user.email
+      });
+      
       // Get all catalogs and filter in memory for more reliable ID comparison
       const allCatalogs = await Catalog.find({})
         .populate('products', 'name imageUrl price')
         .sort({ createdAt: -1 });
       
+      console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
+      
       // Filter catalogs based on permissions
       catalogs = allCatalogs.filter(catalog => {
+        const catalogId = catalog._id.toString();
+        const isPublic = catalog.isPublic === true;
+        const isOwner = catalog.ownerId && catalog.ownerId.toString() === userIdStr;
+        
         // Check if catalog is public
-        if (catalog.isPublic) return true;
+        if (isPublic) {
+          console.log(`✅ [${catalogId}] Visible: Public catalog`);
+          return true;
+        }
         
         // Check if user is the owner
-        if (catalog.ownerId && catalog.ownerId.toString() === userIdStr) return true;
+        if (isOwner) {
+          console.log(`✅ [${catalogId}] Visible: User is owner`);
+          return true;
+        }
         
         // Check if user is in allowedUserIds
         if (catalog.allowedUserIds && catalog.allowedUserIds.length > 0) {
-          // Check both string and ObjectId forms
-          return catalog.allowedUserIds.some(id => {
+          const allowedIds = catalog.allowedUserIds.map(id => id.toString());
+          const hasAccess = catalog.allowedUserIds.some(id => {
             if (!id) return false;
             const idStr = id.toString ? id.toString() : String(id);
             return idStr === userIdStr;
           });
+          
+          console.log(`🔍 [${catalogId}] Checking allowedUserIds:`, {
+            allowedUserIds: allowedIds,
+            userHasAccess: hasAccess,
+            userId: userIdStr
+          });
+          
+          if (hasAccess) {
+            console.log(`✅ [${catalogId}] Visible: User has explicit access`);
+            return true;
+          }
+        } else {
+          console.log(`🔍 [${catalogId}] No allowedUserIds set`);
         }
         
+        console.log(`❌ [${catalogId}] Not visible to user`);
         return false;
       });
       
-      console.log(`Filtered ${catalogs.length} out of ${allCatalogs.length} catalogs for user ${userId}`);
+      console.log(`📊 Filtered ${catalogs.length} out of ${allCatalogs.length} catalogs for user ${userId}`);
     }
 
 
@@ -456,6 +489,8 @@ router.put('/:id/permissions', auth, async (req, res) => {
 
     // Update permissions with normalization (store string and ObjectId variants)
     if (allowedUserIds !== undefined) {
+      console.log('🔧 Original allowedUserIds input:', allowedUserIds);
+      
       // Ensure we have an array of strings
       const inputIds = Array.isArray(allowedUserIds) ? allowedUserIds : [];
       
@@ -464,28 +499,42 @@ router.put('/:id/permissions', auth, async (req, res) => {
       const seen = new Set();
       
       for (const id of inputIds) {
-        if (!id) continue;
+        if (!id) {
+          console.log('⚠️ Skipping empty ID in allowedUserIds');
+          continue;
+        }
         
-        // Convert to string form and add if not seen
-        const strId = id.toString();
-        if (!seen.has(strId)) {
-          seen.add(strId);
-          normalizedUserIds.push(strId);
-          
-          // If it's a valid ObjectId, also add the ObjectId form
-          if (mongoose.Types.ObjectId.isValid(strId)) {
-            const objId = new mongoose.Types.ObjectId(strId);
-            const objIdStr = objId.toString();
-            if (!seen.has(objIdStr)) {
-              seen.add(objIdStr);
-              normalizedUserIds.push(objId);
+        try {
+          // Convert to string form and add if not seen
+          const strId = id.toString();
+          if (!seen.has(strId)) {
+            console.log(`➕ Adding user ID to allowed list (string): ${strId}`);
+            seen.add(strId);
+            normalizedUserIds.push(strId);
+            
+            // If it's a valid ObjectId, also add the ObjectId form
+            if (mongoose.Types.ObjectId.isValid(strId)) {
+              const objId = new mongoose.Types.ObjectId(strId);
+              const objIdStr = objId.toString();
+              if (!seen.has(objIdStr)) {
+                console.log(`➕ Adding user ID to allowed list (ObjectId): ${objIdStr}`);
+                seen.add(objIdStr);
+                normalizedUserIds.push(objId);
+              }
             }
+          } else {
+            console.log(`ℹ️ Skipping duplicate ID: ${strId}`);
           }
+        } catch (error) {
+          console.error(`❌ Error processing ID ${id}:`, error);
         }
       }
       
       catalog.allowedUserIds = normalizedUserIds;
-      console.log('Normalized allowedUserIds:', normalizedUserIds);
+      console.log('📝 Final normalized allowedUserIds:', {
+        count: normalizedUserIds.length,
+        values: normalizedUserIds.map(id => id.toString())
+      });
     }
     
     if (isPublic !== undefined) {
