@@ -74,13 +74,19 @@ router.get('/', auth, async (req, res) => {
       // 1. Public catalogs (isPublic: true)
       // 2. Private catalogs they have permission for (allowedUserIds includes their ID)
       // 3. Their own catalogs (ownerId equals their ID)
-      const orConditions = [{ isPublic: true }];
+      const userId = req.user.id;
+      const asObjectId = mongoose.Types.ObjectId.isValid(userId)
+        ? new mongoose.Types.ObjectId(userId)
+        : null;
 
-      if (mongoose.Types.ObjectId.isValid(req.user.id)) {
-        orConditions.push({ allowedUserIds: req.user.id });
-        orConditions.push({ ownerId: req.user.id });
-      } else {
-        console.log('Non-ObjectId user id detected, skipping ObjectId-based filters:', req.user.id);
+      const orConditions = [
+        { isPublic: true },
+        { allowedUserIds: userId },
+        { ownerId: userId },
+      ];
+      if (asObjectId) {
+        orConditions.push({ allowedUserIds: asObjectId });
+        orConditions.push({ ownerId: asObjectId });
       }
 
       catalogs = await Catalog.find({ $or: orConditions })

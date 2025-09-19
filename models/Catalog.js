@@ -43,10 +43,24 @@ catalogSchema.pre('save', function(next) {
   next();
 });
 
+// Helper to normalize possible Mixed values (ObjectId | string | {_id}) to string
+function toIdString(val) {
+  if (val == null) return '';
+  if (typeof val === 'object') {
+    if (val._id) return val._id.toString();
+    // If somehow a populated user object was stored, try id or _id
+    if (val.id) return val.id.toString();
+  }
+  return val.toString();
+}
+
 // Method to check if user has access to this catalog
 catalogSchema.methods.hasUserAccess = function(userId) {
+  const uid = userId?.toString();
+  const owner = toIdString(this.ownerId);
+
   // Owner always has access
-  if (this.ownerId.toString() === userId.toString()) {
+  if (owner && uid && owner === uid) {
     return true;
   }
   
@@ -56,8 +70,8 @@ catalogSchema.methods.hasUserAccess = function(userId) {
   }
   
   // Check if user is in allowed list
-  return this.allowedUserIds.some(allowedId => 
-    allowedId.toString() === userId.toString()
+  return (this.allowedUserIds || []).some(allowedId => 
+    toIdString(allowedId) === uid
   );
 };
 
@@ -69,7 +83,7 @@ catalogSchema.methods.canUserEdit = function(userId, userRole) {
   }
   
   // Owner can edit their catalog
-  return this.ownerId.toString() === userId.toString();
+  return toIdString(this.ownerId) === userId?.toString();
 };
 
 // Static method to find catalogs accessible by user
@@ -78,14 +92,26 @@ catalogSchema.statics.findAccessibleByUser = function(userId, userRole) {
     // Admin can see all catalogs
     return this.find({});
   }
-  
-  return this.find({
-    $or: [
-      { ownerId: userId },
-      { isPublic: true },
-      { allowedUserIds: userId }
-    ]
-  });
+
+  const uid = userId?.toString();
+  const isObjId = mongoose.Types.ObjectId.isValid(uid);
+  const oid = isObjId ? new mongoose.Types.ObjectId(uid) : null;
+
+  const orConds = [
+    { isPublic: true },
+    { ownerId: uid },
+    { allowedUserIds: uid },
+    { 'ownerId._id': uid },
+    { 'allowedUserIds._id': uid },
+  ];
+  if (oid) {
+    orConds.push({ ownerId: oid });
+    orConds.push({ allowedUserIds: oid });
+    orConds.push({ 'ownerId._id': oid });
+    orConds.push({ 'allowedUserIds._id': oid });
+  }
+
+  return this.find({ $or: orConds });
 };
 
 module.exports = mongoose.model('Catalog', catalogSchema);
