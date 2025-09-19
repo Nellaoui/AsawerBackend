@@ -28,7 +28,7 @@ router.get('/migrate-public', async (req, res) => {
 // DEBUG: Check all catalogs in database
 router.get('/debug-all', async (req, res) => {
   try {
-    const allCatalogs = await Catalog.find({}).populate('ownerId', 'name email');
+    const allCatalogs = await Catalog.find({});
 
     const catalogInfo = allCatalogs.map(catalog => ({
       id: catalog._id,
@@ -67,7 +67,6 @@ router.get('/', auth, async (req, res) => {
       // Admins can see all catalogs
       catalogs = await Catalog.find({})
         .populate('products', 'name imageUrl price')
-        .populate('ownerId', 'name email')
         .sort({ createdAt: -1 });
       console.log('Admin user - showing all catalogs:', catalogs.length);
     } else {
@@ -86,7 +85,6 @@ router.get('/', auth, async (req, res) => {
 
       catalogs = await Catalog.find({ $or: orConditions })
         .populate('products', 'name imageUrl price')
-        .populate('ownerId', 'name email')
         .sort({ createdAt: -1 });
 
     }
@@ -127,8 +125,7 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     const catalog = await Catalog.findById(catalogId)
-      .populate('products')
-      .populate('ownerId', 'name email');
+      .populate('products');
 
     if (!catalog) {
       return res.status(404).json({ message: 'Catalog not found' });
@@ -181,7 +178,7 @@ router.post('/', auth, async (req, res) => {
     });
 
     await catalog.save();
-    await catalog.populate('ownerId', 'name email');
+    // Skip populating ownerId to support test-mode string IDs
 
     // Transform catalog to include catalogId field for frontend compatibility
     const catalogObj = catalog.toObject();
@@ -235,7 +232,7 @@ router.put('/:id', auth, async (req, res) => {
     if (isPublic !== undefined) catalog.isPublic = isPublic;
 
     await catalog.save();
-    await catalog.populate('ownerId', 'name email');
+    // Skip populating ownerId to support test-mode string IDs
 
     res.json(catalog);
   } catch (error) {
