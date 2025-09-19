@@ -45,13 +45,13 @@ const productSchema = new mongoose.Schema({
     default: true
   },
   createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: mongoose.Schema.Types.Mixed,
     ref: 'User',
     required: true
   },
   // Users who can access this product
   accessibleTo: [{
-    type: mongoose.Schema.Types.ObjectId,
+    type: mongoose.Schema.Types.Mixed,
     ref: 'User'
   }],
   createdAt: {
@@ -70,4 +70,4 @@ productSchema.pre('save', function(next) {
   next();
 });
 
-module.exports = mongoose.model('Product', productSchema); 
+module.exports = mongoose.model('Product', productSchema);

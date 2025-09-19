@@ -11,12 +11,12 @@ const catalogSchema = new mongoose.Schema({
     trim: true
   },
   ownerId: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: mongoose.Schema.Types.Mixed,
     ref: 'User',
     required: true
   },
   allowedUserIds: [{
-    type: mongoose.Schema.Types.ObjectId,
+    type: mongoose.Schema.Types.Mixed,
     ref: 'User'
   }],
   isPublic: {
