@@ -34,9 +34,9 @@ router.get('/debug-all', async (req, res) => {
       id: catalog._id,
       name: catalog.name,
       isPublic: catalog.isPublic,
-      owner: catalog.ownerId ? catalog.ownerId.email : 'No owner',
+      ownerId: catalog.ownerId,
       productCount: catalog.products ? catalog.products.length : 0,
-      allowedUsers: catalog.allowedUserIds ? catalog.allowedUserIds.length : 0
+      allowedUserIds: (catalog.allowedUserIds || []).map(u => u && u.toString ? u.toString() : String(u)),
     }));
 
     res.json({
@@ -179,7 +179,24 @@ router.post('/', auth, async (req, res) => {
       name,
       description,
       ownerId: req.user.id,
-      allowedUserIds: allowedUserIds || [],
+      allowedUserIds: Array.isArray(allowedUserIds) ? (function normalize(ids){
+        const asStrings = Array.from(new Set(ids.filter(Boolean).map(x => x.toString())));
+        const withObjectIds = [];
+        asStrings.forEach(s => {
+          withObjectIds.push(s);
+          if (mongoose.Types.ObjectId.isValid(s)) {
+            withObjectIds.push(new mongoose.Types.ObjectId(s));
+          }
+        });
+        // Deduplicate by string value
+        const uniq = [];
+        const seen = new Set();
+        for (const v of withObjectIds) {
+          const key = v && v.toString ? v.toString() : String(v);
+          if (!seen.has(key)) { seen.add(key); uniq.push(v); }
+        }
+        return uniq;
+      })(allowedUserIds) : [],
       isPublic: isPublic !== undefined ? isPublic : true // Default to public
     });
 
@@ -427,9 +444,26 @@ router.put('/:id/permissions', auth, async (req, res) => {
       updatedBy: req.user.email
     });
 
-    // Update permissions
+    // Update permissions with normalization (store string and ObjectId variants)
     if (allowedUserIds !== undefined) {
-      catalog.allowedUserIds = allowedUserIds;
+      const normalize = (ids) => {
+        const asStrings = Array.from(new Set((ids || []).filter(Boolean).map(x => x.toString())));
+        const withObjectIds = [];
+        asStrings.forEach(s => {
+          withObjectIds.push(s);
+          if (mongoose.Types.ObjectId.isValid(s)) {
+            withObjectIds.push(new mongoose.Types.ObjectId(s));
+          }
+        });
+        const uniq = [];
+        const seen = new Set();
+        for (const v of withObjectIds) {
+          const key = v && v.toString ? v.toString() : String(v);
+          if (!seen.has(key)) { seen.add(key); uniq.push(v); }
+        }
+        return uniq;
+      };
+      catalog.allowedUserIds = normalize(allowedUserIds);
     }
     if (isPublic !== undefined) {
       catalog.isPublic = isPublic;
