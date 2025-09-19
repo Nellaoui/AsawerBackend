@@ -91,11 +91,19 @@ router.get('/', auth, async (req, res) => {
       
       console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
       
+      // Helper function to compare IDs safely
+      const idsMatch = (id1, id2) => {
+        if (!id1 || !id2) return false;
+        const str1 = id1.toString ? id1.toString() : String(id1);
+        const str2 = id2.toString ? id2.toString() : String(id2);
+        return str1 === str2;
+      };
+      
       // Filter catalogs based on permissions
       catalogs = allCatalogs.filter(catalog => {
         const catalogId = catalog._id.toString();
         const isPublic = catalog.isPublic === true;
-        const isOwner = catalog.ownerId && catalog.ownerId.toString() === userIdStr;
+        const isOwner = catalog.ownerId && idsMatch(catalog.ownerId, userId);
         
         // Check if catalog is public
         if (isPublic) {
@@ -111,15 +119,10 @@ router.get('/', auth, async (req, res) => {
         
         // Check if user is in allowedUserIds
         if (catalog.allowedUserIds && catalog.allowedUserIds.length > 0) {
-          const allowedIds = catalog.allowedUserIds.map(id => id.toString());
-          const hasAccess = catalog.allowedUserIds.some(id => {
-            if (!id) return false;
-            const idStr = id.toString ? id.toString() : String(id);
-            return idStr === userIdStr;
-          });
+          const hasAccess = catalog.allowedUserIds.some(id => idsMatch(id, userId));
           
           console.log(`🔍 [${catalogId}] Checking allowedUserIds:`, {
-            allowedUserIds: allowedIds,
+            allowedUserIds: catalog.allowedUserIds.map(id => id.toString()),
             userHasAccess: hasAccess,
             userId: userIdStr
           });
@@ -494,7 +497,7 @@ router.put('/:id/permissions', auth, async (req, res) => {
       // Ensure we have an array of strings
       const inputIds = Array.isArray(allowedUserIds) ? allowedUserIds : [];
       
-      // Normalize each ID to string and ObjectId form
+      // Normalize each ID to string form only (no more mixed types)
       const normalizedUserIds = [];
       const seen = new Set();
       
@@ -508,20 +511,9 @@ router.put('/:id/permissions', auth, async (req, res) => {
           // Convert to string form and add if not seen
           const strId = id.toString();
           if (!seen.has(strId)) {
-            console.log(`➕ Adding user ID to allowed list (string): ${strId}`);
+            console.log(`➕ Adding user ID to allowed list: ${strId}`);
             seen.add(strId);
             normalizedUserIds.push(strId);
-            
-            // If it's a valid ObjectId, also add the ObjectId form
-            if (mongoose.Types.ObjectId.isValid(strId)) {
-              const objId = new mongoose.Types.ObjectId(strId);
-              const objIdStr = objId.toString();
-              if (!seen.has(objIdStr)) {
-                console.log(`➕ Adding user ID to allowed list (ObjectId): ${objIdStr}`);
-                seen.add(objIdStr);
-                normalizedUserIds.push(objId);
-              }
-            }
           } else {
             console.log(`ℹ️ Skipping duplicate ID: ${strId}`);
           }
@@ -530,10 +522,11 @@ router.put('/:id/permissions', auth, async (req, res) => {
         }
       }
       
+      // Store only string IDs for consistency
       catalog.allowedUserIds = normalizedUserIds;
       console.log('📝 Final normalized allowedUserIds:', {
         count: normalizedUserIds.length,
-        values: normalizedUserIds.map(id => id.toString())
+        values: normalizedUserIds
       });
     }
     
