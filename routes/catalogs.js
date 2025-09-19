@@ -75,24 +75,35 @@ router.get('/', auth, async (req, res) => {
       // 2. Private catalogs they have permission for (allowedUserIds includes their ID)
       // 3. Their own catalogs (ownerId equals their ID)
       const userId = req.user.id;
-      const asObjectId = mongoose.Types.ObjectId.isValid(userId)
-        ? new mongoose.Types.ObjectId(userId)
-        : null;
-
-      const orConditions = [
-        { isPublic: true },
-        { allowedUserIds: userId },
-        { ownerId: userId },
-      ];
-      if (asObjectId) {
-        orConditions.push({ allowedUserIds: asObjectId });
-        orConditions.push({ ownerId: asObjectId });
-      }
-
-      catalogs = await Catalog.find({ $or: orConditions })
+      const userIdStr = userId.toString();
+      
+      // Get all catalogs and filter in memory for more reliable ID comparison
+      const allCatalogs = await Catalog.find({})
         .populate('products', 'name imageUrl price')
         .sort({ createdAt: -1 });
-
+      
+      // Filter catalogs based on permissions
+      catalogs = allCatalogs.filter(catalog => {
+        // Check if catalog is public
+        if (catalog.isPublic) return true;
+        
+        // Check if user is the owner
+        if (catalog.ownerId && catalog.ownerId.toString() === userIdStr) return true;
+        
+        // Check if user is in allowedUserIds
+        if (catalog.allowedUserIds && catalog.allowedUserIds.length > 0) {
+          // Check both string and ObjectId forms
+          return catalog.allowedUserIds.some(id => {
+            if (!id) return false;
+            const idStr = id.toString ? id.toString() : String(id);
+            return idStr === userIdStr;
+          });
+        }
+        
+        return false;
+      });
+      
+      console.log(`Filtered ${catalogs.length} out of ${allCatalogs.length} catalogs for user ${userId}`);
     }
 
 
@@ -427,12 +438,11 @@ router.put('/:id/permissions', auth, async (req, res) => {
     const { allowedUserIds, isPublic } = req.body;
 
     const catalog = await Catalog.findById(req.params.id);
-
     if (!catalog) {
       return res.status(404).json({ message: 'Catalog not found' });
     }
 
-    // Check if user is admin or owner
+    // Check if user is admin or catalog owner
     if (req.user.role !== 'admin' && catalog.ownerId.toString() !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized to manage catalog permissions' });
     }
@@ -446,25 +456,38 @@ router.put('/:id/permissions', auth, async (req, res) => {
 
     // Update permissions with normalization (store string and ObjectId variants)
     if (allowedUserIds !== undefined) {
-      const normalize = (ids) => {
-        const asStrings = Array.from(new Set((ids || []).filter(Boolean).map(x => x.toString())));
-        const withObjectIds = [];
-        asStrings.forEach(s => {
-          withObjectIds.push(s);
-          if (mongoose.Types.ObjectId.isValid(s)) {
-            withObjectIds.push(new mongoose.Types.ObjectId(s));
+      // Ensure we have an array of strings
+      const inputIds = Array.isArray(allowedUserIds) ? allowedUserIds : [];
+      
+      // Normalize each ID to string and ObjectId form
+      const normalizedUserIds = [];
+      const seen = new Set();
+      
+      for (const id of inputIds) {
+        if (!id) continue;
+        
+        // Convert to string form and add if not seen
+        const strId = id.toString();
+        if (!seen.has(strId)) {
+          seen.add(strId);
+          normalizedUserIds.push(strId);
+          
+          // If it's a valid ObjectId, also add the ObjectId form
+          if (mongoose.Types.ObjectId.isValid(strId)) {
+            const objId = new mongoose.Types.ObjectId(strId);
+            const objIdStr = objId.toString();
+            if (!seen.has(objIdStr)) {
+              seen.add(objIdStr);
+              normalizedUserIds.push(objId);
+            }
           }
-        });
-        const uniq = [];
-        const seen = new Set();
-        for (const v of withObjectIds) {
-          const key = v && v.toString ? v.toString() : String(v);
-          if (!seen.has(key)) { seen.add(key); uniq.push(v); }
         }
-        return uniq;
-      };
-      catalog.allowedUserIds = normalize(allowedUserIds);
+      }
+      
+      catalog.allowedUserIds = normalizedUserIds;
+      console.log('Normalized allowedUserIds:', normalizedUserIds);
     }
+    
     if (isPublic !== undefined) {
       catalog.isPublic = isPublic;
     }
@@ -472,11 +495,20 @@ router.put('/:id/permissions', auth, async (req, res) => {
     await catalog.save();
 
     console.log('Catalog permissions updated successfully');
-    res.json({ message: 'Catalog permissions updated successfully' });
+    res.json({ 
+      message: 'Catalog permissions updated successfully',
+      catalog: {
+        id: catalog._id,
+        name: catalog.name,
+        isPublic: catalog.isPublic,
+        allowedUserIds: catalog.allowedUserIds.map(id => id.toString())
+      }
+    });
   } catch (error) {
     console.error('Error updating catalog permissions:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
+// ... (rest of the code remains the same)
 module.exports = router;
