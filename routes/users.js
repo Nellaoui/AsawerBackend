@@ -248,6 +248,7 @@ router.put('/:id/profile', auth, async (req, res) => {
     console.log('Updating user profile:', {
       userId,
       currentEmail: user.email,
+      currentPhone: user.phone,
       newData: { name, email, phone },
       updatedBy: req.user.email
     });
@@ -269,7 +270,15 @@ router.put('/:id/profile', auth, async (req, res) => {
     if (email !== undefined) user.email = email.toLowerCase().trim();
     if (phone !== undefined) user.phone = phone.trim();
 
+    console.log('Saving user with updated fields:', {
+      name: user.name,
+      email: user.email,
+      phone: user.phone
+    });
+
     await user.save();
+
+    console.log('User saved successfully, new phone:', user.phone);
 
     // Return updated user without password
     const userResponse = {
