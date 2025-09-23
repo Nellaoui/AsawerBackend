@@ -14,14 +14,26 @@ router.get('/', auth, async (req, res) => {
         path: 'productId',
         populate: {
           path: 'catalogId',
-          select: 'name'
+          select: 'name _id'
         }
       })
       .sort({ createdAt: -1 });
 
     console.log('Found wishlist items:', wishlistItems.length);
     
-    const products = wishlistItems.map(item => item.productId).filter(product => product);
+    // Transform products to include productId field and proper catalogId
+    const products = wishlistItems
+      .map(item => item.productId)
+      .filter(product => product)
+      .map(product => {
+        const productObj = product.toObject();
+        return {
+          ...productObj,
+          productId: product._id.toString(), // Add productId field
+          catalogId: product.catalogId?._id?.toString() || product.catalogId, // Extract catalog ID string
+          catalogName: product.catalogId?.name // Keep catalog name for display if needed
+        };
+      });
 
     res.json(products);
   } catch (error) {
