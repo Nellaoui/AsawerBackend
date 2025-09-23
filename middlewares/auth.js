@@ -50,8 +50,8 @@ const auth = async (req, res, next) => {
           userId: user._id.toString(),
           email: user.email,
           name: user.name || 'Test User',
-          isAdmin: user.role === 'admin',
-          role: user.role || 'user'
+          isAdmin: user.isAdmin || false,
+          role: user.role || (user.isAdmin ? 'admin' : 'user')
         };
         
         console.log(`✅ Auth middleware - Test user authenticated: ${req.user.email} (${req.user.id})`);

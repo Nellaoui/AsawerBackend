@@ -109,37 +109,46 @@ orderSchema.statics.findByUser = function(userId, options = {}) {
 // Static method for admin to find all orders with filtering
 orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
   const query = this.find({});
-  
+
   if (filters.status) {
     query.where('status').equals(filters.status);
   }
-  
+
   if (filters.userId) {
     query.where('userId').equals(filters.userId);
   }
-  
+
   if (filters.catalogId) {
     query.where('catalogId').equals(filters.catalogId);
   }
-  
+
   if (filters.dateFrom) {
     query.where('createdAt').gte(filters.dateFrom);
   }
-  
+
   if (filters.dateTo) {
     query.where('createdAt').lte(filters.dateTo);
   }
-  
+
   const page = options.page || 1;
   const limit = options.limit || 20;
   const skip = (page - 1) * limit;
-  
-  return query
+
+  let populatedQuery = query
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
     .populate('catalogId', 'name')
     .populate('items.productId', 'name imageUrl size serialNumber');
+
+  // Populate userId only for ObjectId types (real users), not for string test tokens
+  populatedQuery = populatedQuery.populate({
+    path: 'userId',
+    select: 'name email phone',
+    match: { _id: { $exists: true } } // Only populate if userId is a valid ObjectId
+  });
+
+  return populatedQuery;
 };
 
 module.exports = mongoose.model('Order', orderSchema);
