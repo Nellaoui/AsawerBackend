@@ -225,16 +225,18 @@ router.put('/:id/profile', auth, async (req, res) => {
     const userId = req.params.id;
 
     // Check if user is updating their own profile or is admin
-    console.log('Profile update authorization check:', {
+    console.log('🔐 Profile update authorization check:', {
       reqUserId: req.user.id,
       reqUserRole: req.user.role,
       reqUserIsAdmin: req.user.isAdmin,
       requestedUserId: userId,
       idsMatch: req.user.id === userId,
-      isAdmin: req.user.role === 'admin' || req.user.isAdmin === true
+      isAdmin: req.user.role === 'admin' || req.user.isAdmin === true,
+      tokenPreview: req.header('Authorization')?.replace('Bearer ', '').substring(0, 20) + '...'
     });
 
     if (req.user.id !== userId && req.user.role !== 'admin' && req.user.isAdmin !== true) {
+      console.error('❌ Profile update authorization failed - IDs do not match');
       return res.status(403).json({ message: 'Not authorized to update this profile' });
     }
 

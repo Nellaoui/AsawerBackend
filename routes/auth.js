@@ -194,7 +194,9 @@ router.get('/me', auth, async (req, res) => {
       id: req.user._id,
       email: req.user.email,
       name: req.user.name,
-      isAdmin: req.user.isAdmin
+      phone: req.user.phone,
+      isAdmin: req.user.isAdmin,
+      role: req.user.isAdmin ? 'admin' : 'user'
     }
   });
 });

@@ -53,8 +53,16 @@ const auth = async (req, res, next) => {
           isAdmin: user.isAdmin || false,
           role: user.role || (user.isAdmin ? 'admin' : 'user')
         };
-        
-        console.log(`✅ Auth middleware - Test user authenticated: ${req.user.email} (${req.user.id})`);
+
+        console.log(`✅ Auth middleware - Test user authenticated:`, {
+          email: req.user.email,
+          id: req.user.id,
+          _id: req.user._id,
+          userId: req.user.userId,
+          isAdmin: req.user.isAdmin,
+          role: req.user.role,
+          dbUserId: user._id.toString()
+        });
         return next();
         
       } catch (error) {
