@@ -103,7 +103,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       .populate('catalogId', 'name')
       .populate('items.productId', 'name imageUrl size');
     if (mongoose.Types.ObjectId.isValid(order.userId)) {
-      query = query.populate('userId', 'name email');
+      query = query.populate('userId', 'name email phone');
     }
     const populatedOrder = await query;
 
@@ -199,7 +199,7 @@ router.get('/:id', auth, async (req, res) => {
     // Only populate userId when it's a valid ObjectId
     const tempOrder = await Order.findById(req.params.id).select('userId');
     if (tempOrder && mongoose.Types.ObjectId.isValid(tempOrder.userId)) {
-      query = query.populate('userId', 'name email');
+      query = query.populate('userId', 'name email phone');
     }
     const order = await query;
 
@@ -278,7 +278,7 @@ router.put('/:id/status', auth, async (req, res) => {
     await order.save();
     console.log('Order saved successfully');
 
-    await order.populate('userId', 'name email');
+    await order.populate('userId', 'name email phone');
     await order.populate('catalogId', 'name');
     await order.populate('items.productId', 'name imageUrl size');
 
@@ -298,7 +298,7 @@ router.put('/:id/status', auth, async (req, res) => {
 router.put('/:id/cancel', auth, async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('userId', 'name email')
+      .populate('userId', 'name email phone')
       .populate('catalogId', 'name')
       .populate('items.productId', 'name imageUrl size');
 
