@@ -50,6 +50,7 @@ const auth = async (req, res, next) => {
           userId: user._id.toString(),
           email: user.email,
           name: user.name || 'Test User',
+          phone: user.phone || '',
           isAdmin: user.isAdmin || false,
           role: user.role || (user.isAdmin ? 'admin' : 'user')
         };
