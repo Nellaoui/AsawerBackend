@@ -4,6 +4,8 @@ const { auth } = require('../middlewares/auth');
 
 const router = express.Router();
 
+const Notification = require('../models/Notification');
+
 // GET /users - Get all users (admin only)
 router.get('/', auth, async (req, res) => {
   try {
@@ -301,3 +303,50 @@ router.put('/:id/profile', auth, async (req, res) => {
 });
 
 module.exports = router;
+
+// Notifications endpoints
+// GET /api/users/me/notifications - get authenticated user's notifications (paginated)
+router.get('/me/notifications', auth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const filter = { user: req.user.id };
+    const total = await Notification.countDocuments(filter);
+    const notifications = await Notification.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    res.json({
+      notifications,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching notifications for user:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// PATCH /api/users/me/notifications/:id/read - mark notification as read
+router.patch('/me/notifications/:id/read', auth, async (req, res) => {
+  try {
+    const notifId = req.params.id;
+    const notif = await Notification.findById(notifId);
+    if (!notif) return res.status(404).json({ message: 'Notification not found' });
+    if (String(notif.user) !== String(req.user.id)) return res.status(403).json({ message: 'Not authorized' });
+    notif.read = true;
+    await notif.save();
+    res.json({ success: true, notification: notif });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});

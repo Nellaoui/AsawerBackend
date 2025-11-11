@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Product = require('../models/Product');
+const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
 
 // Validation middleware for order creation
@@ -116,6 +118,43 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         size: item.size || (item.productId?.size || '')
       }))
     };
+
+    // Notify all admins about the new order
+    try {
+      const admins = await User.find({ isAdmin: true }).select('_id name email');
+      const io = req.app.get('io');
+      const socketsByUser = req.app.get('socketsByUser');
+
+      for (const admin of admins) {
+        const title = 'New order received';
+        const body = `${req.user.name || req.user.email} placed a new order (#${order._id})`;
+        // persist notification for admin
+        const notif = await Notification.create({
+          user: admin._id,
+          title,
+          body,
+          data: { orderId: order._id }
+        });
+
+        // emit to connected admin sockets if any
+        if (io && socketsByUser) {
+          const userSockets = socketsByUser.get(String(admin._id));
+          if (userSockets) {
+            for (const sid of userSockets) {
+              io.to(sid).emit('notification', {
+                id: notif._id,
+                title: notif.title,
+                body: notif.body,
+                data: notif.data,
+                createdAt: notif.createdAt
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error notifying admins about new order:', err);
+    }
 
     res.status(201).json(orderWithSizes);
   } catch (error) {

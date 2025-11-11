@@ -5,6 +5,8 @@ const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
+const jwt = require('jsonwebtoken');
+const User = require('./models/User');
 
 const app = express();
 
@@ -59,8 +61,53 @@ const io = new Server(server, {
 // Map userId -> Set(socketId)
 const socketsByUser = new Map();
 
+// Socket middleware to authenticate using JWT or test token in handshake
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (!token) return next();
+
+    // Support test-token-... pattern used in HTTP auth middleware for local/dev
+    if (token.startsWith('test-token-')) {
+      let email = token.replace('test-token-', '');
+      if (!email.includes('@')) {
+        if (email.includes('-')) {
+          const [userType, id] = email.split('-');
+          email = `${userType}@test.com`;
+        } else {
+          email += '@test.com';
+        }
+      }
+      const user = await User.findOne({ email });
+      if (user) {
+        socket.data.userId = user._id.toString();
+      }
+      return next();
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    if (decoded && decoded.userId) {
+      const user = await User.findById(decoded.userId).select('-password');
+      if (user) socket.data.userId = user._id.toString();
+    }
+    return next();
+  } catch (err) {
+    console.warn('Socket auth failed:', err && err.message ? err.message : err);
+    // allow connection to continue but without an authenticated user
+    return next();
+  }
+});
+
 io.on('connection', (socket) => {
   console.log('Socket connected:', socket.id);
+
+  // If the socket was already authenticated during handshake, register it now
+  if (socket.data && socket.data.userId) {
+    const uid = String(socket.data.userId);
+    if (!socketsByUser.has(uid)) socketsByUser.set(uid, new Set());
+    socketsByUser.get(uid).add(socket.id);
+    console.log(`Socket ${socket.id} auto-identified as user ${uid} via handshake auth`);
+  }
 
   socket.on('identify', (userId) => {
     try {

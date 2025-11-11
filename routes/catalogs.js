@@ -3,6 +3,8 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const Catalog = require('../models/Catalog');
 const Product = require('../models/Product');
+const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
 
 // TEMPORARY: Update existing catalogs to be public (GET for easy testing)
@@ -262,6 +264,38 @@ router.post('/', auth, async (req, res) => {
       })) || []
     };
 
+    // Notify users about the new catalog
+    try {
+      const io = req.app.get('io');
+      const socketsByUser = req.app.get('socketsByUser');
+
+      let recipients = [];
+      if (catalog.isPublic) {
+        // all non-admin active users
+        recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+      } else if (Array.isArray(catalog.allowedUserIds) && catalog.allowedUserIds.length > 0) {
+        // only allowed users
+        const ids = catalog.allowedUserIds.map(id => id.toString ? id.toString() : String(id));
+        recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+      }
+
+      for (const user of recipients) {
+        const title = 'New catalog available';
+        const body = `Catalog "${catalog.name}" was just added.`;
+        const notif = await Notification.create({ user: user._id, title, body, data: { catalogId: catalog._id } });
+        if (io && socketsByUser) {
+          const userSockets = socketsByUser.get(String(user._id));
+          if (userSockets) {
+            for (const sid of userSockets) {
+              io.to(sid).emit('notification', { id: notif._id, title: notif.title, body: notif.body, data: notif.data, createdAt: notif.createdAt });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error notifying users about new catalog:', err);
+    }
+
     res.status(201).json(transformedCatalog);
   } catch (error) {
     console.error('Error creating catalog:', error);
@@ -414,6 +448,37 @@ router.post('/:id/products', auth, async (req, res) => {
         productId: product._id.toString()
       })) || []
     };
+
+    // Notify users about the new product
+    try {
+      const io = req.app.get('io');
+      const socketsByUser = req.app.get('socketsByUser');
+
+      // Determine recipients: users who can access this catalog
+      let recipients = [];
+      if (catalog.isPublic) {
+        recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+      } else {
+        const ids = (catalog.allowedUserIds || []).map(id => id && id.toString ? id.toString() : String(id));
+        recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+      }
+
+      for (const user of recipients) {
+        const title = 'New product added';
+        const body = `"${product.name}" was added to catalog "${catalog.name}".`;
+        const notif = await Notification.create({ user: user._id, title, body, data: { catalogId: catalog._id, productId: product._id } });
+        if (io && socketsByUser) {
+          const userSockets = socketsByUser.get(String(user._id));
+          if (userSockets) {
+            for (const sid of userSockets) {
+              io.to(sid).emit('notification', { id: notif._id, title: notif.title, body: notif.body, data: notif.data, createdAt: notif.createdAt });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error notifying users about new product:', err);
+    }
 
     res.status(201).json(transformedCatalog);
   } catch (error) {
