@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
+const Notification = require('../models/Notification');
 const { adminAuth } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -72,6 +73,45 @@ router.put('/users/:id', adminAuth, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Send a notification to a specific user (Admin only)
+// POST /api/admin/notify
+// body: { userId, title, body, data }
+router.post('/notify', adminAuth, async (req, res) => {
+  try {
+    const { userId, title = '', body = '', data = {} } = req.body;
+    if (!userId) return res.status(400).json({ message: 'userId is required' });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // persist notification
+    const notif = await Notification.create({ user: userId, title, body, data });
+
+    // emit via Socket.IO to connected sockets for that user
+    const io = req.app.get('io');
+    const socketsByUser = req.app.get('socketsByUser');
+    if (io && socketsByUser) {
+      const userSockets = socketsByUser.get(String(userId));
+      if (userSockets) {
+        for (const sid of userSockets) {
+          io.to(sid).emit('notification', {
+            id: notif._id,
+            title: notif.title,
+            body: notif.body,
+            data: notif.data,
+            createdAt: notif.createdAt
+          });
+        }
+      }
+    }
+
+    return res.json({ success: true, notification: notif });
+  } catch (error) {
+    console.error('Error sending notification', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 

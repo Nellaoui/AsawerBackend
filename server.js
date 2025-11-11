@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const path = require('path');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
 const app = express();
@@ -40,6 +42,53 @@ db.once('open', () => {
   console.log('Connected to MongoDB');
 });
 
+// We'll create an HTTP server and attach Socket.IO so routes can use io via app.get('io')
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: [
+      process.env.CORS_ORIGIN_LOCALHOST,
+      process.env.CORS_ORIGIN_NETWORK,
+      process.env.CORS_ORIGIN_WEB,
+    ],
+    credentials: true
+  }
+});
+
+// Map userId -> Set(socketId)
+const socketsByUser = new Map();
+
+io.on('connection', (socket) => {
+  console.log('Socket connected:', socket.id);
+
+  socket.on('identify', (userId) => {
+    try {
+      if (!userId) return;
+      const uid = String(userId);
+      if (!socketsByUser.has(uid)) socketsByUser.set(uid, new Set());
+      socketsByUser.get(uid).add(socket.id);
+      socket.data.userId = uid;
+      console.log(`Socket ${socket.id} identified as user ${uid}`);
+    } catch (e) {
+      console.error('Error in identify handler', e);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const uid = socket.data.userId;
+    if (uid && socketsByUser.has(uid)) {
+      socketsByUser.get(uid).delete(socket.id);
+      if (socketsByUser.get(uid).size === 0) socketsByUser.delete(uid);
+    }
+    console.log('Socket disconnected:', socket.id);
+  });
+});
+
+// Make io and sockets map available to routes via app.get('io') / app.get('socketsByUser')
+app.set('io', io);
+app.set('socketsByUser', socketsByUser);
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
@@ -67,7 +116,7 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Local access: http://localhost:${PORT}`);
   console.log(`Network access: http://192.168.0.157:${PORT}`);
