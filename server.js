@@ -145,6 +145,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/wishlist', require('./routes/wishlist'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Root route for health check
 app.get('/', (req, res) => {
