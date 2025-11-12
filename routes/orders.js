@@ -149,6 +149,9 @@ router.post('/', auth, validateOrderData, async (req, res) => {
                 createdAt: notif.createdAt
               });
             }
+          } else {
+            // helpful debug log when no connected sockets for this admin
+            console.log(`No connected sockets for admin ${admin._id} — notification saved to DB`);
           }
         }
       }
