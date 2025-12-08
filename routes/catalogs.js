@@ -487,6 +487,90 @@ router.post('/:id/products', auth, async (req, res) => {
   }
 });
 
+  // POST /:id/products/bulk - Create multiple products or attach existing product IDs
+  router.post('/:id/products/bulk', auth, async (req, res) => {
+    try {
+      const catalog = await Catalog.findById(req.params.id);
+      if (!catalog) {
+        return res.status(404).json({ message: 'Catalog not found' });
+      }
+
+      if (!catalog.canUserEdit(req.user.id, req.user.role)) {
+        return res.status(403).json({ message: 'Permission denied' });
+      }
+
+      const { products, productIds } = req.body;
+      const Product = require('../models/Product');
+      const addedIds = [];
+
+      // Create new products if provided
+      if (Array.isArray(products) && products.length > 0) {
+        const docs = products.map(p => ({
+          name: (p.name || '').toString().trim(),
+          description: (p.description || '').toString().trim(),
+          type: p.type || 'Other',
+          serialNumber: (p.serialNumber || p.name || '').toString().replace(/\s+/g, '_'),
+          imageUrl: p.imageUrl || p.image || 'https://via.placeholder.com/150',
+          price: Number(p.price) || 0,
+          size: p.size || null,
+          catalogId: catalog._id,
+          createdBy: req.user.id
+        }));
+
+        // Use insertMany for performance
+        const created = await Product.insertMany(docs);
+        created.forEach(c => addedIds.push(c._id));
+      }
+
+      // Attach existing products by id (will set their catalogId)
+      if (Array.isArray(productIds) && productIds.length > 0) {
+        const validIds = productIds
+          .filter(id => mongoose.Types.ObjectId.isValid(id))
+          .map(id => new mongoose.Types.ObjectId(id));
+
+        if (validIds.length > 0) {
+          await Product.updateMany(
+            { _id: { $in: validIds } },
+            { $set: { catalogId: catalog._id } }
+          );
+          validIds.forEach(id => addedIds.push(id));
+        }
+      }
+
+      // Add collected IDs to catalog.products (dedupe)
+      if (addedIds.length > 0) {
+        const existing = (catalog.products || []).map(x => x.toString());
+        const toAdd = [];
+        for (const id of addedIds) {
+          const sid = id.toString();
+          if (!existing.includes(sid)) toAdd.push(id);
+        }
+        if (toAdd.length > 0) {
+          catalog.products.push(...toAdd);
+          await catalog.save();
+        }
+      }
+
+      await catalog.populate('products');
+
+      // Transform catalog to include catalogId and productId fields for frontend
+      const catalogObj = catalog.toObject();
+      const transformedCatalog = {
+        ...catalogObj,
+        catalogId: catalog._id.toString(),
+        products: catalogObj.products?.map(product => ({
+          ...product,
+          productId: product._id.toString()
+        })) || []
+      };
+
+      res.status(200).json(transformedCatalog);
+    } catch (error) {
+      console.error('Error bulk adding products to catalog:', error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  });
+
 // DELETE /:id/products/:productId - Remove product from catalog (admin/owner only)
 router.delete('/:id/products/:productId', auth, async (req, res) => {
   try {
