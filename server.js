@@ -4,9 +4,13 @@ const mongoose = require('mongoose');
 const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
+const dns = require('dns');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+
+// Use Google DNS for SRV record resolution (fixes local DNS issues)
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 const app = express();
 
@@ -146,6 +150,18 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/clasp-images', require('./routes/claspImages'));
+app.use('/api/size-presets', require('./routes/sizePresets'));
+
+// Serve support page
+app.get('/support', (req, res) => {
+  res.sendFile(path.join(__dirname, 'support.html'));
+});
+
+// Serve privacy policy page
+app.get('/privacy', (req, res) => {
+  res.sendFile(path.join(__dirname, 'privacy-policy.html'));
+});
 
 // Root route for health check
 app.get('/', (req, res) => {
@@ -167,5 +183,5 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Local access: http://localhost:${PORT}`);
-  console.log(`Network access: http://192.168.0.157:${PORT}`);
+  console.log(`Network access: http://192.168.1.8:${PORT}`);
 });

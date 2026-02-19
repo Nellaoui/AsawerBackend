@@ -13,7 +13,12 @@ const orderItemSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: true,
+    default: 0,
+    min: 0
+  },
+  weight: {
+    type: Number,
+    default: 0,
     min: 0
   },
   name: {
@@ -21,6 +26,14 @@ const orderItemSchema = new mongoose.Schema({
     required: true
   },
   size: {
+    type: String,
+    trim: true
+  },
+  clasp: {
+    type: String,
+    trim: true
+  },
+  height: {
     type: String,
     trim: true
   }
@@ -102,8 +115,8 @@ orderSchema.statics.findByUser = function(userId, options = {}) {
   // Do NOT populate userId here, because userId may be a string (test token)
   return query
     .sort({ createdAt: -1 })
-    .populate('catalogId', 'name')
-    .populate('items.productId', 'name imageUrl size serialNumber');
+    .populate('catalogId', 'name description')
+    .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
 };
 
 // Static method for admin to find all orders with filtering
@@ -138,8 +151,8 @@ orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
-    .populate('catalogId', 'name')
-    .populate('items.productId', 'name imageUrl size serialNumber');
+    .populate('catalogId', 'name description')
+    .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
 
   // Populate userId only for ObjectId types (real users), not for string test tokens
   populatedQuery = populatedQuery.populate({

@@ -82,9 +82,12 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       const orderItem = {
         productId: item.productId,
         quantity: item.quantity,
-        price: product.price,
+        price: product.price || 0,
+        weight: product.weight || 0,
         name: product.name,
-        size: item.size
+        size: item.size,
+        clasp: item.clasp,
+        height: item.height
       };
       orderItems.push(orderItem);
     }
@@ -102,8 +105,8 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     
     // Populate order with necessary fields
     let query = Order.findById(order._id)
-      .populate('catalogId', 'name')
-      .populate('items.productId', 'name imageUrl size');
+      .populate('catalogId', 'name description')
+      .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
     if (mongoose.Types.ObjectId.isValid(order.userId)) {
       query = query.populate('userId', 'name email phone');
     }
@@ -236,8 +239,8 @@ router.get('/my', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     let query = Order.findById(req.params.id)
-      .populate('catalogId', 'name')
-      .populate('items.productId', 'name imageUrl price size');
+      .populate('catalogId', 'name description')
+      .populate('items.productId', 'name imageUrl price size serialNumber weight showWeight type clasp height');
     // Only populate userId when it's a valid ObjectId
     const tempOrder = await Order.findById(req.params.id).select('userId');
     if (tempOrder && mongoose.Types.ObjectId.isValid(tempOrder.userId)) {
@@ -321,8 +324,8 @@ router.put('/:id/status', auth, async (req, res) => {
     console.log('Order saved successfully');
 
     await order.populate('userId', 'name email phone');
-    await order.populate('catalogId', 'name');
-    await order.populate('items.productId', 'name imageUrl size');
+    await order.populate('catalogId', 'name description');
+    await order.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
 
     console.log('Order populated and ready to return');
     res.json(order);
@@ -341,8 +344,8 @@ router.put('/:id/cancel', auth, async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('userId', 'name email phone')
-      .populate('catalogId', 'name')
-      .populate('items.productId', 'name imageUrl size');
+      .populate('catalogId', 'name description')
+      .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });

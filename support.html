@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asawer - الدعم والمساعدة</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.8;
+      color: #e0e0e0;
+      background: #121212;
+      padding: 40px 20px;
+    }
+    .container { max-width: 720px; margin: 0 auto; }
+    h1 { color: #FFD700; font-size: 28px; margin-bottom: 8px; text-align: center; }
+    h2 { color: #FFD700; font-size: 20px; margin-top: 32px; margin-bottom: 12px; }
+    p { margin-bottom: 16px; }
+    ul { margin-right: 24px; margin-bottom: 16px; }
+    li { margin-bottom: 8px; }
+    .subtitle { color: #888; font-size: 16px; text-align: center; margin-bottom: 32px; }
+    a { color: #FFD700; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .contact-box {
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 24px;
+    }
+    .contact-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .contact-item:last-child { margin-bottom: 0; }
+    .icon { font-size: 24px; }
+    .faq-item {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+    .faq-q { color: #FFD700; font-weight: 600; margin-bottom: 8px; }
+    .faq-a { color: #ccc; }
+    .footer {
+      text-align: center;
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid #333;
+      color: #666;
+      font-size: 14px;
+    }
+    .lang-switch {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .lang-switch a {
+      color: #888;
+      margin: 0 8px;
+      font-size: 14px;
+    }
+    .lang-switch a:hover { color: #FFD700; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="lang-switch">
+      <a href="#" onclick="switchLang('ar')">العربية</a> |
+      <a href="#" onclick="switchLang('fr')">Français</a> |
+      <a href="#" onclick="switchLang('en')">English</a>
+    </div>
+
+    <!-- Arabic Content (Default) -->
+    <div id="content-ar">
+      <h1>الدعم والمساعدة</h1>
+      <p class="subtitle">تطبيق أساور - كتالوج المجوهرات</p>
+
+      <h2>كيف يمكننا مساعدتك؟</h2>
+      <p>مرحبًا بك في صفحة دعم تطبيق أساور. نحن هنا لمساعدتك في أي استفسار أو مشكلة قد تواجهها أثناء استخدام التطبيق.</p>
+
+      <h2>الأسئلة الشائعة</h2>
+
+      <div class="faq-item">
+        <div class="faq-q">كيف أقوم بإنشاء حساب؟</div>
+        <div class="faq-a">افتح التطبيق واضغط على "تسجيل". أدخل اسمك وبريدك الإلكتروني وكلمة المرور لإنشاء حساب جديد.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">كيف أتصفح الكتالوجات؟</div>
+        <div class="faq-a">بعد تسجيل الدخول، ستظهر لك الكتالوجات المتاحة. اضغط على أي كتالوج لعرض المنتجات بداخله.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">كيف أضيف منتجات إلى قائمة الأمنيات؟</div>
+        <div class="faq-a">اضغط على أيقونة القلب بجانب أي منتج لإضافته إلى قائمة أمنياتك.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">كيف أقوم بتقديم طلب؟</div>
+        <div class="faq-a">أضف المنتجات إلى سلة التسوق، ثم اضغط على "تأكيد الطلب" لإتمام عملية الشراء.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">كيف أتابع حالة طلبي؟</div>
+        <div class="faq-a">انتقل إلى صفحة "طلباتي" لعرض جميع طلباتك وحالتها. ستتلقى إشعارات فورية عند تغيير حالة الطلب.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">التطبيق لا يعمل أو يظهر خطأ</div>
+        <div class="faq-a">حاول إغلاق التطبيق وإعادة فتحه. إذا استمرت المشكلة، تأكد من اتصالك بالإنترنت وأنك تستخدم أحدث إصدار من التطبيق. إذا لم تحل المشكلة، تواصل معنا عبر البريد الإلكتروني أدناه.</div>
+      </div>
+
+      <h2>تواصل معنا</h2>
+      <div class="contact-box">
+        <div class="contact-item">
+          <span class="icon">📧</span>
+          <div>
+            <strong>البريد الإلكتروني</strong><br>
+            <a href="mailto:contact@donpha.com">contact@donpha.com</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <span class="icon">🕐</span>
+          <div>
+            <strong>أوقات الدعم</strong><br>
+            الأحد - الخميس، 9:00 صباحًا - 6:00 مساءً
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- French Content -->
+    <div id="content-fr" style="display:none;">
+      <h1 style="direction:ltr; text-align:center;">Support & Aide</h1>
+      <p class="subtitle" style="direction:ltr; text-align:center;">Asawer - Catalogue de Bijoux</p>
+
+      <h2 style="direction:ltr;">Comment pouvons-nous vous aider ?</h2>
+      <p style="direction:ltr;">Bienvenue sur la page d'assistance d'Asawer. Nous sommes là pour vous aider avec toute question ou problème rencontré lors de l'utilisation de l'application.</p>
+
+      <h2 style="direction:ltr;">Questions Fréquentes</h2>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">Comment créer un compte ?</div>
+        <div class="faq-a">Ouvrez l'application et appuyez sur "S'inscrire". Entrez votre nom, email et mot de passe pour créer un nouveau compte.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">Comment parcourir les catalogues ?</div>
+        <div class="faq-a">Après connexion, les catalogues disponibles s'affichent. Appuyez sur un catalogue pour voir les produits qu'il contient.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">Comment passer une commande ?</div>
+        <div class="faq-a">Ajoutez des produits au panier, puis appuyez sur "Confirmer la commande" pour finaliser votre achat.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">Comment suivre ma commande ?</div>
+        <div class="faq-a">Accédez à la page "Mes commandes" pour voir toutes vos commandes et leur statut. Vous recevrez des notifications en temps réel lors de tout changement de statut.</div>
+      </div>
+
+      <h2 style="direction:ltr;">Contactez-nous</h2>
+      <div class="contact-box" style="direction:ltr;">
+        <div class="contact-item">
+          <span class="icon">📧</span>
+          <div>
+            <strong>Email</strong><br>
+            <a href="mailto:contact@donpha.com">contact@donpha.com</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <span class="icon">🕐</span>
+          <div>
+            <strong>Heures de support</strong><br>
+            Dimanche - Jeudi, 9h00 - 18h00
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- English Content -->
+    <div id="content-en" style="display:none;">
+      <h1 style="direction:ltr; text-align:center;">Support & Help</h1>
+      <p class="subtitle" style="direction:ltr; text-align:center;">Asawer - Jewelry Catalog</p>
+
+      <h2 style="direction:ltr;">How can we help you?</h2>
+      <p style="direction:ltr;">Welcome to the Asawer support page. We're here to help you with any questions or issues you may encounter while using the app.</p>
+
+      <h2 style="direction:ltr;">Frequently Asked Questions</h2>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">How do I create an account?</div>
+        <div class="faq-a">Open the app and tap "Sign Up". Enter your name, email, and password to create a new account.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">How do I browse catalogs?</div>
+        <div class="faq-a">After logging in, available catalogs will be displayed. Tap on any catalog to view the products inside.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">How do I place an order?</div>
+        <div class="faq-a">Add products to your cart, then tap "Confirm Order" to complete your purchase.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">How do I track my order?</div>
+        <div class="faq-a">Go to the "My Orders" page to view all your orders and their status. You'll receive real-time notifications when the order status changes.</div>
+      </div>
+
+      <div class="faq-item" style="direction:ltr;">
+        <div class="faq-q">The app isn't working or showing an error</div>
+        <div class="faq-a">Try closing and reopening the app. If the issue persists, make sure you're connected to the internet and using the latest version. If the problem continues, contact us via email below.</div>
+      </div>
+
+      <h2 style="direction:ltr;">Contact Us</h2>
+      <div class="contact-box" style="direction:ltr;">
+        <div class="contact-item">
+          <span class="icon">📧</span>
+          <div>
+            <strong>Email</strong><br>
+            <a href="mailto:contact@donpha.com">contact@donpha.com</a>
+          </div>
+        </div>
+        <div class="contact-item">
+          <span class="icon">🕐</span>
+          <div>
+            <strong>Support Hours</strong><br>
+            Sunday - Thursday, 9:00 AM - 6:00 PM
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>© 2026 Asawer. جميع الحقوق محفوظة.</p>
+      <p><a href="https://nellaoui.github.io/asawer-privacy-policy/">سياسة الخصوصية</a></p>
+    </div>
+  </div>
+
+  <script>
+    function switchLang(lang) {
+      document.getElementById('content-ar').style.display = lang === 'ar' ? 'block' : 'none';
+      document.getElementById('content-fr').style.display = lang === 'fr' ? 'block' : 'none';
+      document.getElementById('content-en').style.display = lang === 'en' ? 'block' : 'none';
+      document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+      document.documentElement.lang = lang;
+    }
+  </script>
+</body>
+</html>

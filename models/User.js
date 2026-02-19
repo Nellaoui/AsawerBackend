@@ -44,6 +44,10 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  expoPushTokens: [{
+    type: String,
+    trim: true
+  }],
   isActive: {
     type: Boolean,
     default: true
@@ -78,9 +82,14 @@ userSchema.pre('save', async function(next) {
   }
 });
 
-// Method to compare password
+// Method to compare password (supports both hashed and legacy plain-text)
 userSchema.methods.comparePassword = async function(candidatePassword) {
-  return bcrypt.compare(candidatePassword, this.password);
+  // If stored password looks like a bcrypt hash
+  if (this.password && this.password.startsWith('$2')) {
+    return bcrypt.compare(candidatePassword, this.password);
+  }
+  // Legacy plain-text comparison
+  return candidatePassword === this.password;
 };
 
 module.exports = mongoose.model('User', userSchema); 

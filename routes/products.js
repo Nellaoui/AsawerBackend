@@ -104,20 +104,34 @@ router.post('/', adminAuth, [
 // Update product (Admin only)
 router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const { name, description, price, image, category, accessibleTo, isActive } = req.body;
+    const { 
+      name, description, price, image, imageUrl, category, accessibleTo, isActive,
+      weight, showWeight, height, type, size, clasp, serialNumber, relatedProducts, availableSizes, availableHeights 
+    } = req.body;
 
     const product = await Product.findById(req.params.id);
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    product.name = name || product.name;
-    product.description = description || product.description;
-    product.price = price || product.price;
-    product.image = image || product.image;
-    product.category = category || product.category;
-    product.accessibleTo = accessibleTo || product.accessibleTo;
-    product.isActive = isActive !== undefined ? isActive : product.isActive;
+    if (name) product.name = name;
+    if (description !== undefined) product.description = description;
+    if (price !== undefined) product.price = price;
+    if (image) product.image = image;
+    if (imageUrl) product.imageUrl = imageUrl;
+    if (category) product.category = category;
+    if (accessibleTo) product.accessibleTo = accessibleTo;
+    if (isActive !== undefined) product.isActive = isActive;
+    if (weight !== undefined) product.weight = weight;
+    if (showWeight !== undefined) product.showWeight = showWeight;
+    if (height !== undefined) product.height = height;
+    if (type !== undefined) product.type = type;
+    if (size !== undefined) product.size = size;
+    if (clasp !== undefined) product.clasp = clasp;
+    if (serialNumber) product.serialNumber = serialNumber;
+    if (relatedProducts !== undefined) product.relatedProducts = relatedProducts;
+    if (availableSizes !== undefined) product.availableSizes = availableSizes;
+    if (availableHeights !== undefined) product.availableHeights = availableHeights;
 
     await product.save();
     res.json(product);

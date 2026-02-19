@@ -68,7 +68,10 @@ router.get('/', auth, async (req, res) => {
     if (req.user.role === 'admin') {
       // Admins can see all catalogs
       catalogs = await Catalog.find({})
-        .populate('products', 'name imageUrl price')
+        .populate({
+          path: 'products',
+          populate: { path: 'relatedProducts' }
+        })
         .sort({ createdAt: -1 });
       console.log('Admin user - showing all catalogs:', catalogs.length);
     } else {
@@ -88,7 +91,10 @@ router.get('/', auth, async (req, res) => {
       
       // Get all catalogs and filter in memory for more reliable ID comparison
       const allCatalogs = await Catalog.find({})
-        .populate('products', 'name imageUrl price')
+        .populate({
+          path: 'products',
+          populate: { path: 'relatedProducts' }
+        })
         .sort({ createdAt: -1 });
       
       console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
@@ -180,7 +186,10 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     const catalog = await Catalog.findById(catalogId)
-      .populate('products');
+      .populate({
+        path: 'products',
+        populate: { path: 'relatedProducts' }
+      });
 
     if (!catalog) {
       return res.status(404).json({ message: 'Catalog not found' });
@@ -405,7 +414,13 @@ router.post('/:id/products', auth, async (req, res) => {
       imageUrl, 
       price = 0, 
       stock = 1, 
-      size 
+      size,
+      clasp,
+      showWeight,
+      height,
+      relatedProducts,
+      availableSizes,
+      availableHeights
     } = req.body;
 
     if (!name || !serialNumber) {
@@ -421,8 +436,15 @@ router.post('/:id/products', auth, async (req, res) => {
       serialNumber: serialNumber.trim(),
       imageUrl: imageUrl || 'https://via.placeholder.com/150',
       price: Number(price) || 0,
+      weight: Number(req.body.weight) || 0,
+      showWeight: showWeight || false,
+      height: Number(height) || 0,
       stock: Number(stock) || 1,
       size: size || null,
+      availableSizes: availableSizes || [],
+      availableHeights: availableHeights || [],
+      clasp: clasp || null,
+      relatedProducts: relatedProducts || [],
       catalogId: catalog._id,
       createdBy: req.user.id
     });
@@ -702,4 +724,48 @@ router.put('/:id/permissions', auth, async (req, res) => {
 });
 
 // ... (rest of the code remains the same)
+
+// PUT /:id/reorder-products - Reorder products in a catalog
+router.put('/:id/reorder-products', auth, async (req, res) => {
+  try {
+    const catalogId = req.params.id;
+    const { productIds } = req.body;
+
+    if (!productIds || !Array.isArray(productIds)) {
+      return res.status(400).json({ message: 'productIds array is required' });
+    }
+
+    const catalog = await Catalog.findById(catalogId);
+    if (!catalog) {
+      return res.status(404).json({ message: 'Catalog not found' });
+    }
+
+    // Only admin or owner can reorder
+    if (req.user.role !== 'admin' && catalog.ownerId?.toString() !== req.user.id.toString()) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Reorder the products array
+    catalog.products = productIds.map(id => mongoose.Types.ObjectId(id));
+    await catalog.save();
+
+    await catalog.populate('products');
+
+    const catalogObj = catalog.toObject();
+    const transformedCatalog = {
+      ...catalogObj,
+      catalogId: catalog._id.toString(),
+      products: catalogObj.products?.map(product => ({
+        ...product,
+        productId: product._id.toString()
+      })) || []
+    };
+
+    res.json(transformedCatalog);
+  } catch (error) {
+    console.error('Error reordering products:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 module.exports = router;

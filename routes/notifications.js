@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
 
 // GET /api/notifications - Get all notifications for the authenticated user
@@ -84,6 +85,60 @@ router.delete('/:id', auth, async (req, res) => {
     res.json({ success: true, message: 'Notification deleted' });
   } catch (error) {
     console.error('Error deleting notification:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/notifications/push-token - Register push token
+router.post('/push-token', auth, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ message: 'Push token is required' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Add token if not already present
+    if (!user.expoPushTokens) {
+      user.expoPushTokens = [];
+    }
+    if (!user.expoPushTokens.includes(token)) {
+      user.expoPushTokens.push(token);
+      await user.save();
+    }
+
+    res.json({ success: true, message: 'Push token registered' });
+  } catch (error) {
+    console.error('Error registering push token:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// DELETE /api/notifications/push-token - Unregister push token
+router.delete('/push-token', auth, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ message: 'Push token is required' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (user.expoPushTokens) {
+      user.expoPushTokens = user.expoPushTokens.filter(t => t !== token);
+      await user.save();
+    }
+
+    res.json({ success: true, message: 'Push token unregistered' });
+  } catch (error) {
+    console.error('Error unregistering push token:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });

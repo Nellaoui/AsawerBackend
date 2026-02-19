@@ -13,7 +13,8 @@ const productSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    default: 'Other'
+    required: true,
+    trim: true
   },
   serialNumber: {
     type: String,
@@ -26,15 +27,50 @@ const productSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: true,
+    required: false,
     min: 0,
     default: 0
+  },
+  weight: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  showWeight: {
+    type: Boolean,
+    default: false
+  },
+  height: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  showHeight: {
+    type: Boolean,
+    default: false
   },
   size: {
     type: String,
     trim: true,
     default: null
   },
+  availableSizes: [{
+    type: String,
+    trim: true
+  }],
+  availableHeights: [{
+    type: String,
+    trim: true
+  }],
+  clasp: {
+    type: String,
+    trim: true,
+    default: null
+  },
+  relatedProducts: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product'
+  }],
   catalogId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Catalog',
