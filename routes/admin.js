@@ -1,4 +1,6 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
@@ -115,4 +117,67 @@ router.post('/notify', adminAuth, async (req, res) => {
   }
 });
 
-module.exports = router; 
+// Impersonate a user (Admin only)
+// POST /api/admin/impersonate/:userId
+router.post('/impersonate/:userId', adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid target user ID' });
+    }
+
+    const targetUser = await User.findById(userId).select('-password');
+    if (!targetUser) {
+      return res.status(404).json({ message: 'Target user not found' });
+    }
+
+    if (targetUser.isAdmin || targetUser.role === 'admin') {
+      return res.status(400).json({ message: 'Admin accounts cannot be opened as customer profiles' });
+    }
+
+    if (targetUser.isActive === false) {
+      return res.status(403).json({ message: 'Inactive customer accounts cannot be opened' });
+    }
+
+    const IMPERSONATION_TOKEN_EXPIRES_IN = process.env.IMPERSONATION_TOKEN_EXPIRES_IN || '2h';
+    const token = jwt.sign(
+      {
+        userId: targetUser._id,
+        isImpersonated: true,
+        originalAdminId: req.user.id || req.user._id,
+        originalAdminName: req.user.name,
+      },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: IMPERSONATION_TOKEN_EXPIRES_IN }
+    );
+
+    console.log(`👁️ Admin (${req.user.email}) is impersonating target user: (${targetUser.email})`);
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      token,
+      isImpersonated: true,
+      user: {
+        id: targetUser._id,
+        email: targetUser.email,
+        name: targetUser.name,
+        phone: targetUser.phone,
+        isAdmin: targetUser.isAdmin,
+        role: 'user',
+        isActive: targetUser.isActive
+      },
+      originalAdmin: {
+        id: req.user.id || req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+      }
+    });
+  } catch (error) {
+    console.error('Impersonation error:', error);
+    res.status(500).json({ message: 'Server error during impersonation' });
+  }
+});
+
+module.exports = router;

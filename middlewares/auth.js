@@ -43,7 +43,12 @@ const auth = async (req, res, next) => {
           console.log(`❌ Auth middleware - No user found with email: ${email}`);
           return res.status(401).json({ message: 'Invalid test token - user not found' });
         }
+
+        if (user.isActive === false) {
+          return res.status(403).json({ message: 'Account is inactive' });
+        }
         
+        req.auth = { isTestToken: true, isImpersonated: false };
         req.user = {
           id: user._id.toString(),
           _id: user._id,
@@ -74,6 +79,7 @@ const auth = async (req, res, next) => {
 
     // Handle real JWT tokens
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    req.auth = decoded;
     console.log('✅ Auth middleware - Token decoded successfully, user ID:', decoded.userId);
 
     // Optional global invalidation: force-logout tokens issued before a cutoff
@@ -99,6 +105,10 @@ const auth = async (req, res, next) => {
     if (!user) {
       console.log('❌ Auth middleware - User not found in database');
       return res.status(401).json({ message: 'Token is not valid' });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({ message: 'Account is inactive' });
     }
 
     // Set role field for consistency with Catalog model expectations
@@ -129,18 +139,18 @@ const auth = async (req, res, next) => {
   }
 };
 
-const adminAuth = async (req, res, next) => {
-  try {
-    await auth(req, res, () => {});
-    
-    if (!req.user.isAdmin) {
-      return res.status(403).json({ message: 'Access denied. Admin only.' });
-    }
-    
-    next();
-  } catch (error) {
-    res.status(401).json({ message: 'Authentication failed' });
+const adminAuth = (req, res, next) => auth(req, res, () => {
+  if (!req.user?.isAdmin) {
+    return res.status(403).json({ message: 'Access denied. Admin only.' });
   }
-};
 
-module.exports = { auth, adminAuth }; 
+  // An impersonated session must never regain admin privileges, even if the
+  // selected target account is accidentally promoted later.
+  if (req.auth?.isImpersonated) {
+    return res.status(403).json({ message: 'Exit customer view before using admin features.' });
+  }
+
+  return next();
+});
+
+module.exports = { auth, adminAuth };
