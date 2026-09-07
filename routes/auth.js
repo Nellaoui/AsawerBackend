@@ -78,7 +78,8 @@ router.post('/register', [
         name: user.name,
         phone: user.phone,
         isAdmin: user.isAdmin,
-        role: user.isAdmin ? 'admin' : 'user'
+        role: user.isAdmin ? 'admin' : (user.role || 'user'),
+        workRole: user.workRole || 'general'
       }
     });
   } catch (error) {
@@ -87,11 +88,12 @@ router.post('/register', [
   }
 });
 
-// Login user
-router.post('/login', [
+const loginValidators = () => [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
-], async (req, res) => {
+];
+
+const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -100,47 +102,35 @@ router.post('/login', [
 
     const { email, password } = req.body;
 
-    console.log('Login attempt for email:', email);
-
-    // Check if user exists
     const user = await User.findOne({ email });
     if (!user) {
-      console.log('User not found in database for email:', email);
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    console.log('User found:', {
-      id: user._id,
-      email: user.email,
-      name: user.name,
-      isAdmin: user.isAdmin,
-      isActive: user.isActive
-    });
-
-    // Check if user is active
     if (user.isActive === false) {
-      console.log('User account is inactive:', email);
       return res.status(400).json({ message: 'Account is inactive' });
     }
 
-    // Check password
-    console.log('Checking password for user:', email);
     const isMatch = await user.comparePassword(password);
-    console.log('Password match result:', isMatch);
-
     if (!isMatch) {
-      console.log('Password mismatch for user:', email);
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // Generate JWT token
+    const role = user.isAdmin ? 'admin' : (user.role || 'user');
+    if (operationsOnly && !['admin', 'employee'].includes(role)) {
+      return res.status(403).json({ message: 'This account does not have operations portal access' });
+    }
+    if (!operationsOnly && role === 'employee') {
+      return res.status(403).json({ message: 'Employee accounts can only sign in to the operations portal' });
+    }
+
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: TOKEN_EXPIRES_IN }
     );
 
-    console.log('User login successful:', user.email, 'isAdmin:', user.isAdmin);
+    console.log(operationsOnly ? 'Operations login successful:' : 'User login successful:', user.email);
     res.json({
       token,
       user: {
@@ -149,14 +139,21 @@ router.post('/login', [
         name: user.name,
         phone: user.phone,
         isAdmin: user.isAdmin,
-        role: user.isAdmin ? 'admin' : 'user'
+        role,
+        workRole: user.workRole || 'general'
       }
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
   }
-});
+};
+
+// Customer/mobile login. Employee credentials are deliberately rejected here.
+router.post('/login', loginValidators(), loginHandler());
+
+// Operations portal login. Only administrators and employees can use it.
+router.post('/operations-login', loginValidators(), loginHandler({ operationsOnly: true }));
 
 // Send invite (Admin only)
 router.post('/invite', adminAuth, [
@@ -196,7 +193,8 @@ router.get('/me', auth, async (req, res) => {
       name: req.user.name,
       phone: req.user.phone,
       isAdmin: req.user.isAdmin,
-      role: req.user.isAdmin ? 'admin' : 'user'
+      role: req.user.isAdmin ? 'admin' : (req.user.role || 'user'),
+      workRole: req.user.workRole || 'general'
     }
   });
 });
@@ -237,4 +235,4 @@ router.put('/change-password', auth, [
   }
 });
 
-module.exports = router; 
+module.exports = router;

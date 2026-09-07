@@ -17,6 +17,9 @@ const auth = async (req, res, next) => {
 
     // Handle test tokens for development
     if (token.startsWith('test-token-')) {
+      if (process.env.NODE_ENV !== 'development') {
+        return res.status(401).json({ message: 'Development tokens are disabled. Please sign in.' });
+      }
       console.log('🧪 Auth middleware - Processing test token');
       
       // Extract email from token (format: test-token-{email} or test-token-{email}@test.com)
@@ -115,7 +118,7 @@ const auth = async (req, res, next) => {
     req.user = {
       ...user.toObject(),
       id: user._id.toString(), // Ensure id field is available
-      role: user.isAdmin ? 'admin' : 'user'
+      role: user.isAdmin ? 'admin' : (user.role || 'user')
     };
 
     console.log('Auth middleware - user details:', {
@@ -153,4 +156,17 @@ const adminAuth = (req, res, next) => auth(req, res, () => {
   return next();
 });
 
-module.exports = { auth, adminAuth };
+const operationsAuth = (req, res, next) => auth(req, res, () => {
+  const canManageOperations = req.user?.isAdmin || ['admin', 'employee'].includes(req.user?.role);
+  if (!canManageOperations) {
+    return res.status(403).json({ message: 'Operations access required.' });
+  }
+
+  if (req.auth?.isImpersonated) {
+    return res.status(403).json({ message: 'Exit customer view before using operations features.' });
+  }
+
+  return next();
+});
+
+module.exports = { auth, adminAuth, operationsAuth };

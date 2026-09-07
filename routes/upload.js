@@ -94,7 +94,8 @@ router.post('/image-base64', auth, async (req, res) => {
   try {
     console.log('Base64 upload request received from:', req.user.email);
 
-    const { image, filename, mimetype } = req.body;
+    const { image, filename, mimetype, mimeType } = req.body;
+    const resolvedMimeType = mimeType || mimetype || 'image/jpeg';
 
     if (!image || !filename) {
       console.log('Missing image data or filename');
@@ -102,7 +103,7 @@ router.post('/image-base64', auth, async (req, res) => {
     }
 
     // Upload to Cloudinary directly from base64
-    const dataURI = `data:${mimetype || 'image/jpeg'};base64,${image}`;
+    const dataURI = `data:${resolvedMimeType};base64,${image}`;
     const result = await cloudinary.uploader.upload(dataURI, {
       folder: 'products',
       public_id: path.parse(filename).name,

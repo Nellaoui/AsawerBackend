@@ -29,8 +29,13 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
+    enum: ['user', 'employee', 'admin'],
     default: 'user'
+  },
+  workRole: {
+    type: String,
+    enum: ['general', 'stock', 'customer_service', 'boss', 'wax_print', 'resin_print', 'quality', 'packing'],
+    default: 'general'
   },
   isActive: {
     type: Boolean,
@@ -60,10 +65,10 @@ const userSchema = new mongoose.Schema({
 
 // Sync role field with isAdmin field for consistency
 userSchema.pre('save', function(next) {
-  // Set role based on isAdmin field
+  // Keep the legacy isAdmin flag compatible while preserving employee accounts.
   if (this.isAdmin) {
     this.role = 'admin';
-  } else {
+  } else if (this.role !== 'employee') {
     this.role = 'user';
   }
   next();
@@ -92,4 +97,4 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
   return candidatePassword === this.password;
 };
 
-module.exports = mongoose.model('User', userSchema); 
+module.exports = mongoose.model('User', userSchema);

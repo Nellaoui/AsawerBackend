@@ -31,6 +31,58 @@ const productSchema = new mongoose.Schema({
     min: 0,
     default: 0
   },
+  // `stock` is the quantity currently available to promise to customers.
+  // New orders move units from stock to reservedStock until they ship or cancel.
+  stock: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  reservedStock: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  lowStockThreshold: {
+    type: Number,
+    min: 0,
+    default: 2
+  },
+  stockLocation: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  fulfillmentPolicy: {
+    type: String,
+    enum: ['stock_only', 'print_on_demand', 'stock_then_print'],
+    default: 'stock_then_print'
+  },
+  printMethod: {
+    type: String,
+    enum: ['none', 'wax', 'resin'],
+    default: 'none'
+  },
+  modelFileStatus: {
+    type: String,
+    enum: ['missing', 'draft', 'print_ready'],
+    default: 'missing'
+  },
+  modelFileName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  modelFileUrl: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  modelVersion: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
   weight: {
     type: Number,
     min: 0,
@@ -99,6 +151,9 @@ const productSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+productSchema.index({ stock: 1, isActive: 1 });
+productSchema.index({ serialNumber: 1 });
 
 // Update the updatedAt field before saving
 productSchema.pre('save', function(next) {

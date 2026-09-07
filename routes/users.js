@@ -5,6 +5,9 @@ const { auth } = require('../middlewares/auth');
 const router = express.Router();
 
 const Notification = require('../models/Notification');
+const ALLOWED_ROLES = ['user', 'employee', 'admin'];
+const ALLOWED_WORK_ROLES = ['general', 'stock', 'customer_service', 'boss', 'wax_print', 'resin_print', 'quality', 'packing'];
+const getRole = (user) => user.isAdmin ? 'admin' : (user.role || 'user');
 
 // GET /users - Get all users (admin only)
 router.get('/', auth, async (req, res) => {
@@ -21,7 +24,8 @@ router.get('/', auth, async (req, res) => {
       name: user.name,
       email: user.email,
       isAdmin: user.isAdmin,
-      role: user.isAdmin ? 'admin' : 'user',
+      role: getRole(user),
+      workRole: user.workRole || 'general',
       isActive: user.isActive !== false, // Default to true if not set
       createdAt: user.createdAt || new Date().toISOString()
     }));
@@ -41,11 +45,17 @@ router.post('/', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admin privileges required.' });
     }
 
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, workRole } = req.body;
 
     // Validate required fields
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+    if (role !== undefined && !ALLOWED_ROLES.includes(role)) {
+      return res.status(400).json({ message: 'Role must be user, employee, or admin' });
+    }
+    if (workRole !== undefined && !ALLOWED_WORK_ROLES.includes(workRole)) {
+      return res.status(400).json({ message: 'Invalid employee work role' });
     }
 
     // Check if user already exists
@@ -60,6 +70,8 @@ router.post('/', auth, async (req, res) => {
       email: email.toLowerCase().trim(),
       password: password, // Don't hash here - let the User model handle it
       isAdmin: role === 'admin',
+      role: role || 'user',
+      workRole: role === 'employee' ? (workRole || 'general') : 'general',
       isActive: true,
       createdAt: new Date()
     });
@@ -72,7 +84,8 @@ router.post('/', auth, async (req, res) => {
       name: newUser.name,
       email: newUser.email,
       isAdmin: newUser.isAdmin,
-      role: newUser.isAdmin ? 'admin' : 'user',
+      role: getRole(newUser),
+      workRole: newUser.workRole || 'general',
       isActive: newUser.isActive,
       createdAt: newUser.createdAt
     };
@@ -98,7 +111,7 @@ router.put('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admin privileges required.' });
     }
 
-    const { name, email, role, isActive } = req.body;
+    const { name, email, role, workRole, isActive } = req.body;
     const userId = req.params.id;
 
     // Find user
@@ -117,11 +130,22 @@ router.put('/:id', auth, async (req, res) => {
         return res.status(400).json({ message: 'User with this email already exists' });
       }
     }
+    if (role !== undefined && !ALLOWED_ROLES.includes(role)) {
+      return res.status(400).json({ message: 'Role must be user, employee, or admin' });
+    }
+    if (workRole !== undefined && !ALLOWED_WORK_ROLES.includes(workRole)) {
+      return res.status(400).json({ message: 'Invalid employee work role' });
+    }
 
     // Update user fields
     if (name) user.name = name.trim();
     if (email) user.email = email.toLowerCase().trim();
-    if (role !== undefined) user.isAdmin = role === 'admin';
+    if (role !== undefined) {
+      user.isAdmin = role === 'admin';
+      user.role = role;
+      if (role !== 'employee') user.workRole = 'general';
+    }
+    if (workRole !== undefined && (role || user.role) === 'employee') user.workRole = workRole;
     if (isActive !== undefined) user.isActive = isActive;
 
     await user.save();
@@ -132,7 +156,8 @@ router.put('/:id', auth, async (req, res) => {
       name: user.name,
       email: user.email,
       isAdmin: user.isAdmin,
-      role: user.isAdmin ? 'admin' : 'user',
+      role: getRole(user),
+      workRole: user.workRole || 'general',
       isActive: user.isActive,
       createdAt: user.createdAt
     };
@@ -207,7 +232,8 @@ router.patch('/:id/status', auth, async (req, res) => {
       name: user.name,
       email: user.email,
       isAdmin: user.isAdmin,
-      role: user.isAdmin ? 'admin' : 'user',
+      role: getRole(user),
+      workRole: user.workRole || 'general',
       isActive: user.isActive,
       createdAt: user.createdAt
     };
@@ -289,7 +315,8 @@ router.put('/:id/profile', auth, async (req, res) => {
       email: user.email,
       phone: user.phone,
       isAdmin: user.isAdmin,
-      role: user.isAdmin ? 'admin' : 'user',
+      role: getRole(user),
+      workRole: user.workRole || 'general',
       isActive: user.isActive,
       createdAt: user.createdAt
     };

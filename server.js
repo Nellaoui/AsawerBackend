@@ -8,6 +8,7 @@ const dns = require('dns');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications');
 
 // Use Google DNS for SRV record resolution (fixes local DNS issues)
 dns.setServers(['8.8.8.8', '8.8.4.4']);
@@ -15,26 +16,24 @@ dns.setServers(['8.8.8.8', '8.8.4.4']);
 const app = express();
 
 // Middleware
-// CORS: React Native apps do not send an Origin header, so the origin
-// function below always allows those requests. Browser-originated requests
-// (web build, Expo web) must match one of the configured env vars.
-const allowedOrigins = [
-  process.env.CORS_ORIGIN_LOCALHOST,
-  process.env.CORS_ORIGIN_NETWORK,
-  process.env.CORS_ORIGIN_WEB,
-].filter(Boolean);
-
-app.use(cors({
-  origin: (origin, callback) => {
-    // No origin = native app (iOS/Android) or server-to-server — always allow.
-    if (!origin) return callback(null, true);
-    // No env vars configured → allow all (development fallback).
-    if (allowedOrigins.length === 0) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error(`Origin ${origin} not allowed by CORS`));
-  },
+// Enable CORS for all origins and handle preflight OPTIONS requests globally
+const corsOptions = {
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Test-Mode'],
   credentials: true
-}));
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// Safety-net: ensure CORS headers appear on every response (including errors)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,X-Test-Mode');
+  next();
+});
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -58,6 +57,7 @@ const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
+  startWorkflowDeadlineNotifier(app);
 });
 
 // We'll create an HTTP server and attach Socket.IO so routes can use io via app.get('io')
@@ -65,11 +65,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: [
-      process.env.CORS_ORIGIN_LOCALHOST,
-      process.env.CORS_ORIGIN_NETWORK,
-      process.env.CORS_ORIGIN_WEB,
-    ],
+    origin: true,
     credentials: true
   }
 });
@@ -85,6 +81,7 @@ io.use(async (socket, next) => {
 
     // Support test-token-... pattern used in HTTP auth middleware for local/dev
     if (token.startsWith('test-token-')) {
+      if (process.env.NODE_ENV !== 'development') return next(new Error('Development tokens are disabled'));
       let email = token.replace('test-token-', '');
       if (!email.includes('@')) {
         if (email.includes('-')) {
@@ -155,7 +152,7 @@ app.set('socketsByUser', socketsByUser);
 // Health check — no DB query, responds immediately.
 // Used by the mobile app to wake the server on startup (Render cold start).
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), inventoryApi: 1, workflowApi: 1, catalogMembershipApi: 2, defaultStock: 0 });
 });
 
 // Routes
@@ -163,6 +160,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/catalogs', require('./routes/catalogs'));
 app.use('/api/orders', require('./routes/orders'));
+app.use('/api/inventory', require('./routes/inventory'));
+app.use('/api/workflow', require('./routes/workflow'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));

@@ -15,11 +15,11 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
  * @returns {Promise<void>}
  */
 async function sendPushNotifications(messages) {
-  if (!messages || messages.length === 0) return;
+  if (!Array.isArray(messages) || messages.length === 0) return;
 
   // Build the payload array Expo expects
   const payload = messages
-    .filter(m => m.pushToken && m.pushToken.startsWith('ExponentPushToken'))
+    .filter(m => m && typeof m.pushToken === 'string' && m.pushToken.startsWith('ExponentPushToken'))
     .map(m => ({
       to: m.pushToken,
       sound: 'default',
@@ -78,11 +78,12 @@ async function sendPushNotifications(messages) {
  */
 async function sendPushToUser(User, userId, title, body, data = {}) {
   try {
+    if (!User || !userId) return;
     const user = await User.findById(userId).select('expoPushTokens');
     if (!user || !user.expoPushTokens || user.expoPushTokens.length === 0) return;
 
     const messages = user.expoPushTokens.map(token => ({
-      pushToken: token,
+      pushToken: typeof token === 'string' ? token : '',
       title,
       body,
       data,

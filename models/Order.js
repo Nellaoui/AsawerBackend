@@ -36,6 +36,31 @@ const orderItemSchema = new mongoose.Schema({
   height: {
     type: String,
     trim: true
+  },
+  stockQuantity: {
+    type: Number,
+    min: 0,
+    default: null
+  },
+  printQuantity: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  productionMethod: {
+    type: String,
+    enum: ['none', 'wax', 'resin', 'undecided'],
+    default: 'none'
+  },
+  fulfillmentStatus: {
+    type: String,
+    enum: ['stock_reserved', 'production', 'ready', 'cancelled'],
+    default: 'stock_reserved'
+  },
+  workflowCaseId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WorkflowCase',
+    default: null
   }
 });
 
@@ -54,8 +79,35 @@ const orderSchema = new mongoose.Schema({
   items: [orderItemSchema],
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
+    enum: ['pending', 'confirmed', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'],
     default: 'pending'
+  },
+  inventoryState: {
+    // Existing orders remain untracked; newly created orders reserve inventory.
+    type: String,
+    enum: ['untracked', 'not_required', 'reserved', 'committed', 'released'],
+    default: 'untracked'
+  },
+  workflowCaseIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WorkflowCase'
+  }],
+  fulfillmentState: {
+    type: String,
+    enum: ['clear', 'blocked', 'in_progress', 'ready'],
+    default: 'clear'
+  },
+  inventoryReservedAt: {
+    type: Date,
+    default: null
+  },
+  inventoryCommittedAt: {
+    type: Date,
+    default: null
+  },
+  inventoryReleasedAt: {
+    type: Date,
+    default: null
   },
   totalAmount: {
     type: Number,

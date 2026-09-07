@@ -6,6 +6,7 @@ const Product = require('../models/Product');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
+const { sendPushToUser } = require('../utils/pushNotification');
 
 // TEMPORARY: Update existing catalogs to be public (GET for easy testing)
 router.get('/migrate-public', async (req, res) => {
@@ -68,10 +69,7 @@ router.get('/', auth, async (req, res) => {
     if (req.user.role === 'admin') {
       // Admins can see all catalogs
       catalogs = await Catalog.find({})
-        .populate({
-          path: 'products',
-          populate: { path: 'relatedProducts' }
-        })
+        .populate('products')
         .sort({ createdAt: -1 });
       console.log('Admin user - showing all catalogs:', catalogs.length);
     } else {
@@ -91,10 +89,7 @@ router.get('/', auth, async (req, res) => {
       
       // Get all catalogs and filter in memory for more reliable ID comparison
       const allCatalogs = await Catalog.find({})
-        .populate({
-          path: 'products',
-          populate: { path: 'relatedProducts' }
-        })
+        .populate('products')
         .sort({ createdAt: -1 });
       
       console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
@@ -146,7 +141,7 @@ router.get('/', auth, async (req, res) => {
         console.log(`❌ [${catalogId}] Not visible to user`);
         return false;
       });
-      
+
       console.log(`📊 Filtered ${catalogs.length} out of ${allCatalogs.length} catalogs for user ${userId}`);
     }
 
@@ -160,11 +155,20 @@ router.get('/', auth, async (req, res) => {
       return {
         ...catalogObj,
         catalogId: catalog._id.toString(),
-        // Transform products to include productId field
-        products: catalogObj.products?.map(product => ({
-          ...product,
-          productId: product._id.toString()
-        })) || []
+        // Transform products to include productId field safely
+        products: catalogObj.products?.map(product => {
+          if (!product) return null;
+          if (typeof product === 'object' && product._id) {
+            return {
+              ...product,
+              productId: product._id.toString()
+            };
+          }
+          return {
+            productId: String(product),
+            _id: String(product)
+          };
+        }).filter(Boolean) || []
       };
     });
 
@@ -206,11 +210,20 @@ router.get('/:id', auth, async (req, res) => {
     const transformedCatalog = {
       ...catalogObj,
       catalogId: catalog._id.toString(),
-      // Transform products to include productId field
-      products: catalogObj.products?.map(product => ({
-        ...product,
-        productId: product._id.toString()
-      })) || []
+      // Transform products to include productId field safely
+      products: catalogObj.products?.map(product => {
+        if (!product) return null;
+        if (typeof product === 'object' && product._id) {
+          return {
+            ...product,
+            productId: product._id.toString()
+          };
+        }
+        return {
+          productId: String(product),
+          _id: String(product)
+        };
+      }).filter(Boolean) || []
     };
 
     res.json(transformedCatalog);
@@ -299,6 +312,24 @@ router.post('/', auth, async (req, res) => {
               io.to(sid).emit('notification', { id: notif._id, title: notif.title, body: notif.body, data: notif.data, createdAt: notif.createdAt });
             }
           }
+        }
+
+        // 🔔 Send push notification to user
+        try {
+          await sendPushToUser(
+            User,
+            user._id,
+            '🎉 New Catalog Available',
+            `"${catalog.name}" has been shared with you`,
+            {
+              type: 'catalog',
+              catalogId: catalog._id.toString(),
+              catalogName: catalog.name,
+              action: 'new_catalog'
+            }
+          );
+        } catch (err) {
+          console.error(`⚠️  Failed to send push to user ${user.email}:`, err);
         }
       }
     } catch (err) {
@@ -413,7 +444,7 @@ router.post('/:id/products', auth, async (req, res) => {
       serialNumber, 
       imageUrl, 
       price = 0, 
-      stock = 1, 
+      stock = 0,
       size,
       clasp,
       showWeight,
@@ -439,7 +470,8 @@ router.post('/:id/products', auth, async (req, res) => {
       weight: Number(req.body.weight) || 0,
       showWeight: showWeight || false,
       height: Number(height) || 0,
-      stock: Number(stock) || 1,
+      stock: Number.isFinite(Number(stock)) && Number(stock) >= 0 ? Number(stock) : 0,
+      reservedStock: 0,
       size: size || null,
       availableSizes: availableSizes || [],
       availableHeights: availableHeights || [],
@@ -497,6 +529,25 @@ router.post('/:id/products', auth, async (req, res) => {
             }
           }
         }
+
+          // 🔔 Send push notification to user
+          try {
+            await sendPushToUser(
+              User,
+              user._id,
+              '➕ New Product Added',
+              `"${product.name}" was added to catalog "${catalog.name}"`,
+              {
+                type: 'product',
+                catalogId: catalog._id.toString(),
+                productId: product._id.toString(),
+                productName: product.name,
+                action: 'product_added'
+              }
+            );
+          } catch (err) {
+            console.error(`⚠️  Failed to send push to user ${user.email}:`, err);
+          }
       }
     } catch (err) {
       console.error('Error notifying users about new product:', err);
@@ -534,6 +585,8 @@ router.post('/:id/products', auth, async (req, res) => {
           serialNumber: (p.serialNumber || p.name || '').toString().replace(/\s+/g, '_'),
           imageUrl: p.imageUrl || p.image || 'https://via.placeholder.com/150',
           price: Number(p.price) || 0,
+          stock: Number.isFinite(Number(p.stock)) && Number(p.stock) >= 0 ? Number(p.stock) : 0,
+          reservedStock: 0,
           size: p.size || null,
           catalogId: catalog._id,
           createdBy: req.user.id
@@ -585,6 +638,73 @@ router.post('/:id/products', auth, async (req, res) => {
           productId: product._id.toString()
         })) || []
       };
+
+      // Notify users about the bulk product addition
+      if (addedIds.length > 0) {
+        try {
+          const io = req.app.get('io');
+          const socketsByUser = req.app.get('socketsByUser');
+
+          let recipients = [];
+          if (catalog.isPublic) {
+            recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+          } else {
+            const ids = (catalog.allowedUserIds || []).map(id => id && id.toString ? id.toString() : String(id));
+            recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+          }
+
+          const productCount = addedIds.length;
+          for (const user of recipients) {
+            const title = `➕ ${productCount} Products Added`;
+            const body = `${productCount} new products were added to catalog "${catalog.name}"`;
+            const notif = await Notification.create({
+              user: user._id,
+              title,
+              body,
+              data: {
+                type: 'product',
+                catalogId: catalog._id.toString(),
+                productCount,
+                action: 'products_added_bulk'
+              }
+            });
+
+            if (io && socketsByUser) {
+              const userSockets = socketsByUser.get(String(user._id));
+              if (userSockets) {
+                for (const sid of userSockets) {
+                  io.to(sid).emit('notification', {
+                    id: notif._id,
+                    title: notif.title,
+                    body: notif.body,
+                    data: notif.data,
+                    createdAt: notif.createdAt
+                  });
+                }
+              }
+            }
+
+            try {
+              await sendPushToUser(
+                User,
+                user._id,
+                title,
+                body,
+                {
+                  type: 'product',
+                  catalogId: catalog._id.toString(),
+                  productCount,
+                  action: 'products_added_bulk'
+                }
+              );
+            } catch (err) {
+              console.error(`⚠️  Failed to send bulk product push to user ${user.email}:`, err);
+            }
+          }
+        } catch (err) {
+          console.error('Error notifying users about bulk product addition:', err);
+        }
+      }
 
       res.status(200).json(transformedCatalog);
     } catch (error) {

@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Notification = require('../models/Notification');
 const { adminAuth } = require('../middlewares/auth');
+const { sendPushToUser } = require('../utils/pushNotification');
 
 const router = express.Router();
 
@@ -110,10 +111,117 @@ router.post('/notify', adminAuth, async (req, res) => {
       }
     }
 
+    // 🔔 Send push notification to user
+    try {
+      await sendPushToUser(User, userId, title, body, data);
+    } catch (err) {
+      console.error('⚠️  Failed to send push notification:', err);
+      // Don't fail the request if push fails
+    }
+
     return res.json({ success: true, notification: notif });
   } catch (error) {
     console.error('Error sending notification', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/admin/notify-user - Send push to specific user
+router.post('/notify-user', adminAuth, async (req, res) => {
+  try {
+    const { userId, title, body, data } = req.body;
+
+    if (!userId || !title || !body) {
+      return res.status(400).json({ message: 'userId, title, and body are required' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Send push notification
+    await sendPushToUser(User, userId, title, body, data || {});
+
+    // Also save as database notification
+    const notification = await Notification.create({
+      user: userId,
+      title,
+      body,
+      data: data || {},
+    });
+
+    // Emit Socket.IO notification for in-app display
+    const io = req.app.get('io');
+    const socketsByUser = req.app.get('socketsByUser');
+    if (io && socketsByUser) {
+      const userSockets = socketsByUser.get(String(userId));
+      if (userSockets) {
+        for (const socketId of userSockets) {
+          io.to(socketId).emit('notification', {
+            id: notification._id,
+            title: notification.title,
+            body: notification.body,
+            data: notification.data,
+            createdAt: notification.createdAt,
+          });
+        }
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Push notification sent',
+      notification 
+    });
+  } catch (error) {
+    console.error('Error sending push notification:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/admin/notify-all - Send push to all users or users with a role
+router.post('/notify-all', adminAuth, async (req, res) => {
+  try {
+    const { title, body, data, role } = req.body;
+
+    if (!title || !body) {
+      return res.status(400).json({ message: 'title and body are required' });
+    }
+
+    // Find users (optionally filter by role)
+    const filter = { isActive: true };
+    if (role === 'admin') {
+      filter.isAdmin = true;
+    } else if (role === 'user') {
+      filter.isAdmin = false;
+    }
+
+    const users = await User.find(filter).select('_id email');
+
+    let sentCount = 0;
+    let errorCount = 0;
+
+    for (const user of users) {
+      try {
+        await sendPushToUser(User, user._id, title, body, data || {});
+        sentCount++;
+      } catch (err) {
+        console.error(`⚠️  Failed to send push to ${user.email}:`, err);
+        errorCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Push notifications sent to ${sentCount} users`,
+      sentCount,
+      errorCount,
+      totalAttempted: users.length
+    });
+  } catch (error) {
+    console.error('Error sending bulk push notifications:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -132,8 +240,9 @@ router.post('/impersonate/:userId', adminAuth, async (req, res) => {
       return res.status(404).json({ message: 'Target user not found' });
     }
 
-    if (targetUser.isAdmin || targetUser.role === 'admin') {
-      return res.status(400).json({ message: 'Admin accounts cannot be opened as customer profiles' });
+    const targetRole = targetUser.isAdmin ? 'admin' : (targetUser.role || 'user');
+    if (targetRole !== 'user') {
+      return res.status(400).json({ message: 'Only customer accounts can be opened as customer profiles' });
     }
 
     if (targetUser.isActive === false) {
