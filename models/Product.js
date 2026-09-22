@@ -138,6 +138,17 @@ const productSchema = new mongoose.Schema({
     ref: 'Catalog',
     required: true
   },
+  // Raised from the portal when somebody notices a product is wrong or
+  // incomplete - a missing photo, the wrong size range, a bad reference.
+  // Customer service can raise one without being able to edit the product.
+  setupIssue: {
+    open: { type: Boolean, default: false },
+    note: { type: String, trim: true, default: '' },
+    reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reportedAt: { type: Date, default: null },
+    resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    resolvedAt: { type: Date, default: null }
+  },
   isActive: {
     type: Boolean,
     default: true

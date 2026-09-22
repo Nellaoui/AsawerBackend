@@ -93,7 +93,7 @@
         <section id="managerOverview" class="card manager-board" data-manager hidden>
           <div class="manager-board-head"><div><p class="eyebrow">Live control tower</p><h3>Boss dashboard</h3><p class="subtitle">Choose a section to focus on. Your tasks are one menu selection away.</p></div><div class="dashboard-controls"><label for="dashboardSection">Show<select id="dashboardSection"><option value="attention">Needs attention</option><option value="team">Team &amp; printing</option><option value="customers">Customers</option><option value="products">Products</option><option value="system">System &amp; audit</option><option value="orders">Order history</option></select></label><button id="refreshBoss" class="button secondary small" type="button">Refresh</button></div></div>
           <div class="stage-summary"><div><span class="muted">Customer service</span><strong id="mCustomer">0</strong></div><div><span class="muted">Needs setup</span><strong id="mBoss">0</strong></div><div><span class="muted">Wax print</span><strong id="mWax">0</strong></div><div><span class="muted">Resin print</span><strong id="mResin">0</strong></div><div><span class="muted">Quality</span><strong id="mQuality">0</strong></div><div><span class="muted">Packing</span><strong id="mPacking">0</strong></div></div>
-          <div class="boss-metrics"><div><span>Late</span><strong id="bossLate">0</strong></div><div><span>Blocked</span><strong id="bossBlocked">0</strong></div><div><span>Print failures</span><strong id="bossFailures">0</strong></div><div><span>Products to finish</span><strong id="bossProducts">0</strong></div><div><span>Avg. task</span><strong id="bossTaskAverage">—</strong></div><div><span>Avg. order</span><strong id="bossOrderAverage">—</strong></div><div><span>Stock w/o product</span><strong id="bossOrphans" style="color:var(--gold)">0</strong></div></div>
+          <div class="boss-metrics"><div><span>Late</span><strong id="bossLate">0</strong></div><div><span>Blocked</span><strong id="bossBlocked">0</strong></div><div><span>Print failures</span><strong id="bossFailures">0</strong></div><div><span>Products to finish</span><strong id="bossProducts">0</strong></div><div><span>Avg. task</span><strong id="bossTaskAverage">—</strong></div><div><span>Avg. order</span><strong id="bossOrderAverage">—</strong></div><div id="bossOrphansTile" role="button" tabindex="0" style="cursor:pointer" title="Open product setup"><span>Stock w/o product</span><strong id="bossOrphans" style="color:var(--gold)">0</strong></div></div>
           <div id="bossError" class="error"></div>
           <div class="boss-grid">
             <section class="boss-panel attention-panel" data-dashboard-section="attention"><div class="boss-panel-head"><div><h3>Needs attention</h3><p>Late and blocked orders first</p></div></div><div class="attention-columns"><div><h4>Late orders</h4><div id="bossLateList" class="compact-list"></div></div><div><h4>Blocked orders</h4><div id="bossBlockedList" class="compact-list"></div></div></div></section>
@@ -264,7 +264,9 @@
     const isAdmin=()=>Boolean(state.user?.isAdmin||state.user?.role==='admin');
     const isBoss=()=>state.user?.role==='employee'&&state.user?.workRole==='boss';
     const isManager=()=>isAdmin()||isBoss();
-    const canManageProducts=()=>isManager()||state.user?.workRole==='stock';
+    // Product setup is wider than stock control: customer service hears about a
+    // wrong or missing product first, so they get the Products tab as well.
+    const canManageProducts=()=>isManager()||['stock','customer_service'].includes(state.user?.workRole);
     const canViewAll=()=>isManager()||state.user?.workRole==='customer_service';
     const userId=()=>String(state.user?.id||state.user?._id||'');
     const assigneeId=item=>String(item?.assignedTo?._id||item?.assignedTo||'');
@@ -313,6 +315,17 @@
     function disconnectLive(){if(socket){try{socket.removeAllListeners();socket.disconnect()}catch{}socket=null}clearTimeout(liveRefreshTimer);pendingLive=0}
     // A tab that slept through updates refetches on focus.
     document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.user){if(!socket||!socket.connected)connectLive();scheduleLiveRefresh()}});
+
+    // The tile is a shortcut: counted stock with no product is fixed on the
+    // product setup page, so send people straight there.
+    document.addEventListener('click',event=>{
+      if(event.target.closest('#bossOrphansTile')&&canManageProducts())setPortalView('products');
+    });
+    document.addEventListener('keydown',event=>{
+      if((event.key==='Enter'||event.key===' ')&&event.target.closest('#bossOrphansTile')&&canManageProducts()){
+        event.preventDefault();setPortalView('products');
+      }
+    });
 
     function enter(){if(!(isAdmin()||state.user?.role==='employee'))return signOut('Operations access is required.');const printingRole=['wax_print','resin_print'].includes(state.user?.workRole);const printingName=state.user?.workRole==='wax_print'?'Wax':'Resin';const customerService=state.user?.workRole==='customer_service';state.scope=customerService?'mine':canViewAll()?'all':'mine';state.status=customerService?'awaiting_validation':'';state.taskKind='order';state.stage='';state.customerId='';state.page=1;$('stageFilter').value='';$('customerFilter').value='';state.portalView=isManager()?'dashboard':'tasks';document.querySelectorAll('[data-manager]').forEach(el=>el.hidden=!isManager());document.querySelectorAll('[data-overview]').forEach(el=>el.hidden=!canViewAll());document.querySelectorAll('[data-acceptance]').forEach(el=>el.hidden=!(isManager()||customerService));$('taskStats').classList.toggle('employee',!isManager());$('newCase').hidden=!(isManager()||customerService);$('userName').textContent=(state.user.name||state.user.email)+' · '+(isBoss()?'Boss':pretty(isAdmin()?'admin':state.user.workRole||state.user.role));$('welcomeTitle').textContent=isManager()?'Operations dashboard':customerService?'Customer service orders':printingRole?printingName+' printing tasks':'My tasks';$('welcomeText').textContent=isManager()?'Monitor every order, assign work and manage production from this dashboard.':customerService?'Review incoming orders, confirm their details, then filter any customer to follow the complete production workflow.':'Only work assigned to you appears here. Start with task number 1.';$('queueTitle').textContent=customerService?'Incoming orders':canViewAll()?'All orders':'My tasks';$('queueSubtitle').textContent=customerService?'Review customer and item details, choose Wax or Resin where needed, then confirm.':canViewAll()?'Every order is shown at its current stage.':'Use Start when you begin and Complete when the work is finished.';authView(true);setActiveNav();connectLive();loadReferenceData().finally(()=>{loadAll();loadUnread()})}
     async function loadReferenceData(){const jobs=[api('/catalogs').then(data=>{state.catalogs=data;$('productCatalog').innerHTML=data.map(c=>'<option value="'+esc(c.id||c._id)+'">'+esc(c.name)+'</option>').join('')}).catch(()=>{}),api('/machines').then(data=>{state.machines=data}).catch(()=>{})];if(isManager())jobs.push(api('/workflow/team').then(data=>{state.users=data}).catch(()=>{}));if(canViewAll())jobs.push(loadCustomerRouting());await Promise.all(jobs)}

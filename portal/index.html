@@ -66,6 +66,8 @@
     body.embedded main { padding:0; }
     [hidden] { display:none!important; }
     @media (max-width:900px) { .stats { grid-template-columns:repeat(2,1fr); } header,.toolbar { flex-wrap:wrap; } main { padding:18px; } }
+    /* Customer service can set products up but not move stock. */
+    body.setup-only [data-stock-only]{display:none!important}
   </style>
   <style>
     :root{--bg:#080b10;--panel:#11161e;--line:#293140;--gold:#f0c75e;--muted:#9da8b8;--red:#fb7185;--green:#4ade80;--blue:#60a5fa}
@@ -128,6 +130,19 @@
           <div class="table-wrap"><table><thead><tr><th>Product</th><th>Available</th><th>Reserved</th><th>Catalog</th><th>Location</th><th>Supply</th><th>Action</th></tr></thead><tbody id="products"></tbody></table></div>
           <div class="footer"><span id="pageLabel" class="muted"></span><div><button id="previous" class="button secondary small">Previous</button> <button id="next" class="button secondary small">Next</button></div></div>
         </section>
+        <section class="panel" id="setupPanel" hidden>
+          <div class="panel-head">
+            <div>
+              <h2>Products with an issue</h2>
+              <p class="subtitle">Missing a photo, a price, a print method, or reported as wrong. Fix these before they can be sold.</p>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="setupTotal" class="muted"></span>
+              <button id="addProduct" class="button small" type="button">+ Add product</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Reference</th><th>What is missing</th><th>Action</th></tr></thead><tbody id="needsSetup"></tbody></table></div>
+        </section>
         <section class="panel" id="orphanPanel" hidden>
           <div class="panel-head">
             <div>
@@ -142,6 +157,33 @@
       </section>
     </main>
   </div>
+
+  <dialog id="productDialog">
+    <form id="productForm">
+      <div class="modal-head"><h2>Add a product</h2><p class="subtitle">Created inactive with no price. Someone with stock rights adds the photo and price before it goes live.</p></div>
+      <div class="modal-body">
+      <div id="productError" class="error" aria-live="assertive"></div>
+      <label>Reference<input id="productSerial" required placeholder="BA 150 5mm" autocomplete="off"></label>
+      <label>Name<input id="productName" required placeholder="Bague 150 5mm"></label>
+      <label>Type
+        <select id="productType" required>
+          <option value="Bague">Bague</option>
+          <option value="Bracelet">Bracelet</option>
+          <option value="Gourmette">Gourmette</option>
+          <option value="Collier">Collier</option>
+          <option value="Boucle">Boucle</option>
+          <option value="Other">Other</option>
+        </select>
+      </label>
+      <label>Sizes (comma separated)<input id="productSizes" placeholder="54, 56, 58"></label>
+      <label>Note<input id="productNote" placeholder="What is still missing?"></label>
+      </div>
+      <div class="modal-foot">
+        <button class="button secondary" type="button" id="productCancel">Cancel</button>
+        <button class="button" type="button" id="productSave">Create product</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="stockDialog">
     <form id="stockForm">
@@ -218,10 +260,17 @@
       try { const data=await api('/auth/me'); state.user=data.user; enterWorkspace(); } catch { signOut('Please sign in again.'); }
     }
     function enterWorkspace() {
-      const canManageProducts=state.user?.isAdmin||state.user?.role==='admin'||(state.user?.role==='employee'&&['stock','boss'].includes(state.user?.workRole));
-      if (!canManageProducts) return signOut('Product management is limited to stock staff and the boss.');
+      // Stock control stays with stock staff and the boss. Customer service is
+      // let in for product setup only - they hear about a wrong or missing
+      // product first - and the stock actions stay hidden from them.
+      const canManageStock=state.user?.isAdmin||state.user?.role==='admin'||(state.user?.role==='employee'&&['stock','boss'].includes(state.user?.workRole));
+      const canSetupProducts=canManageStock||(state.user?.role==='employee'&&state.user?.workRole==='customer_service');
+      state.canManageStock=canManageStock;
+      state.canSetupProducts=canSetupProducts;
+      if (!canSetupProducts) return signOut('Product management is limited to operations staff.');
+      document.body.classList.toggle('setup-only',!canManageStock);
       $('userName').textContent=`${state.user.name || state.user.email} · ${state.user.isAdmin ? 'Admin' : 'Employee'}`;
-      setAuthenticated(true); loadInventory();loadOrphans();
+      setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();
     }
     let inventoryRequestId=0;
     let inventorySearchTimer;
@@ -245,6 +294,92 @@
     }
     function queueInventorySearch(){clearTimeout(inventorySearchTimer);++inventoryRequestId;inventorySearchTimer=setTimeout(()=>{state.page=1;loadInventory({live:true})},300)}
     function renderSummary(s) { $('statProducts').textContent=s.products; $('statAvailable').textContent=s.availableUnits; $('statReserved').textContent=s.reservedUnits; $('statLow').textContent=s.lowStockProducts; $('statOut').textContent=s.outOfStockProducts; }
+    // ---- Products that are not ready to sell ---------------------------
+    async function loadNeedsSetup(){
+      try{
+        const data=await api('/inventory/needs-setup');
+        state.needsSetup=data.products||[];
+        $('setupPanel').hidden=false;
+        $('setupTotal').textContent=data.total?`${data.total} product(s)${data.reported?` · ${data.reported} reported`:''}`:'All products are ready';
+        renderNeedsSetup(data.canPublish);
+      }catch(error){console.error('Could not load products needing setup:',error)}
+    }
+    function missingLabels(p){
+      const out=[];
+      if(p.needsImage)out.push('photo');
+      if(p.needsPrice)out.push('price');
+      if(p.needsDetails)out.push('details');
+      if(p.needsClassification)out.push('print method');
+      return out;
+    }
+    function renderNeedsSetup(canPublish){
+      $('needsSetup').innerHTML=state.needsSetup.length?state.needsSetup.map(p=>{
+        const missing=missingLabels(p);
+        const reported=p.setupIssue&&p.setupIssue.open;
+        const badges=missing.map(m=>`<span class="badge draft">${escapeHtml(m)}</span>`).join(' ')
+          +(reported?` <span class="badge" style="background:#7f1d1d;color:#fff">reported</span>`:'');
+        const note=reported&&p.setupIssue.note?`<br><span class="muted">${escapeHtml(p.setupIssue.note)}</span>`:'';
+        return `<tr><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions">${reported?(canPublish?`<button class="button secondary small" data-issue="${escapeHtml(p._id)}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${escapeHtml(p._id)}" data-open="true">Report issue</button>`}</div></td></tr>`;
+      }).join(''):'<tr><td colspan="4" class="muted">Every product is ready to sell.</td></tr>';
+    }
+    document.addEventListener('click', async event=>{
+      const button=event.target.closest('[data-issue]');
+      if(!button)return;
+      const open=button.dataset.open==='true';
+      let note='';
+      if(open){ note=window.prompt('What is wrong with this product?')||''; if(!note)return; }
+      button.disabled=true;
+      try{
+        await api('/inventory/products/'+button.dataset.issue+'/issue',{method:'PATCH',body:JSON.stringify({open,note})});
+        await loadNeedsSetup();
+      }catch(error){show('workspaceError',error.message);button.disabled=false}
+    });
+
+    // ---- Add a product --------------------------------------------------
+    function openProductDialog(prefill={}){
+      show('productError');
+      $('productSerial').value=prefill.serialNumber||'';
+      $('productName').value=prefill.name||prefill.serialNumber||'';
+      $('productType').value=prefill.type||'Bague';
+      $('productSizes').value=(prefill.sizes||[]).join(', ');
+      $('productNote').value=prefill.note||'';
+      $('productDialog').showModal();
+    }
+    $('addProduct').addEventListener('click',()=>openProductDialog());
+    $('productCancel').addEventListener('click',()=>$('productDialog').close());
+    $('productSave').addEventListener('click', async ()=>{
+      const payload={
+        serialNumber:$('productSerial').value.trim(),
+        name:$('productName').value.trim(),
+        type:$('productType').value,
+        availableSizes:$('productSizes').value.split(',').map(v=>v.trim()).filter(Boolean),
+        note:$('productNote').value.trim()
+      };
+      if(!payload.serialNumber||!payload.name)return show('productError','Reference and name are required.');
+      $('productSave').disabled=true;
+      try{
+        await api('/inventory/products',{method:'POST',body:JSON.stringify(payload)});
+        $('productDialog').close();
+        show('message','Product created. Add the photo and price before publishing.');
+        if(state.pendingOrphanId){
+          await api('/inventory/orphans/'+state.pendingOrphanId,{method:'PATCH',body:JSON.stringify({status:'resolved'})}).catch(()=>{});
+          state.pendingOrphanId=null;
+        }
+        await Promise.all([loadInventory({live:true}),loadNeedsSetup(),loadOrphans()]);
+      }catch(error){show('productError',error.message)}
+      finally{$('productSave').disabled=false}
+    });
+
+    document.addEventListener('click', event=>{
+      const button=event.target.closest('[data-orphan-create]');
+      if(!button)return;
+      const orphan=state.orphans.find(o=>String(o._id)===button.dataset.orphanCreate);
+      if(!orphan)return;
+      const guess=/^GOU/i.test(orphan.reference)?'Gourmette':/^COL/i.test(orphan.reference)?'Collier':/^BRA/i.test(orphan.reference)?'Bracelet':/^BO/i.test(orphan.reference)?'Boucle':'Bague';
+      state.pendingOrphanId=orphan._id;
+      openProductDialog({serialNumber:orphan.reference,name:orphan.reference,type:guess,sizes:orphan.sizes,note:`Counted on ${orphan.sourceSheet||'a stock sheet'}: ${orphan.units} unit(s).`});
+    });
+
     // ---- Counted stock with no product ---------------------------------
     async function loadOrphans(){
       try{
@@ -258,7 +393,7 @@
       }catch(error){console.error('Could not load counted stock:',error)}
     }
     function renderOrphans(dangling){
-      const rows=state.orphans.map(o=>`<tr><td><strong>${escapeHtml(o.reference)}</strong>${o.variant?'<br><span class="muted">'+escapeHtml(o.variant)+'</span>':''}</td><td>${escapeHtml(o.bucket||'—')}</td><td><span class="muted">${escapeHtml((o.sizes||[]).join(', '))}</span></td><td><strong>${o.units}</strong></td><td><span class="muted">${escapeHtml(o.sourceSheet||'')}</span></td><td><div class="actions"><button class="button small" data-orphan="${escapeHtml(o._id)}" data-status="resolved">Product created</button><button class="button secondary small" data-orphan="${escapeHtml(o._id)}" data-status="ignored">Ignore</button></div></td></tr>`);
+      const rows=state.orphans.map(o=>`<tr><td><strong>${escapeHtml(o.reference)}</strong>${o.variant?'<br><span class="muted">'+escapeHtml(o.variant)+'</span>':''}</td><td>${escapeHtml(o.bucket||'—')}</td><td><span class="muted">${escapeHtml((o.sizes||[]).join(', '))}</span></td><td><strong>${o.units}</strong></td><td><span class="muted">${escapeHtml(o.sourceSheet||'')}</span></td><td><div class="actions"><button class="button small" data-orphan-create="${escapeHtml(o._id)}">Create product</button><button class="button secondary small" data-orphan="${escapeHtml(o._id)}" data-status="ignored">Ignore</button></div></td></tr>`);
       for(const d of dangling){
         rows.push(`<tr><td><strong>${escapeHtml(d.displayReference||'—')}</strong><br><span class="muted">stock row, product deleted</span></td><td>—</td><td><span class="muted">${escapeHtml(d.size||'')}</span></td><td><strong>${d.onHandQuantity||0}</strong></td><td><span class="muted">database</span></td><td><span class="muted">Needs a product</span></td></tr>`);
       }
@@ -275,7 +410,7 @@
     });
 
     function renderProducts() {
-      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions">${synced?`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">View sizes</button>`:`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
+      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions">${synced?`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">View sizes</button>`:`<button class="button small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
       $('pageLabel').textContent=`Page ${state.page} of ${state.pages} · ${state.total} products`;
       $('previous').disabled=state.page<=1; $('next').disabled=state.page>=state.pages;
     }

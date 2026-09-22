@@ -23,6 +23,25 @@ const inventoryRoleAuth = (req, res, next) => {
   next();
 };
 
+
+// Product setup is wider than stock control. Customer service hears about a
+// bad or missing product first, so they can view the problem list, flag a
+// product, and create a draft - but never price it, publish it or touch stock.
+const productSetupAuth = (req, res, next) => {
+  const allowed = req.user?.isAdmin
+    || req.user?.role === 'admin'
+    || (req.user?.role === 'employee' && ['stock', 'boss', 'customer_service'].includes(req.user?.workRole));
+  if (!allowed) {
+    return res.status(403).json({ message: 'Product setup is limited to operations staff' });
+  }
+  next();
+};
+
+const canPublishProducts = (user) => Boolean(
+  user?.isAdmin || user?.role === 'admin'
+  || (user?.role === 'employee' && ['stock', 'boss'].includes(user?.workRole))
+);
+
 const safelyNotify = async (operation) => {
   try {
     return await operation();
@@ -174,7 +193,7 @@ router.get('/movements', operationsAuth, inventoryRoleAuth, async (req, res) => 
 // GET /api/inventory/orphans - Counted stock that has no product in the app.
 // These rows come off the paper worksheets; somebody has to create the product
 // before the quantity can become sellable stock.
-router.get('/orphans', operationsAuth, inventoryRoleAuth, async (req, res) => {
+router.get('/orphans', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const status = ['pending', 'resolved', 'ignored'].includes(req.query.status)
       ? req.query.status
@@ -213,7 +232,7 @@ router.get('/orphans', operationsAuth, inventoryRoleAuth, async (req, res) => {
 });
 
 // PATCH /api/inventory/orphans/:id - Mark an orphan resolved or ignored.
-router.patch('/orphans/:id', operationsAuth, inventoryRoleAuth, async (req, res) => {
+router.patch('/orphans/:id', operationsAuth, productSetupAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid id' });
   }
@@ -235,6 +254,134 @@ router.patch('/orphans/:id', operationsAuth, inventoryRoleAuth, async (req, res)
   } catch (error) {
     console.error('Error updating stock orphan:', error);
     res.status(500).json({ message: 'Failed to update' });
+  }
+});
+
+// GET /api/inventory/needs-setup - Products that are not ready to sell.
+// Same rules the boss dashboard uses, but reachable by anyone doing setup.
+router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) => {
+  try {
+    const products = await Product.find({})
+      .select('name serialNumber type imageUrl price isActive stockSyncState fulfillmentPolicy printMethod catalogId availableSizes setupIssue stock')
+      .sort({ updatedAt: -1 })
+      .limit(400)
+      .lean();
+
+    const flagged = products.map((product) => {
+      const needsImage = !product.imageUrl || /placeholder/i.test(product.imageUrl);
+      const needsDetails = product.stockSyncState === 'needs_details' || product.isActive === false;
+      const needsClassification = product.fulfillmentPolicy !== 'stock_only'
+        && (!product.printMethod || product.printMethod === 'none');
+      const needsPrice = !product.price || Number(product.price) <= 0;
+      const reported = Boolean(product.setupIssue?.open);
+      return { ...product, needsImage, needsDetails, needsClassification, needsPrice, reported };
+    }).filter((product) => product.needsImage || product.needsDetails
+      || product.needsClassification || product.needsPrice || product.reported);
+
+    res.json({
+      total: flagged.length,
+      reported: flagged.filter((product) => product.reported).length,
+      canPublish: canPublishProducts(req.user),
+      products: flagged.slice(0, 200)
+    });
+  } catch (error) {
+    console.error('Error fetching products needing setup:', error);
+    res.status(500).json({ message: 'Failed to fetch products needing setup' });
+  }
+});
+
+// POST /api/inventory/products - Create a draft product from the portal.
+// Always inactive with no price: somebody with publish rights finishes it.
+router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const serialNumber = String(req.body?.serialNumber || '').trim();
+    const type = String(req.body?.type || '').trim();
+    if (!name || !serialNumber || !type) {
+      return res.status(400).json({ message: 'Name, reference and type are required' });
+    }
+
+    const duplicate = await Product.findOne({ serialNumber });
+    if (duplicate) {
+      return res.status(409).json({
+        message: `A product with reference "${serialNumber}" already exists`,
+        productId: duplicate._id
+      });
+    }
+
+    const sizes = Array.isArray(req.body?.availableSizes)
+      ? req.body.availableSizes.map((size) => String(size).trim()).filter(Boolean)
+      : [];
+
+    const product = await Product.create({
+      name,
+      serialNumber,
+      type,
+      description: String(req.body?.description || '').trim()
+        || 'Created from the operations portal. Add the image, price and customer-facing details before publishing.',
+      imageUrl: 'https://via.placeholder.com/150',
+      price: 0,
+      stock: 0,
+      reservedStock: 0,
+      availableSizes: sizes,
+      catalogId: req.body?.catalogId && mongoose.Types.ObjectId.isValid(req.body.catalogId)
+        ? req.body.catalogId
+        : undefined,
+      createdBy: req.user.id,
+      isActive: false,
+      fulfillmentPolicy: 'stock_then_print',
+      stockSyncState: 'needs_details',
+      setupIssue: {
+        open: true,
+        note: String(req.body?.note || '').trim() || 'New product created from the portal. Needs image, price and details.',
+        reportedBy: req.user.id,
+        reportedAt: new Date()
+      }
+    });
+
+    res.status(201).json(product);
+  } catch (error) {
+    console.error('Error creating product from portal:', error);
+    res.status(500).json({ message: 'Failed to create the product' });
+  }
+});
+
+// PATCH /api/inventory/products/:id/issue - Raise or clear a setup issue.
+router.patch('/products/:id/issue', operationsAuth, productSetupAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid id' });
+  }
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const open = req.body?.open !== false;
+    if (open) {
+      product.setupIssue = {
+        open: true,
+        note: String(req.body?.note || '').trim().slice(0, 500),
+        reportedBy: req.user.id,
+        reportedAt: new Date(),
+        resolvedBy: null,
+        resolvedAt: null
+      };
+    } else {
+      // Only somebody who could fix it may declare it fixed.
+      if (!canPublishProducts(req.user)) {
+        return res.status(403).json({ message: 'Only stock staff or an admin can close a product issue' });
+      }
+      product.setupIssue = {
+        ...(product.setupIssue || {}),
+        open: false,
+        resolvedBy: req.user.id,
+        resolvedAt: new Date()
+      };
+    }
+    await product.save();
+    res.json({ productId: product._id, setupIssue: product.setupIssue });
+  } catch (error) {
+    console.error('Error updating product issue:', error);
+    res.status(500).json({ message: 'Failed to update the product issue' });
   }
 });
 
