@@ -7,13 +7,17 @@ const Product = require('../models/Product');
 const Notification = require('../models/Notification');
 const InventoryMovement = require('../models/InventoryMovement');
 const WorkflowCase = require('../models/WorkflowCase');
+const AuditLog = require('../models/AuditLog');
+const StockVariant = require('../models/StockVariant');
 const User = require('../models/User');
 const { auth, operationsAuth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
-const { notifyCaseAssignment, notifyLowStock } = require('../utils/workflowNotifications');
+const { planPrintTask, planStockTask } = require('../utils/orderWorkflowRoute');
+const { notifyCaseAssignment, notifyTaskRemoved } = require('../utils/workflowNotifications');
 const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalogMembership');
+const { normalizeStockSize } = require('../utils/stockReference');
 
 const safelyNotify = async (operation) => {
   try {
@@ -38,9 +42,22 @@ const canManageOperations = (user) => Boolean(
   user?.isAdmin || ['admin', 'employee'].includes(user?.role)
 );
 
+const canViewAllOrders = (user) => Boolean(
+  user?.isAdmin
+  || user?.role === 'admin'
+  || (user?.role === 'employee' && ['customer_service', 'boss'].includes(user?.workRole))
+);
+
+const canValidateOrders = (user) => Boolean(
+  user?.isAdmin
+  || user?.role === 'admin'
+  || (user?.role === 'employee' && ['customer_service', 'boss'].includes(user?.workRole))
+);
+
 const quantitiesByProduct = (items) => {
   const quantities = new Map();
   for (const item of items) {
+    if (item.inventoryVariantId) continue;
     const productId = String(item.productId?._id || item.productId);
     const quantity = item.stockQuantity === null || item.stockQuantity === undefined
       ? Number(item.quantity)
@@ -54,6 +71,35 @@ const releaseReservedInventory = async (order, actorId, session) => {
   if (order.inventoryState !== 'reserved') return;
 
   const movements = [];
+  for (const item of order.items) {
+    const quantity = Number(item.stockQuantity || 0);
+    if (!item.inventoryVariantId || quantity <= 0) continue;
+    const variant = await StockVariant.findOneAndUpdate(
+      { _id: item.inventoryVariantId, reservedQuantity: { $gte: quantity } },
+      { $inc: { reservedQuantity: -quantity } },
+      { new: true, session }
+    );
+    if (!variant) {
+      const error = new Error('Reserved size inventory is inconsistent; cancellation was stopped');
+      error.statusCode = 409;
+      throw error;
+    }
+    await Product.updateMany(
+      { _id: { $in: variant.productIds } },
+      { $inc: { stock: quantity, reservedStock: -quantity } },
+      { session }
+    );
+    movements.push({
+      productId: item.productId,
+      orderId: order._id,
+      actorId,
+      type: 'order_released',
+      quantity,
+      stockBefore: Math.max(variant.onHandQuantity - variant.reservedQuantity - quantity, 0),
+      stockAfter: Math.max(variant.onHandQuantity - variant.reservedQuantity, 0),
+      notes: `Size ${item.size || variant.size} released from cancelled order #${String(order._id).slice(-6).toUpperCase()}`
+    });
+  }
   for (const [productId, quantity] of quantitiesByProduct(order.items)) {
     const product = await Product.findOneAndUpdate(
       { _id: productId, reservedStock: { $gte: quantity } },
@@ -88,6 +134,30 @@ const releaseReservedInventory = async (order, actorId, session) => {
 
 const commitReservedInventory = async (order, session) => {
   if (order.inventoryState !== 'reserved') return;
+
+  for (const item of order.items) {
+    const quantity = Number(item.stockQuantity || 0);
+    if (!item.inventoryVariantId || quantity <= 0) continue;
+    const variant = await StockVariant.findOneAndUpdate(
+      {
+        _id: item.inventoryVariantId,
+        reservedQuantity: { $gte: quantity },
+        onHandQuantity: { $gte: quantity }
+      },
+      { $inc: { reservedQuantity: -quantity, onHandQuantity: -quantity } },
+      { new: true, session }
+    );
+    if (!variant) {
+      const error = new Error('Reserved size inventory is inconsistent; shipment was stopped');
+      error.statusCode = 409;
+      throw error;
+    }
+    await Product.updateMany(
+      { _id: { $in: variant.productIds } },
+      { $inc: { reservedStock: -quantity } },
+      { session }
+    );
+  }
 
   for (const [productId, quantity] of quantitiesByProduct(order.items)) {
     const result = await Product.updateOne(
@@ -192,10 +262,106 @@ const validateOrderData = (req, res, next) => {
   next();
 };
 
+const createFulfillmentCases = async (order, productById, actorId, session) => {
+  const createdCases = [];
+  for (const orderItem of order.items) {
+    const product = productById.get(String(orderItem.productId));
+    if (!product) {
+      const error = new Error(`Product for ${orderItem.name} no longer exists`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (Number(orderItem.stockQuantity || 0) > 0) {
+      const assignedTo = await findTeamAssignee('stock', session);
+      const now = new Date();
+      const stockPlan = planStockTask(orderItem);
+      const cases = await WorkflowCase.create([{
+        orderId: order._id,
+        orderItemId: orderItem._id,
+        customerId: order.userId,
+        productId: product._id,
+        requestType: 'stock_pick',
+        requestedName: product.name,
+        quantity: stockPlan.quantity,
+        status: 'stock_picking',
+        assignedTeam: 'stock',
+        assignedTo: assignedTo?._id || null,
+        assignedAt: assignedTo ? now : null,
+        stageQueuedAt: now,
+        taskKind: 'order',
+        priority: 'normal',
+        targetMinutes: targetMinutesForTeam('stock'),
+        requirements: stockPlan.requirements,
+        productionMethod: 'undecided',
+        customerApproval: 'not_required',
+        createdBy: actorId,
+        history: [{ actorId, action: 'created_after_validation', toStatus: 'stock_picking', note: `Customer Service approved order ${order.orderNumber || order._id}` }]
+      }], { session });
+      const stockCase = cases[0];
+      orderItem.workflowCaseId = stockCase._id;
+      order.workflowCaseIds.push(stockCase._id);
+      createdCases.push(stockCase);
+    }
+
+    if (!orderItem.printQuantity) continue;
+    const { status: caseStatus, assignedTeam, hasPortalModel } = planPrintTask(product, orderItem);
+    const assignedTo = await findTeamAssignee(assignedTeam, session);
+    const now = new Date();
+    const cases = await WorkflowCase.create([{
+      orderId: order._id,
+      orderItemId: orderItem._id,
+      customerId: order.userId,
+      productId: product._id,
+      requestType: 'print_required',
+      requestedName: product.name,
+      quantity: orderItem.printQuantity,
+      status: caseStatus,
+      assignedTeam,
+      assignedTo: assignedTo?._id || null,
+      assignedAt: assignedTo ? now : null,
+      stageQueuedAt: now,
+      targetMinutes: targetMinutesForTeam(assignedTeam),
+      requirements: `Print ${orderItem.printQuantity} unit(s), size ${orderItem.size || '-'}, for this order using the manufacturer application. If the 3D file is unavailable, mark this task Blocked and give the reason.`,
+      productionMethod: orderItem.productionMethod,
+      customerApproval: 'not_required',
+      modelVersions: hasPortalModel ? [{
+        version: product.modelVersion || 1,
+        fileName: product.modelFileName || 'Approved model',
+        fileUrl: product.modelFileUrl,
+        uploadedBy: product.createdBy || actorId,
+        isPrintReady: true
+      }] : [],
+      createdBy: actorId,
+      history: [{ actorId, action: 'created_after_validation', toStatus: caseStatus, note: `Customer Service approved order ${order.orderNumber || order._id}. ${Number(orderItem.stockQuantity || 0) === 0 ? 'No finished stock was reserved; stock picking was automatically skipped.' : 'Reserved stock has a separate picking task.'}` }]
+    }], { session });
+    const printCase = cases[0];
+    orderItem.workflowCaseId = printCase._id;
+    order.workflowCaseIds.push(printCase._id);
+    createdCases.push(printCase);
+  }
+  return createdCases;
+};
+
 // POST / - Create order (authenticated users)
 router.post('/', auth, validateOrderData, async (req, res) => {
   try {
     const { catalogId, items, notes } = req.body;
+    const requestedSubmissionKey = String(req.get('Idempotency-Key') || req.body.submissionKey || '').trim().slice(0, 160);
+    const submissionKey = requestedSubmissionKey || `server-${new mongoose.Types.ObjectId()}`;
+    const existingOrder = requestedSubmissionKey
+      ? await Order.findOne({ userId: req.user.id, submissionKey: requestedSubmissionKey })
+      : null;
+    if (existingOrder) {
+      await existingOrder.populate('catalogId', 'name description');
+      await existingOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
+      return res.status(200).json(existingOrder);
+    }
+    const orderNumber = `ASW-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
+    const orderingUser = await User.findById(req.user.id).select('forcedProductionMethod').lean();
+    const forcedProductionMethod = ['wax', 'resin'].includes(orderingUser?.forcedProductionMethod)
+      ? orderingUser.forcedProductionMethod
+      : null;
 
     // Check if catalog exists and user has access
     const catalog = await Catalog.findById(catalogId);
@@ -214,7 +380,6 @@ router.post('/', auth, validateOrderData, async (req, res) => {
 
     const session = await mongoose.startSession();
     let order;
-    const lowStockProducts = new Map();
 
     try {
       await session.withTransaction(async () => {
@@ -238,12 +403,22 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           throw error;
         }
 
-        const requestedQuantities = quantitiesByProduct(items);
-        const allocationByProduct = new Map();
-        const reservedProducts = new Map();
+        const stockVariants = await StockVariant.find({
+          productIds: { $in: uniqueProductIds }
+        }).session(session);
+        const variantsByProduct = new Map(uniqueProductIds.map(productId => [productId, []]));
+        for (const variant of stockVariants) {
+          for (const linkedProductId of variant.productIds || []) {
+            const productId = String(linkedProductId);
+            if (variantsByProduct.has(productId)) variantsByProduct.get(productId).push(variant);
+          }
+        }
 
-        for (const [productId, quantity] of requestedQuantities) {
+        const allocationByItem = [];
+        for (const [itemIndex, item] of items.entries()) {
+          const productId = String(item.productId);
           const product = productById.get(productId);
+          const quantity = Number(item.quantity);
           // Catalog.products is the authoritative membership list shown to the
           // customer. A product can be featured in more than one catalog while
           // Product.catalogId continues to identify its primary catalog.
@@ -258,10 +433,40 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             throw error;
           }
 
-          // Existing products without a saved rule use available stock first and
-          // automatically route any shortage to production.
+          const productVariants = variantsByProduct.get(productId) || [];
+          const sizeKey = normalizeStockSize(item.size);
+          if (productVariants.length && !sizeKey) {
+            const error = new Error(`Choose a size for ${product.name} so its exact stock can be checked`);
+            error.statusCode = 400;
+            error.code = 'SIZE_REQUIRED';
+            throw error;
+          }
+
+          const sizeCandidates = productVariants.filter(variant => variant.sizeKey === sizeKey);
+          // A customer-level route is authoritative for every printable item in
+          // their orders. Otherwise the product classification chooses the queue.
+          const preferredMethod = forcedProductionMethod
+            || (['wax', 'resin'].includes(product.printMethod) ? product.printMethod : null);
+          let selectedVariant = preferredMethod
+            ? sizeCandidates.find(variant => variant.printMethod === preferredMethod)
+            : null;
+          // Once a product (or customer) has an explicit route, never borrow
+          // finished stock from the opposite material. A Wax-only product with
+          // no Wax stock becomes Wax print work, and the same applies to Resin.
+          if (!selectedVariant && sizeCandidates.length && !preferredMethod) {
+            selectedVariant = [...sizeCandidates].sort((left, right) => {
+              const leftAvailable = Math.max(left.onHandQuantity - left.reservedQuantity, 0);
+              const rightAvailable = Math.max(right.onHandQuantity - right.reservedQuantity, 0);
+              return rightAvailable - leftAvailable || left.printMethod.localeCompare(right.printMethod);
+            })[0];
+          }
+
+          // Sheet-backed products use exact reference + size + Wax/Resin stock.
+          // Older manual products keep their scalar-stock fallback until linked.
           const policy = product.fulfillmentPolicy || 'stock_then_print';
-          const available = Number.isFinite(product.stock) ? product.stock : 0;
+          const available = selectedVariant
+            ? Math.max(selectedVariant.onHandQuantity - selectedVariant.reservedQuantity, 0)
+            : (productVariants.length ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
           const stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
           const printQuantity = quantity - stockQuantity;
 
@@ -272,46 +477,66 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             throw error;
           }
 
-          allocationByProduct.set(productId, { stockQuantity, printQuantity });
-
+          let reservedProduct = null;
+          let reservedVariant = null;
           if (stockQuantity > 0) {
-            const reservedProduct = await Product.findOneAndUpdate(
-              { _id: productId, isActive: true, stock: { $gte: stockQuantity } },
-              { $inc: { stock: -stockQuantity, reservedStock: stockQuantity } },
-              { new: true, session }
-            );
+            if (selectedVariant) {
+              reservedVariant = await StockVariant.findOneAndUpdate(
+                {
+                  _id: selectedVariant._id,
+                  $expr: { $gte: [{ $subtract: ['$onHandQuantity', '$reservedQuantity'] }, stockQuantity] }
+                },
+                { $inc: { reservedQuantity: stockQuantity } },
+                { new: true, session }
+              );
+              if (reservedVariant) {
+                await Product.updateMany(
+                  { _id: { $in: reservedVariant.productIds } },
+                  { $inc: { stock: -stockQuantity, reservedStock: stockQuantity } },
+                  { session }
+                );
+                selectedVariant.reservedQuantity = reservedVariant.reservedQuantity;
+              }
+            } else {
+              reservedProduct = await Product.findOneAndUpdate(
+                { _id: productId, isActive: true, stock: { $gte: stockQuantity } },
+                { $inc: { stock: -stockQuantity, reservedStock: stockQuantity } },
+                { new: true, session }
+              );
+            }
 
-            if (!reservedProduct) {
+            if (!reservedVariant && !reservedProduct) {
               const error = new Error(`Stock for ${product.name} changed while this order was being placed. Please try again.`);
               error.statusCode = 409;
               error.code = 'STOCK_CHANGED';
               throw error;
             }
-            reservedProducts.set(productId, reservedProduct);
           }
-          const stockAfterReservation = reservedProducts.get(productId) || product;
-          if (policy !== 'print_on_demand' && Number(stockAfterReservation.stock) <= Number(stockAfterReservation.lowStockThreshold ?? 2)) {
-            lowStockProducts.set(productId, stockAfterReservation.toObject());
-          }
+
+          allocationByItem[itemIndex] = {
+            stockQuantity,
+            printQuantity,
+            inventoryVariantId: selectedVariant?._id || null,
+            productionMethod: selectedVariant?.printMethod || preferredMethod || (printQuantity > 0 ? 'undecided' : 'none'),
+            stockBefore: available,
+            stockAfter: available - stockQuantity
+          };
         }
 
         let totalAmount = 0;
-        const remainingStock = new Map([...allocationByProduct].map(([productId, allocation]) => [productId, allocation.stockQuantity]));
-        const orderItems = items.map(item => {
+        const orderItems = items.map((item, itemIndex) => {
           const product = productById.get(String(item.productId));
-          const productId = String(product._id);
           const quantity = Number(item.quantity);
-          const stockQuantity = Math.min(remainingStock.get(productId) || 0, quantity);
-          const printQuantity = quantity - stockQuantity;
-          remainingStock.set(productId, (remainingStock.get(productId) || 0) - stockQuantity);
+          const allocation = allocationByItem[itemIndex];
           totalAmount += (product.price || 0) * quantity;
           return {
             productId: product._id,
+            inventoryVariantId: allocation.inventoryVariantId,
             quantity,
-            stockQuantity,
-            printQuantity,
-            productionMethod: printQuantity > 0 && ['wax', 'resin'].includes(product.printMethod) ? product.printMethod : (printQuantity > 0 ? 'undecided' : 'none'),
-            fulfillmentStatus: printQuantity > 0 ? 'production' : 'stock_reserved',
+            stockQuantity: allocation.stockQuantity,
+            printQuantity: allocation.printQuantity,
+            productionMethod: allocation.productionMethod,
+            fulfillmentStatus: 'awaiting_validation',
             price: product.price || 0,
             weight: product.weight || 0,
             name: product.name,
@@ -321,9 +546,10 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           };
         });
 
-        const hasReservedStock = [...allocationByProduct.values()].some(allocation => allocation.stockQuantity > 0);
-        const hasProduction = orderItems.some(item => item.printQuantity > 0);
+        const hasReservedStock = allocationByItem.some(allocation => allocation.stockQuantity > 0);
         const createdOrders = await Order.create([{
+          orderNumber,
+          submissionKey,
           userId: req.user.id,
           catalogId,
           items: orderItems,
@@ -331,100 +557,54 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           notes,
           inventoryState: hasReservedStock ? 'reserved' : 'not_required',
           inventoryReservedAt: hasReservedStock ? new Date() : null,
-          fulfillmentState: (hasReservedStock || hasProduction) ? 'in_progress' : 'clear'
+          fulfillmentState: 'blocked',
+          validationStatus: 'pending'
         }], { session });
         order = createdOrders[0];
 
-        const movements = [...allocationByProduct]
-          .filter(([, allocation]) => allocation.stockQuantity > 0)
-          .map(([productId, allocation]) => {
+        const movements = allocationByItem
+          .map((allocation, itemIndex) => ({ allocation, item: items[itemIndex] }))
+          .filter(({ allocation }) => allocation.stockQuantity > 0)
+          .map(({ allocation, item }) => {
           const quantity = allocation.stockQuantity;
-          const reservedProduct = reservedProducts.get(productId);
           return {
-            productId,
+            productId: item.productId,
             orderId: order._id,
             actorId: req.user.id,
             type: 'order_reserved',
             quantity: -quantity,
-            stockBefore: reservedProduct.stock + quantity,
-            stockAfter: reservedProduct.stock,
-            notes: `Reserved for order #${String(order._id).slice(-6).toUpperCase()}`
+            stockBefore: allocation.stockBefore,
+            stockAfter: allocation.stockAfter,
+            notes: `Size ${item.size || '-'} reserved for order #${String(order._id).slice(-6).toUpperCase()}`
           };
         });
         if (movements.length) await InventoryMovement.create(movements, { session });
 
-        for (const orderItem of order.items) {
-          const product = productById.get(String(orderItem.productId));
-          if (orderItem.stockQuantity > 0) {
-            const assignedTo = await findTeamAssignee('stock', session);
-            const now = new Date();
-            const stockCases = await WorkflowCase.create([{
-              orderId: order._id,
-              orderItemId: orderItem._id,
-              customerId: req.user.id,
-              productId: product._id,
-              requestType: 'stock_pick',
-              requestedName: product.name,
-              quantity: orderItem.stockQuantity,
-              status: 'stock_picking',
-              assignedTeam: 'stock',
-              assignedTo: assignedTo?._id || null,
-              assignedAt: assignedTo ? now : null,
-              stageQueuedAt: now,
-              taskKind: 'order',
-              priority: 'normal',
-              targetMinutes: targetMinutesForTeam('stock'),
-              requirements: `Collect ${orderItem.stockQuantity} reserved unit(s) from stock for this order.`,
-              productionMethod: 'undecided',
-              customerApproval: 'not_required',
-              createdBy: req.user.id,
-              history: [{ actorId: req.user.id, action: 'created_from_order', toStatus: 'stock_picking', note: `Stock reserved for order #${String(order._id).slice(-6).toUpperCase()}` }]
-            }], { session });
-            const stockCase = stockCases[0];
-            orderItem.workflowCaseId = stockCase._id;
-            order.workflowCaseIds.push(stockCase._id);
-          }
-
-          if (!orderItem.printQuantity) continue;
-          const hasReadyModel = product.modelFileStatus === 'print_ready' && product.modelFileUrl && ['wax', 'resin'].includes(product.printMethod);
-          const caseStatus = hasReadyModel ? 'ready_to_print' : 'boss_review';
-          const assignedTeam = teamForStatus(caseStatus, orderItem.productionMethod);
-          const assignedTo = await findTeamAssignee(assignedTeam, session);
-          const now = new Date();
-          const createdCases = await WorkflowCase.create([{
-            orderId: order._id,
-            orderItemId: orderItem._id,
-            customerId: req.user.id,
-            productId: product._id,
-            requestType: hasReadyModel ? 'print_required' : 'model_file_missing',
-            requestedName: product.name,
-            quantity: orderItem.printQuantity,
-            status: caseStatus,
-            assignedTeam,
-            assignedTo: assignedTo?._id || null,
-            assignedAt: assignedTo ? now : null,
-            stageQueuedAt: now,
-            targetMinutes: targetMinutesForTeam(assignedTeam),
-            requirements: hasReadyModel
-              ? `Print ${orderItem.printQuantity} unit(s) for this order.`
-              : `The order needs ${orderItem.printQuantity} unit(s), but no approved print-ready 3D file is attached to this product.`,
-            productionMethod: orderItem.productionMethod,
-            customerApproval: 'not_required',
-            modelVersions: hasReadyModel ? [{
-              version: product.modelVersion || 1,
-              fileName: product.modelFileName || 'Approved model',
-              fileUrl: product.modelFileUrl,
-              uploadedBy: product.createdBy || req.user.id,
-              isPrintReady: true
-            }] : [],
-            createdBy: req.user.id,
-            history: [{ actorId: req.user.id, action: 'created_from_order', toStatus: caseStatus, note: `Generated for order #${String(order._id).slice(-6).toUpperCase()}` }]
-          }], { session });
-          const workflowCase = createdCases[0];
-          orderItem.workflowCaseId = workflowCase._id;
-          order.workflowCaseIds.push(workflowCase._id);
-        }
-        if (order.workflowCaseIds.length) await order.save({ session });
+        const validationAssignee = await findTeamAssignee('customer_service', session);
+        const now = new Date();
+        const validationCases = await WorkflowCase.create([{
+          orderId: order._id,
+          customerId: req.user.id,
+          requestType: 'order_validation',
+          requestedName: `Validate order ${order.orderNumber}`,
+          quantity: order.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+          status: 'awaiting_validation',
+          assignedTeam: 'customer_service',
+          assignedTo: validationAssignee?._id || null,
+          assignedAt: validationAssignee ? now : null,
+          stageQueuedAt: now,
+          taskKind: 'order',
+          priority: 'normal',
+          targetMinutes: targetMinutesForTeam('customer_service'),
+          requirements: 'Confirm customer, product reference, size, quantity and Wax/Resin route before production starts.',
+          productionMethod: 'undecided',
+          customerApproval: 'not_required',
+          createdBy: req.user.id,
+          history: [{ actorId: req.user.id, action: 'order_submitted_for_validation', toStatus: 'awaiting_validation', note: `Order ${order.orderNumber} is waiting for Customer Service` }]
+        }], { session });
+        order.validationCaseId = validationCases[0]._id;
+        order.workflowCaseIds.push(validationCases[0]._id);
+        await order.save({ session });
       });
     } finally {
       await session.endSession();
@@ -432,7 +612,6 @@ router.post('/', auth, validateOrderData, async (req, res) => {
 
     const assignedCases = await WorkflowCase.find({ _id: { $in: order.workflowCaseIds || [] }, assignedTo: { $ne: null } });
     await Promise.all(assignedCases.map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
-    await Promise.all([...lowStockProducts.values()].map(product => safelyNotify(() => notifyLowStock(req.app, product, String(order._id)))));
     
     // 🔔 Send push notification to user on order creation
     try {
@@ -536,6 +715,15 @@ router.post('/', auth, validateOrderData, async (req, res) => {
 
     res.status(201).json(orderWithSizes);
   } catch (error) {
+    if (error?.code === 11000) {
+      const submissionKey = String(req.get('Idempotency-Key') || req.body.submissionKey || '').trim().slice(0, 160);
+      const existingOrder = submissionKey
+        ? await Order.findOne({ userId: req.user.id, submissionKey })
+          .populate('catalogId', 'name description')
+          .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type')
+        : null;
+      if (existingOrder) return res.status(200).json(existingOrder);
+    }
     console.error('Error creating order:', error);
     res.status(error.statusCode || 500).json({
       message: error.message || 'Server error',
@@ -544,9 +732,350 @@ router.post('/', auth, validateOrderData, async (req, res) => {
   }
 });
 
+// POST /:id/confirm-legacy-workflow - route an order made by the older mobile
+// backend without creating another set of stock or print tasks.
+router.post('/:id/confirm-legacy-workflow', operationsAuth, async (req, res) => {
+  if (!canValidateOrders(req.user)) {
+    return res.status(403).json({ message: 'Only Customer Service or the boss can confirm an older order' });
+  }
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid order ID' });
+  }
+
+  const routes = Array.isArray(req.body.items) ? req.body.items : [];
+  const routeByItem = new Map(routes.map(item => [String(item.itemId || ''), String(item.productionMethod || '')]));
+  const session = await mongoose.startSession();
+  let confirmedOrder;
+  const reassignedCases = [];
+  const newStockCases = [];
+  try {
+    await session.withTransaction(async () => {
+      reassignedCases.length = 0;
+      newStockCases.length = 0;
+      const order = await Order.findById(req.params.id).session(session);
+      if (!order) {
+        const error = new Error('Order not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (order.validationCaseId || order.validatedAt) {
+        const error = new Error('This order already uses the Customer Service validation workflow');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (!['pending', 'confirmed'].includes(order.status)) {
+        const error = new Error('Only an open order can be routed to printing');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const printItems = order.items.filter(item => Number(item.printQuantity || 0) > 0);
+      if (!printItems.length || routes.length !== printItems.length || routeByItem.size !== printItems.length) {
+        const error = new Error('Choose Wax or Resin for every printable item in this order');
+        error.statusCode = 400;
+        throw error;
+      }
+      const customer = await User.findById(order.userId).select('forcedProductionMethod').session(session);
+      if (!customer) {
+        const error = new Error('Confirm the customer account before routing this order');
+        error.statusCode = 409;
+        throw error;
+      }
+      const products = await Product.find({ _id: { $in: order.items.map(item => item.productId) } })
+        .select('_id serialNumber').session(session);
+      const productById = new Map(products.map(product => [String(product._id), product]));
+      for (const item of order.items) {
+        const product = productById.get(String(item.productId));
+        const quantity = Number(item.quantity);
+        const stockQuantity = Number(item.stockQuantity);
+        const printQuantity = Number(item.printQuantity);
+        if (!product || !String(product.serialNumber || '').trim()) {
+          const error = new Error(`${item.name} needs a valid product reference before confirmation`);
+          error.statusCode = 409;
+          throw error;
+        }
+        if (!Number.isSafeInteger(quantity) || quantity < 1
+          || !Number.isSafeInteger(stockQuantity) || stockQuantity < 0
+          || !Number.isSafeInteger(printQuantity) || printQuantity < 0
+          || stockQuantity + printQuantity !== quantity) {
+          const error = new Error(`Review the stock and print quantities for ${product.serialNumber}`);
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+      const forcedMethod = ['wax', 'resin'].includes(customer.forcedProductionMethod)
+        ? customer.forcedProductionMethod : null;
+      const now = new Date();
+      const auditRoutes = [];
+
+      for (const item of printItems) {
+        const method = routeByItem.get(String(item._id));
+        if (!['wax', 'resin'].includes(method)) {
+          const error = new Error(`Choose Wax or Resin for ${item.name}, size ${item.size || '-'}`);
+          error.statusCode = 400;
+          throw error;
+        }
+        if (forcedMethod && method !== forcedMethod) {
+          const error = new Error(`This customer account requires ${forcedMethod} printing`);
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const workflowCase = await WorkflowCase.findOne({
+          _id: item.workflowCaseId,
+          orderId: order._id,
+          orderItemId: item._id
+        }).session(session);
+        if (!workflowCase || workflowCase.status !== 'boss_review'
+          || workflowCase.requestType !== 'model_file_missing'
+          || workflowCase.isBlocked) {
+          const error = new Error(`The print task for ${item.name}, size ${item.size || '-'} has changed. Review it before routing.`);
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const team = teamForStatus('ready_to_print', method);
+        const assignee = await findTeamAssignee(team, session);
+        if (!assignee) {
+          const error = new Error(`No active ${method} printing employee is available`);
+          error.statusCode = 409;
+          throw error;
+        }
+        const previousAssignee = workflowCase.assignedTo;
+        const previousStartedAt = workflowCase.startedAt;
+        workflowCase.status = 'ready_to_print';
+        workflowCase.requestType = 'print_required';
+        workflowCase.productionMethod = method;
+        workflowCase.assignedTeam = team;
+        workflowCase.assignedTo = assignee._id;
+        workflowCase.assignedAt = now;
+        workflowCase.startedAt = null;
+        workflowCase.completedAt = null;
+        workflowCase.stageQueuedAt = now;
+        workflowCase.targetMinutes = targetMinutesForTeam(team);
+        workflowCase.requirements = `Print ${item.printQuantity} unit(s), size ${item.size || '-'}, for this order using the manufacturer application. If the 3D file is unavailable, mark this task Blocked and give the reason.`;
+        workflowCase.history.push({
+          actorId: req.user.id,
+          action: 'legacy_order_routed',
+          fromStatus: 'boss_review',
+          toStatus: 'ready_to_print',
+          note: `Customer Service confirmed ${method} for ${item.name}, size ${item.size || '-'}`,
+          workMinutes: previousStartedAt
+            ? Math.max(Math.round((now - previousStartedAt) / 60000), 0)
+            : null
+        });
+        await workflowCase.save({ session });
+        item.productionMethod = method;
+        item.fulfillmentStatus = 'production';
+        auditRoutes.push({ itemId: String(item._id), caseId: String(workflowCase._id), method });
+        reassignedCases.push({ workflowCase, previousAssignee });
+      }
+
+      let stockAssignee = null;
+      for (const item of order.items) {
+        if (Number(item.stockQuantity || 0) <= 0) continue;
+        const existingStockCase = await WorkflowCase.findOne({
+          orderId: order._id,
+          orderItemId: item._id,
+          requestType: 'stock_pick'
+        }).session(session);
+        if (existingStockCase) continue;
+        if (!stockAssignee) stockAssignee = await findTeamAssignee('stock', session);
+        if (!stockAssignee) {
+          const error = new Error('No active stock employee is available to verify this order');
+          error.statusCode = 409;
+          throw error;
+        }
+        const stockPlan = planStockTask(item);
+        const cases = await WorkflowCase.create([{
+          orderId: order._id,
+          orderItemId: item._id,
+          customerId: order.userId,
+          productId: item.productId,
+          requestType: 'stock_pick',
+          requestedName: item.name,
+          quantity: stockPlan.quantity,
+          status: 'stock_picking',
+          assignedTeam: 'stock',
+          assignedTo: stockAssignee._id,
+          assignedAt: now,
+          stageQueuedAt: now,
+          taskKind: 'order',
+          targetMinutes: targetMinutesForTeam('stock'),
+          requirements: stockPlan.requirements,
+          productionMethod: 'undecided',
+          customerApproval: 'not_required',
+          createdBy: req.user.id,
+          history: [{ actorId: req.user.id, action: 'legacy_stock_check_created', toStatus: 'stock_picking', note: 'Existing order confirmed without changing stock quantities' }]
+        }], { session });
+        order.workflowCaseIds.push(cases[0]._id);
+        newStockCases.push(cases[0]);
+      }
+
+      order.validationStatus = 'approved';
+      order.validatedBy = req.user.id;
+      order.validatedAt = now;
+      order.validationNote = String(req.body.note || 'Older order confirmed by Customer Service').slice(0, 1000);
+      if (order.status === 'pending') order.status = 'confirmed';
+      order.fulfillmentState = 'in_progress';
+      await order.save({ session });
+      await AuditLog.create([{
+        category: 'workflow',
+        action: 'legacy_order_confirmed',
+        actorId: req.user.id,
+        entityType: 'Order',
+        entityId: String(order._id),
+        orderId: String(order._id),
+        details: { routes: auditRoutes, stockCheckTasksCreated: newStockCases.length, stockChecksAutomaticallySkipped: order.items.filter(item => Number(item.stockQuantity || 0) === 0).length, stockChanged: false }
+      }], { session });
+      confirmedOrder = order;
+    });
+
+    await Promise.all(reassignedCases.flatMap(({ workflowCase, previousAssignee }) => [
+      previousAssignee ? safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase)) : Promise.resolve(),
+      safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))
+    ]));
+    await Promise.all(newStockCases.map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
+    res.json(confirmedOrder);
+  } catch (error) {
+    console.error('Error confirming older order workflow:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to confirm older order workflow' });
+  } finally {
+    await session.endSession();
+  }
+});
+
+// POST /:id/validate - Customer Service approves an order before work starts.
+router.post('/:id/validate', operationsAuth, async (req, res) => {
+  if (!canValidateOrders(req.user)) {
+    return res.status(403).json({ message: 'Only Customer Service or the boss can validate an order' });
+  }
+
+  const session = await mongoose.startSession();
+  let approvedOrder;
+  let fulfillmentCases = [];
+  try {
+    await session.withTransaction(async () => {
+      const order = await Order.findById(req.params.id).session(session);
+      if (!order) {
+        const error = new Error('Order not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (order.validationStatus !== 'pending') {
+        const error = new Error(order.validationStatus === 'approved' ? 'This order is already validated' : 'This order cannot be validated');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const validationCase = await WorkflowCase.findById(order.validationCaseId).session(session);
+      if (!validationCase || validationCase.status !== 'awaiting_validation') {
+        const error = new Error('The Customer Service validation task is missing or already closed');
+        error.statusCode = 409;
+        throw error;
+      }
+      const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
+      if (!manager && String(validationCase.assignedTo || '') !== String(req.user.id)) {
+        const error = new Error('This validation is assigned to another Customer Service employee');
+        error.statusCode = 403;
+        throw error;
+      }
+      const customer = mongoose.Types.ObjectId.isValid(String(order.userId))
+        ? await User.findById(order.userId).select('forcedProductionMethod').session(session).lean()
+        : null;
+      if (!customer) {
+        const error = new Error('Confirm the customer account before approving this order');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const productIds = [...new Set(order.items.map(item => String(item.productId)))];
+      const products = await Product.find({ _id: { $in: productIds } }).session(session);
+      const productById = new Map(products.map(product => [String(product._id), product]));
+      const submittedRoutes = new Map((Array.isArray(req.body.items) ? req.body.items : [])
+        .map(item => [String(item.itemId || ''), String(item.productionMethod || '')]));
+
+      for (const item of order.items) {
+        const product = productById.get(String(item.productId));
+        if (!product || !String(product.serialNumber || '').trim()) {
+          const error = new Error(`${item.name} needs a valid product reference before approval`);
+          error.statusCode = 409;
+          throw error;
+        }
+        if (!Number.isSafeInteger(Number(item.quantity)) || Number(item.quantity) < 1) {
+          const error = new Error(`${product.name} needs a valid quantity`);
+          error.statusCode = 409;
+          throw error;
+        }
+        if (item.printQuantity > 0) {
+          const forcedMethod = ['wax', 'resin'].includes(customer.forcedProductionMethod)
+            ? customer.forcedProductionMethod
+            : null;
+          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id)) || item.productionMethod;
+          if (!['wax', 'resin'].includes(chosenMethod)) {
+            const error = new Error(`Choose Wax or Resin for ${product.serialNumber}, size ${item.size || '-'}`);
+            error.statusCode = 409;
+            throw error;
+          }
+          item.productionMethod = chosenMethod;
+        }
+        item.fulfillmentStatus = item.printQuantity > 0 ? 'production' : 'stock_reserved';
+      }
+
+      fulfillmentCases = await createFulfillmentCases(order, productById, req.user.id, session);
+      const now = new Date();
+      // Reviewing and confirming is one Customer Service action. Record a zero-minute
+      // work interval when the employee confirms without pressing Start first.
+      if (!validationCase.startedAt) validationCase.startedAt = now;
+      validationCase.status = 'completed';
+      validationCase.completedAt = now;
+      validationCase.history.push({
+        actorId: req.user.id,
+        action: 'order_validated',
+        fromStatus: 'awaiting_validation',
+        toStatus: 'completed',
+        note: String(req.body.note || 'Customer, references, sizes, quantities and production routes confirmed').slice(0, 1000),
+        workMinutes: validationCase.startedAt ? Math.max(Math.round((now - validationCase.startedAt) / 60000), 0) : null
+      });
+      await validationCase.save({ session });
+
+      order.validationStatus = 'approved';
+      order.validatedBy = req.user.id;
+      order.validatedAt = now;
+      order.validationNote = String(req.body.note || '').slice(0, 1000);
+      order.status = 'confirmed';
+      order.fulfillmentState = fulfillmentCases.length ? 'in_progress' : 'ready';
+      await order.save({ session });
+      approvedOrder = order;
+    });
+
+    await Promise.all(fulfillmentCases
+      .filter(workflowCase => workflowCase.assignedTo)
+      .map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
+    await sendPushToUser(
+      User,
+      approvedOrder.userId,
+      '✅ Order confirmed',
+      `Order ${approvedOrder.orderNumber || approvedOrder._id} passed Customer Service validation`,
+      { type: 'order', orderId: String(approvedOrder._id), status: 'confirmed' }
+    ).catch(error => console.error('Order validation push failed:', error));
+
+    await approvedOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
+    res.json(approvedOrder);
+  } catch (error) {
+    console.error('Error validating order:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to validate order' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 // GET / - List all orders (admin only)
 router.get('/', operationsAuth, async (req, res) => {
   try {
+    if (!canViewAllOrders(req.user)) {
+      return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can view full order history' });
+    }
     const { status, userId, catalogId, page = 1, limit = 20 } = req.query;
     
     const filters = {};

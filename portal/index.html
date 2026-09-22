@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Asawer Stock Portal</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090909; --panel:#151515; --line:#2c2c2c; --gold:#e8bf55; --muted:#999; --red:#f87171; --green:#4ade80; --blue:#60a5fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:#f5f5f5; font:14px/1.45 Inter,Segoe UI,Arial,sans-serif; }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; }
+    .shell { max-width:1440px; margin:auto; min-height:100vh; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:22px 28px; border-bottom:1px solid var(--line); }
+    h1,h2,p { margin:0; }
+    h1 { font-size:25px; }
+    .subtitle,.muted { color:var(--muted); }
+    .subtitle { margin-top:4px; }
+    main { padding:28px; }
+    .card,.panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; }
+    .login { max-width:430px; margin:10vh auto; padding:28px; display:grid; gap:16px; }
+    label { display:grid; gap:7px; font-weight:650; }
+    input,select { width:100%; background:#101010; color:#fff; border:1px solid #3b3b3b; border-radius:9px; padding:12px; outline:none; }
+    input:focus,select:focus { border-color:var(--gold); box-shadow:0 0 0 3px #e8bf5522; }
+    .button { border:0; border-radius:9px; background:var(--gold); color:#111; font-weight:800; padding:11px 16px; }
+    .button.secondary { background:#202020; color:#eee; border:1px solid #3a3a3a; }
+    .button.small { padding:7px 10px; font-size:12px; }
+    .error,.success { display:none; border-radius:9px; padding:11px 13px; }
+    .error { color:#fecaca; border:1px solid #7f1d1d; background:#451a1a66; }
+    .success { color:#bbf7d0; border:1px solid #166534; background:#14532d55; }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(140px,1fr)); gap:12px; margin-bottom:20px; }
+    .stat { padding:17px; }
+    .stat strong { display:block; font-size:27px; margin-top:8px; }
+    .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:16px; }
+    .toolbar input { flex:1; }
+    .check { display:flex; align-items:center; gap:7px; white-space:nowrap; font-weight:600; }
+    .check input { width:auto; }
+    .panel { overflow:hidden; margin-bottom:20px; }
+    .panel-head { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:18px 20px; border-bottom:1px solid var(--line); }
+    .table-wrap { overflow:auto; }
+    table { width:100%; min-width:950px; border-collapse:collapse; }
+    th,td { padding:12px 14px; border-bottom:1px solid #252525; text-align:left; }
+    th { color:#aaa; background:#1b1b1b; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+    .stock { display:inline-block; min-width:44px; text-align:center; padding:6px 10px; border-radius:999px; font-weight:800; background:#14532d66; }
+    .stock.low { background:#713f1266; color:#fde68a; }
+    .stock.out { background:#7f1d1d66; color:#fecaca; }
+    .actions { display:flex; gap:7px; flex-wrap:wrap; }
+    .footer { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 18px; }
+    .history { list-style:none; margin:0; padding:0; }
+    .history li { display:flex; justify-content:space-between; gap:16px; padding:13px 18px; border-bottom:1px solid #252525; }
+    .positive { color:var(--green); } .negative { color:var(--red); }
+    .badge { display:inline-flex; align-items:center; gap:5px; margin-top:6px; padding:3px 8px; border-radius:999px; background:#17365d66; color:#bfdbfe; font-size:11px; font-weight:800; }
+    .badge.draft { background:#713f1266; color:#fde68a; }
+    .variant-table { min-width:0; }
+    .variant-table th:first-child,.variant-table td:first-child { position:static; background:transparent; }
+    .variant-table th:first-child { background:#171e28; }
+    dialog { width:min(600px,calc(100vw - 32px)); border:1px solid #444; border-radius:14px; background:#171717; color:#fff; padding:0; }
+    dialog::backdrop { background:#000b; }
+    .modal-head,.modal-body,.modal-foot { padding:18px 20px; }
+    .modal-head { border-bottom:1px solid var(--line); }
+    .modal-body { display:grid; gap:14px; }
+    .modal-foot { display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--line); }
+    .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    body.embedded .shell { max-width:none; }
+    body.embedded header,body.embedded #loginCard { display:none!important; }
+    body.embedded main { padding:0; }
+    [hidden] { display:none!important; }
+    @media (max-width:900px) { .stats { grid-template-columns:repeat(2,1fr); } header,.toolbar { flex-wrap:wrap; } main { padding:18px; } }
+  </style>
+  <style>
+    :root{--bg:#080b10;--panel:#11161e;--line:#293140;--gold:#f0c75e;--muted:#9da8b8;--red:#fb7185;--green:#4ade80;--blue:#60a5fa}
+    body{min-width:320px;background:var(--bg);font:16px/1.55 Inter,"Segoe UI",Arial,sans-serif;letter-spacing:-.01em}.shell{max-width:none}header{position:sticky;top:0;z-index:10;padding:16px clamp(18px,3vw,42px);background:#090d13eb;border-color:#ffffff12;box-shadow:0 14px 35px #0005;backdrop-filter:blur(18px)}main{max-width:1600px;margin:auto;padding:28px clamp(18px,3vw,42px) 48px}h1{font-size:1.2rem}.eyebrow{margin:0 0 5px;color:var(--gold);font-size:.72rem;font-weight:850;letter-spacing:.13em;text-transform:uppercase}.inventory-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:22px}.inventory-intro h2{font-size:clamp(1.35rem,2vw,1.75rem);letter-spacing:-.035em}.sync-text{color:#798597;font-size:.76rem;white-space:nowrap}
+    .card,.panel{border-color:#ffffff14;background:linear-gradient(155deg,#151b24f2,#0e131af2);box-shadow:0 18px 46px #00000026}.button{min-height:40px;border-radius:10px;background:linear-gradient(135deg,#f4d477,#dbaa38);box-shadow:0 8px 22px #d8a72f1e;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease}.button:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 11px 28px #d8a72f2b}.button:active:not(:disabled){transform:none}.button.secondary{background:#151b24;border-color:#303a49;box-shadow:none}.button.secondary:hover:not(:disabled){background:#1b2330;border-color:#49566a}.button:disabled{opacity:.48;cursor:wait}.button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #f0c75e55;outline-offset:2px}
+    input,select{min-height:44px;border-color:#333d4d;background:#0c1118;color:#f7f8fa}.stats{gap:12px;margin-bottom:22px}.stat{position:relative;overflow:hidden;min-height:116px;padding:18px 19px;border-radius:15px;transition:transform .2s ease,border-color .2s ease}.stat::after{content:"";position:absolute;right:-22px;bottom:-28px;width:90px;height:90px;border-radius:50%;background:#f0c75e0d}.stat:hover{transform:translateY(-2px);border-color:#f0c75e42}.stat span{font-size:.78rem;font-weight:700}.stat strong{font-size:1.85rem;letter-spacing:-.05em}.stat:nth-child(2)::after{background:#4ade8012}.stat:nth-child(3)::after{background:#60a5fa12}.stat:nth-child(4)::after{background:#fb923c12}.stat:nth-child(5)::after{background:#fb718512}
+    .toolbar{padding:10px;border:1px solid #ffffff10;border-radius:13px;background:#0c1118}.toolbar input[type="text"],.toolbar>input{border-color:transparent;background:transparent}.toolbar>input:focus{box-shadow:none}.panel{overflow:hidden;border-radius:16px}.panel-head{padding:19px 21px;background:linear-gradient(90deg,#ffffff04,transparent)}.panel-head h2{font-size:1.05rem}.table-wrap{overscroll-behavior-inline:contain;scrollbar-color:#4b5666 #10151d}table{min-width:1020px}th{position:sticky;top:0;z-index:2;padding:12px 14px;background:#171e28;color:#9da8b8;font-size:.7rem}td{padding:14px;border-color:#ffffff0d}tbody tr{transition:background .16s ease}tbody tr:hover{background:#ffffff05}th:first-child,td:first-child{position:sticky;left:0;z-index:1;background:#121820}th:first-child{z-index:3;background:#171e28}.stock{background:#123c2666}.stock.low{background:#5b401866}.stock.out{background:#5d1d2766}.history li{padding:15px 20px;border-color:#ffffff0d;transition:background .16s ease}.history li:hover{background:#ffffff04}.footer{border-top:1px solid #ffffff0d}
+    dialog{border-color:#ffffff20;background:linear-gradient(160deg,#171e28,#0f141c);box-shadow:0 35px 120px #000d}dialog[open]{animation:dialog-in .2s ease-out}.modal-head{background:#ffffff03}.modal-foot{background:#10161e}@keyframes dialog-in{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}.loading-cell{height:210px;padding:18px!important}.skeleton-block{height:100%;min-height:170px;border-radius:12px;background:linear-gradient(100deg,#111721 25%,#1a2230 42%,#111721 60%);background-size:300% 100%;animation:shimmer 1.35s infinite}@keyframes shimmer{to{background-position:-150% 0}}
+    body.embedded{background:transparent}body.embedded .shell{min-height:auto}body.embedded main{max-width:none;padding:2px}body.embedded #workspace{animation:workspace-in .24s ease-out}@keyframes workspace-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+    @media(max-width:900px){body{font-size:15px}.stats{grid-template-columns:1fr 1fr}.stat{min-height:104px;padding:15px}.inventory-intro{align-items:flex-start;flex-direction:column}.toolbar{padding:8px;align-items:stretch}.toolbar>input{min-width:100%}.toolbar .button{flex:1}main{padding:20px 14px 34px}}
+    /* Match the workflow portal's restrained, accessible controls. */
+    button{touch-action:manipulation}.button:active:not(:disabled){transform:scale(.98);transition-duration:.08s}
+    .stat::after{content:none}.stat:hover{transform:none}.stat{transition:border-color .16s ease}
+    .badge{font-size:.75rem}th{font-size:.78rem}.sync-text{font-size:.8rem}
+    input::placeholder{color:#aeb9c9}.check{min-height:44px;padding:0 8px}.check input{width:20px;height:20px;min-height:20px;accent-color:var(--gold)}
+    .button:focus-visible,a.button:focus-visible,input:focus-visible,select:focus-visible,.check:focus-within{outline:3px solid var(--gold);outline-offset:3px}
+    .toolbar:focus-within{border-color:#f0c75e88}.toolbar>input:focus-visible{outline-offset:0;border-radius:8px}
+    @media(max-width:900px){.button,.button.small,a.button{min-height:44px;font-size:.875rem;display:inline-flex;align-items:center;justify-content:center}}
+    @media(prefers-reduced-transparency:reduce){header{backdrop-filter:none;background:#090d13}}
+    @media(prefers-contrast:more){:root{--muted:#d8e0ec;--line:#7b8797}.card,.panel,.toolbar{border-color:var(--line)}.button.secondary{border-color:#9ca9ba}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div><h1>Asawer Stock Portal</h1><p class="subtitle">Live inventory shared with the phone app</p></div>
+      <div style="display:flex;gap:9px;align-items:center"><a href="/admin/workflow" class="button secondary">Operations workflow</a><div id="account" hidden><span id="userName" class="muted"></span> <button id="logout" class="button secondary small">Sign out</button></div></div>
+    </header>
+    <main>
+      <section id="loginCard" class="card login">
+        <div><h2>Sign in</h2><p class="subtitle">Use an administrator or employee account.</p></div>
+        <div id="loginError" class="error" role="alert"></div>
+        <form id="loginForm" style="display:grid;gap:14px">
+          <label>Email<input id="email" type="email" autocomplete="username" required></label>
+          <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+          <button class="button" type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <section id="workspace" hidden>
+        <div id="message" class="success" style="margin-bottom:16px" aria-live="polite"></div>
+        <div id="workspaceError" class="error" style="margin-bottom:16px" aria-live="assertive"></div>
+        <div class="inventory-intro"><div><p class="eyebrow">Product control</p><h2>Finished product stock</h2><p class="subtitle">Update quantities and production rules from one place.</p></div><span id="inventorySync" class="sync-text">Preparing products…</span></div>
+        <div class="stats">
+          <div class="card stat"><span class="muted">Products</span><strong id="statProducts">0</strong></div>
+          <div class="card stat"><span class="muted">Available units</span><strong id="statAvailable">0</strong></div>
+          <div class="card stat"><span class="muted">Reserved</span><strong id="statReserved" style="color:var(--blue)">0</strong></div>
+          <div class="card stat"><span class="muted">Low stock</span><strong id="statLow">0</strong></div>
+          <div class="card stat"><span class="muted">Out of stock</span><strong id="statOut">0</strong></div>
+          <div class="card stat"><span class="muted">No product yet</span><strong id="statOrphans" style="color:var(--gold)">0</strong></div>
+        </div>
+        <form id="searchForm" class="toolbar">
+          <input id="search" type="search" aria-label="Search products by name, serial number, type or location" placeholder="Search product, serial number, type, or location">
+          <label class="check"><input id="lowStock" type="checkbox"> Low stock only</label>
+          <button id="refresh" class="button secondary" type="button">Refresh</button>
+        </form>
+        <section class="panel">
+          <div class="panel-head"><div><h2>Existing products</h2><p class="subtitle">Select a product to add or adjust stock. No duplicate products are created.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Available</th><th>Reserved</th><th>Catalog</th><th>Location</th><th>Supply</th><th>Action</th></tr></thead><tbody id="products"></tbody></table></div>
+          <div class="footer"><span id="pageLabel" class="muted"></span><div><button id="previous" class="button secondary small">Previous</button> <button id="next" class="button secondary small">Next</button></div></div>
+        </section>
+        <section class="panel" id="orphanPanel" hidden>
+          <div class="panel-head">
+            <div>
+              <h2>Counted stock with no product</h2>
+              <p class="subtitle">These references were counted in the workshop but do not exist in the app yet. Create the product, then mark the row done.</p>
+            </div>
+            <span id="orphanTotal" class="muted"></span>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Kind</th><th>Sizes</th><th>Units</th><th>Sheet</th><th>Action</th></tr></thead><tbody id="orphans"></tbody></table></div>
+        </section>
+        <section class="panel"><div class="panel-head"><div><h2>Recent stock history</h2><p class="subtitle">Manual changes, order reservations, and releases.</p></div></div><ul id="history" class="history"></ul></section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="stockDialog">
+    <form id="stockForm">
+      <div class="modal-head"><h2 id="dialogTitle">Adjust stock</h2><p id="dialogProduct" class="subtitle"></p></div>
+      <div class="modal-body">
+        <div id="stockError" class="error"></div>
+        <label>Action<select id="action"><option value="receive">Add units</option><option value="remove">Remove units</option><option value="set">Set exact total</option></select></label>
+        <label>Quantity<input id="quantity" type="number" min="0" step="1" required></label>
+        <div class="two"><label>Low-stock warning<input id="threshold" type="number" min="0" step="1"></label><label>Storage location<input id="location" maxlength="120" placeholder="Shelf A-03"></label></div>
+        <label>Reference or note<input id="notes" maxlength="500" placeholder="Supplier delivery or receipt number"></label>
+        <p id="preview" class="muted"></p>
+      </div>
+      <div class="modal-foot"><button id="cancel" type="button" class="button secondary">Cancel</button><button type="submit" class="button">Save stock</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="productionDialog">
+    <form id="productionForm">
+      <div class="modal-head"><h2>Production rule</h2><p id="productionProduct" class="subtitle"></p></div>
+      <div class="modal-body">
+        <div id="productionError" class="error"></div>
+        <label>Supply rule<select id="fulfillmentPolicy"><option value="stock_only">Stock only</option><option value="stock_then_print">Use stock, then print the shortage</option><option value="print_on_demand">Always print on demand</option></select></label>
+        <label>Printing method<select id="printMethod"><option value="none">No printing</option><option value="wax">Wax</option><option value="resin">Resin</option></select></label>
+        <p class="muted">A printable product also needs an approved model file in the Operations workflow.</p>
+      </div>
+      <div class="modal-foot"><button id="cancelProduction" type="button" class="button secondary">Cancel</button><button type="submit" class="button">Save rule</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="damageDialog">
+    <form id="damageForm">
+      <div class="modal-head"><h2>Report damaged item</h2><p id="damageProduct" class="subtitle"></p></div>
+      <div class="modal-body">
+        <div id="damageError" class="error"></div>
+        <label>Damaged quantity<input id="damageQuantity" type="number" min="1" step="1" value="1" required></label>
+        <label>Order ID (optional)<input id="damageOrder" placeholder="Use this when the damaged unit belongs to an order"></label>
+        <label>What happened?<input id="damageNotes" maxlength="500" required></label>
+        <p class="muted">The damaged unit is recorded and one replacement case is sent to modeling or the correct print queue.</p>
+      </div>
+      <div class="modal-foot"><button id="cancelDamage" type="button" class="button secondary">Cancel</button><button type="submit" class="button">Report and route replacement</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="variantsDialog">
+    <div class="modal-head"><h2>Stock by size</h2><p id="variantsProduct" class="subtitle"></p></div>
+    <div class="modal-body">
+      <div class="table-wrap"><table class="variant-table"><thead><tr><th>Method</th><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th><th>Source</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
+      <p class="muted">These quantities come from the Wax and Resin sheets. The order system checks this exact size before it creates employee tasks.</p>
+    </div>
+    <div class="modal-foot"><button id="closeVariants" type="button" class="button">Close</button></div>
+  </dialog>
+
+  <script>
+    const embedded = new URLSearchParams(location.search).get('embedded') === '1';
+    if (embedded) document.body.classList.add('embedded');
+    const API = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:5000/api' : 'https://asawerbackend.onrender.com/api';
+    const state = { token: localStorage.getItem('authToken') || '', user: null, products: [], page: 1, pages: 1, total: 0, selected: null };
+    const noticeTimers = {};
+    const $ = id => document.getElementById(id);
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const show = (id, text='') => { const el=$(id); clearTimeout(noticeTimers[id]); el.textContent=text; el.style.display=text ? 'block' : 'none'; if(text&&id==='message') noticeTimers[id]=setTimeout(()=>{el.style.display='none';},4500); };
+    async function api(path, options={}) {
+      const headers = { 'Content-Type':'application/json', ...(options.headers || {}) };
+      if (state.token) headers.Authorization = `Bearer ${state.token}`;
+      const response = await fetch(`${API}${path}`, { ...options, headers });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+      return data;
+    }
+    function setAuthenticated(value) { $('loginCard').hidden=value; $('workspace').hidden=!value; $('account').hidden=!value; }
+    function signOut(message='') { state.token=''; state.user=null; localStorage.removeItem('authToken'); setAuthenticated(false); if(message) show('loginError',message); }
+    async function restoreSession() {
+      if (!state.token) return setAuthenticated(false);
+      try { const data=await api('/auth/me'); state.user=data.user; enterWorkspace(); } catch { signOut('Please sign in again.'); }
+    }
+    function enterWorkspace() {
+      const canManageProducts=state.user?.isAdmin||state.user?.role==='admin'||(state.user?.role==='employee'&&['stock','boss'].includes(state.user?.workRole));
+      if (!canManageProducts) return signOut('Product management is limited to stock staff and the boss.');
+      $('userName').textContent=`${state.user.name || state.user.email} · ${state.user.isAdmin ? 'Admin' : 'Employee'}`;
+      setAuthenticated(true); loadInventory();loadOrphans();
+    }
+    let inventoryRequestId=0;
+    let inventorySearchTimer;
+    async function loadInventory(options={}) {
+      const live=options.live===true;
+      const requestId=++inventoryRequestId;
+      show('workspaceError');
+      if (!live&&!state.products.length) $('products').innerHTML='<tr><td colspan="7" class="loading-cell"><div class="skeleton-block" aria-label="Loading products"></div></td></tr>';
+      $('refresh').disabled=true;
+      const params=new URLSearchParams({ page:String(state.page), limit:'25' });
+      if($('search').value.trim()) params.set('search',$('search').value.trim());
+      if($('lowStock').checked) params.set('lowStock','true');
+      try {
+        const [inventory,movements]=await Promise.all([api(`/inventory?${params}`),live?Promise.resolve(null):api('/inventory/movements?limit=30')]);
+        if(requestId!==inventoryRequestId)return;
+        state.products=inventory.products; state.pages=inventory.pagination.pages; state.total=inventory.pagination.total;
+        renderSummary(inventory.summary); renderProducts(); if(movements)renderHistory(movements);
+        $('inventorySync').textContent='Updated '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      } catch(error) { if(requestId!==inventoryRequestId)return; if(/token|authorization|sign in/i.test(error.message)) return signOut(error.message); show('workspaceError',error.message); $('inventorySync').textContent='Sync paused'; }
+      finally { if(requestId===inventoryRequestId)$('refresh').disabled=false; }
+    }
+    function queueInventorySearch(){clearTimeout(inventorySearchTimer);++inventoryRequestId;inventorySearchTimer=setTimeout(()=>{state.page=1;loadInventory({live:true})},300)}
+    function renderSummary(s) { $('statProducts').textContent=s.products; $('statAvailable').textContent=s.availableUnits; $('statReserved').textContent=s.reservedUnits; $('statLow').textContent=s.lowStockProducts; $('statOut').textContent=s.outOfStockProducts; }
+    // ---- Counted stock with no product ---------------------------------
+    async function loadOrphans(){
+      try{
+        const data=await api('/inventory/orphans?status=pending&limit=200');
+        state.orphans=data.orphans||[];
+        const pending=data.summary?.pending||{rows:0,units:0};
+        $('statOrphans').textContent=pending.units||0;
+        $('orphanPanel').hidden=state.orphans.length===0 && (data.danglingVariants||[]).length===0;
+        $('orphanTotal').textContent=state.orphans.length?`${state.orphans.length} references · ${pending.units} units waiting`:'';
+        renderOrphans(data.danglingVariants||[]);
+      }catch(error){console.error('Could not load counted stock:',error)}
+    }
+    function renderOrphans(dangling){
+      const rows=state.orphans.map(o=>`<tr><td><strong>${escapeHtml(o.reference)}</strong>${o.variant?'<br><span class="muted">'+escapeHtml(o.variant)+'</span>':''}</td><td>${escapeHtml(o.bucket||'—')}</td><td><span class="muted">${escapeHtml((o.sizes||[]).join(', '))}</span></td><td><strong>${o.units}</strong></td><td><span class="muted">${escapeHtml(o.sourceSheet||'')}</span></td><td><div class="actions"><button class="button small" data-orphan="${escapeHtml(o._id)}" data-status="resolved">Product created</button><button class="button secondary small" data-orphan="${escapeHtml(o._id)}" data-status="ignored">Ignore</button></div></td></tr>`);
+      for(const d of dangling){
+        rows.push(`<tr><td><strong>${escapeHtml(d.displayReference||'—')}</strong><br><span class="muted">stock row, product deleted</span></td><td>—</td><td><span class="muted">${escapeHtml(d.size||'')}</span></td><td><strong>${d.onHandQuantity||0}</strong></td><td><span class="muted">database</span></td><td><span class="muted">Needs a product</span></td></tr>`);
+      }
+      $('orphans').innerHTML=rows.join('')||'<tr><td colspan="6" class="muted">Every counted reference has a product.</td></tr>';
+    }
+    document.addEventListener('click', async event=>{
+      const button=event.target.closest('[data-orphan]');
+      if(!button)return;
+      button.disabled=true;
+      try{
+        await api('/inventory/orphans/'+button.dataset.orphan,{method:'PATCH',body:JSON.stringify({status:button.dataset.status})});
+        await loadOrphans();
+      }catch(error){show('workspaceError',error.message);button.disabled=false}
+    });
+
+    function renderProducts() {
+      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions">${synced?`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">View sizes</button>`:`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
+      $('pageLabel').textContent=`Page ${state.page} of ${state.pages} · ${state.total} products`;
+      $('previous').disabled=state.page<=1; $('next').disabled=state.page>=state.pages;
+    }
+    function renderHistory(items) {
+      $('history').innerHTML=items.length ? items.map(m => { const product=typeof m.productId==='object'?m.productId:null; const actor=typeof m.actorId==='object'?m.actorId:null; return `<li><div><strong>${escapeHtml(product?.name || 'Product')} · ${escapeHtml(m.type.replaceAll('_',' '))}</strong><br><span class="muted">${m.stockBefore} → ${m.stockAfter}${actor?.name?' · '+escapeHtml(actor.name):''}${m.notes?'<br>'+escapeHtml(m.notes):''}</span></div><div style="text-align:right"><strong class="${m.quantity<0?'negative':'positive'}">${m.quantity>0?'+':''}${m.quantity}</strong><br><small class="muted">${new Date(m.createdAt).toLocaleString()}</small></div></li>`; }).join('') : '<li class="muted">No stock history yet.</li>';
+    }
+    function openStock(product,mode) { state.selected=product; $('dialogTitle').textContent=mode==='receive'?'Add stock':'Adjust stock'; $('dialogProduct').textContent=`${product.name} · ${product.serialNumber} · ${product.stock} available`; $('action').value=mode==='receive'?'receive':'set'; $('action').disabled=mode==='receive'; $('quantity').value=mode==='receive'?'1':String(product.stock); $('threshold').value=String(product.lowStockThreshold); $('location').value=product.stockLocation || ''; $('notes').value=''; show('stockError'); updatePreview(); $('stockDialog').showModal(); }
+    function openProduction(product) { state.selected=product; $('productionProduct').textContent=`${product.name} · ${product.serialNumber}`; $('fulfillmentPolicy').value=product.fulfillmentPolicy || 'stock_then_print'; $('printMethod').value=product.printMethod || 'none'; show('productionError'); $('productionDialog').showModal(); }
+    function openDamage(product) { state.selected=product; $('damageProduct').textContent=`${product.name} · ${product.serialNumber}`; $('damageQuantity').value='1'; $('damageOrder').value=''; $('damageNotes').value=''; show('damageError'); $('damageDialog').showModal(); }
+    function openVariants(product) { state.selected=product; $('variantsProduct').textContent=`${product.name} · ${product.serialNumber}`; $('variantsBody').innerHTML=(product.stockVariants||[]).map(variant=>`<tr><td>${escapeHtml(variant.printMethod)}</td><td><strong>${escapeHtml(variant.size)}</strong></td><td>${variant.onHandQuantity}</td><td style="color:var(--blue);font-weight:700">${variant.reservedQuantity}</td><td><span class="stock ${variant.availableQuantity===0?'out':''}">${variant.availableQuantity}</span></td><td>${escapeHtml(variant.sourceSheet)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No size stock is linked yet.</td></tr>'; $('variantsDialog').showModal(); }
+    function updatePreview() { const p=state.selected,q=Number($('quantity').value),a=$('action').value; if(!p || !Number.isFinite(q)) return $('preview').textContent=''; const after=a==='set'?q:p.stock+(a==='receive'?q:-q); $('preview').textContent=`Available now: ${p.stock} → after saving: ${after}`; }
+    $('loginForm').addEventListener('submit',async event => { event.preventDefault(); show('loginError'); const button=event.submitter; button.disabled=true; try { const data=await api('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value.trim(),password:$('password').value})}); state.token=data.token; state.user=data.user; localStorage.setItem('authToken',data.token); $('password').value=''; enterWorkspace(); } catch(error) { show('loginError',error.message); } finally { button.disabled=false; } });
+    $('logout').addEventListener('click',()=>signOut());
+    $('search').addEventListener('input',event=>{if(!event.isComposing)queueInventorySearch()});$('search').addEventListener('compositionend',queueInventorySearch);
+    $('searchForm').addEventListener('submit',event=>{event.preventDefault();clearTimeout(inventorySearchTimer);state.page=1;loadInventory({live:true});});
+    $('lowStock').addEventListener('change',()=>{state.page=1;loadInventory();}); $('refresh').addEventListener('click',loadInventory);
+    $('previous').addEventListener('click',()=>{if(state.page>1){state.page--;loadInventory();}}); $('next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;loadInventory();}});
+    $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else openStock(product,button.dataset.mode);});
+    $('action').addEventListener('change',updatePreview); $('quantity').addEventListener('input',updatePreview); $('cancel').addEventListener('click',()=>$('stockDialog').close());
+    $('stockForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const action=$('action').value;const quantity=Number($('quantity').value);if(!Number.isSafeInteger(quantity)||quantity<0||(action!=='set'&&quantity===0))return show('stockError','Enter a valid whole-number quantity.');if(action==='remove'&&quantity>p.stock)return show('stockError',`Only ${p.stock} units are available.`);if(!confirm(`Save this ${action} stock adjustment for ${p.name}?`))return;const button=event.submitter;button.disabled=true;try{await api(`/inventory/products/${p.productId}`,{method:'PATCH',body:JSON.stringify({action,quantity,notes:$('notes').value.trim(),lowStockThreshold:Number($('threshold').value||0),stockLocation:$('location').value.trim()})});$('stockDialog').close();show('message',`${p.name} stock updated successfully.`);await loadInventory();}catch(error){show('stockError',error.message);}finally{button.disabled=false;}});
+    $('cancelProduction').addEventListener('click',()=>$('productionDialog').close());
+    $('productionForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const policy=$('fulfillmentPolicy').value;const method=$('printMethod').value;if(policy!=='stock_only'&&method==='none')return show('productionError','Choose wax or resin for a printable product.');const button=event.submitter;button.disabled=true;try{await api(`/workflow/products/${p.productId}/production`,{method:'PATCH',body:JSON.stringify({fulfillmentPolicy:policy,printMethod:method})});$('productionDialog').close();show('message',`${p.name} production rule saved.`);await loadInventory();}catch(error){show('productionError',error.message)}finally{button.disabled=false}});
+    $('cancelDamage').addEventListener('click',()=>$('damageDialog').close());
+    $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
+    $('damageForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const quantity=Number($('damageQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1)return show('damageError','Enter a positive whole-number quantity.');if(!confirm(`Report ${quantity} damaged unit(s) of ${p.name} and create its replacement task?`))return;const button=event.submitter;button.disabled=true;try{const data=await api(`/inventory/products/${p.productId}/damage`,{method:'POST',body:JSON.stringify({quantity,orderId:$('damageOrder').value.trim()||null,notes:$('damageNotes').value.trim()})});$('damageDialog').close();show('message',`${p.name}: damage recorded and replacement case #${String(data.workflowCase._id).slice(-6).toUpperCase()} created.`);await loadInventory();}catch(error){show('damageError',error.message)}finally{button.disabled=false}});
+    restoreSession();
+  </script>
+</body>
+</html>

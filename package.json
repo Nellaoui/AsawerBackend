@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:inventory": "node scripts/migrateInventory.js"
+    "migrate:inventory": "node scripts/migrateInventory.js",
+    "backup": "node scripts/backupDatabase.js",
+    "restore": "node scripts/restoreBackup.js",
+    "machines:connector": "node scripts/machineConnector.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -1,4 +1,5 @@
 const CASE_TYPES = [
+  'order_validation',
   'general_task',
   'stock_pick',
   'pack_order',
@@ -11,6 +12,7 @@ const CASE_TYPES = [
 ];
 
 const CASE_STATUSES = [
+  'awaiting_validation',
   'task_ready',
   'stock_picking',
   'needs_customer_info',
@@ -43,6 +45,8 @@ const TEAM_TARGET_MINUTES = {
 const targetMinutesForTeam = (team) => TEAM_TARGET_MINUTES[team] || TEAM_TARGET_MINUTES.none;
 
 const ALLOWED_TRANSITIONS = {
+  // This gate can only be completed by the dedicated order validation endpoint.
+  awaiting_validation: [],
   task_ready: ['completed', 'cancelled'],
   stock_picking: ['completed', 'cancelled'],
   needs_customer_info: ['boss_review', 'cancelled'],
@@ -60,6 +64,7 @@ const ALLOWED_TRANSITIONS = {
 };
 
 const teamForStatus = (status, productionMethod = 'undecided') => {
+  if (status === 'awaiting_validation') return 'customer_service';
   if (status === 'stock_picking') return 'stock';
   if (['needs_customer_info', 'waiting_customer_approval'].includes(status)) return 'customer_service';
   if (['boss_review', 'modeling', 'file_validation'].includes(status)) return 'boss';

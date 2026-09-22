@@ -3,11 +3,13 @@ const router = express.Router();
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
+const { notificationFilterForUser } = require('../utils/notificationPolicy');
+const { visibleTaskFilter } = require('../utils/workflowVisibility');
 
 // GET /api/notifications - Get all notifications for the authenticated user
 router.get('/', auth, async (req, res) => {
   try {
-    const notifications = await Notification.find({ user: req.user.id })
+    const notifications = await Notification.find({ ...notificationFilterForUser(req.user), ...visibleTaskFilter() })
       .sort({ createdAt: -1 })
       .limit(50);
     
@@ -22,8 +24,9 @@ router.get('/', auth, async (req, res) => {
 router.get('/unread', auth, async (req, res) => {
   try {
     const count = await Notification.countDocuments({ 
-      user: req.user.id, 
-      read: false 
+      ...notificationFilterForUser(req.user),
+      ...visibleTaskFilter(),
+      read: false
     });
     
     res.json({ count });
@@ -59,7 +62,7 @@ router.put('/:id/read', auth, async (req, res) => {
 router.put('/read-all', auth, async (req, res) => {
   try {
     await Notification.updateMany(
-      { user: req.user.id, read: false },
+      { ...notificationFilterForUser(req.user), read: false },
       { $set: { read: true } }
     );
     

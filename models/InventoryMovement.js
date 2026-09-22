@@ -53,4 +53,27 @@ const inventoryMovementSchema = new mongoose.Schema({
 
 inventoryMovementSchema.index({ productId: 1, createdAt: -1 });
 
+inventoryMovementSchema.post('save', async function(movement, next) {
+  try {
+    const AuditLog = require('./AuditLog');
+    await AuditLog.create([{
+      category: 'inventory',
+      action: movement.type,
+      actorId: movement.actorId,
+      entityType: 'product',
+      entityId: String(movement.productId),
+      orderId: movement.orderId ? String(movement.orderId) : null,
+      details: {
+        quantity: movement.quantity,
+        stockBefore: movement.stockBefore,
+        stockAfter: movement.stockAfter,
+        notes: movement.notes
+      }
+    }], { session: movement.$session() || undefined });
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = mongoose.model('InventoryMovement', inventoryMovementSchema);

@@ -7,6 +7,7 @@
  */
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+const { canNotifyUser } = require('./notificationPolicy');
 
 /**
  * Send push notifications to one or more Expo push tokens.
@@ -79,8 +80,9 @@ async function sendPushNotifications(messages) {
 async function sendPushToUser(User, userId, title, body, data = {}) {
   try {
     if (!User || !userId) return;
-    const user = await User.findById(userId).select('expoPushTokens');
+    const user = await User.findById(userId).select('expoPushTokens role');
     if (!user || !user.expoPushTokens || user.expoPushTokens.length === 0) return;
+    if (!canNotifyUser(user, null, data)) return;
 
     const messages = user.expoPushTokens.map(token => ({
       pushToken: typeof token === 'string' ? token : '',

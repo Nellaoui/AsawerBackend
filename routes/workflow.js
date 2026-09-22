@@ -5,8 +5,15 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Catalog = require('../models/Catalog');
 const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
+const BackupRun = require('../models/BackupRun');
+const SystemError = require('../models/SystemError');
+const Wishlist = require('../models/Wishlist');
 const { operationsAuth } = require('../middlewares/auth');
+const { buildCustomerInsights, recommendProducts } = require('../utils/customerInsights');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
+const { visibleTaskFilter } = require('../utils/workflowVisibility');
+const { assignMachineToCase, findMachine, releaseMachineFromCase } = require('../utils/machineRegistry');
 const {
   notifyCaseAssignment,
   notifyFailedPrint,
@@ -38,6 +45,15 @@ const TEAM_WORK_ROLES = {
   packing: ['packing']
 };
 const ACTIVE_STATUSES = { $nin: ['completed', 'cancelled', 'rejected'] };
+const WORKFLOW_STAGE_FILTERS = {
+  validation: ['awaiting_validation'],
+  order_received: ['needs_customer_info', 'boss_review', 'waiting_customer_approval', 'modeling', 'file_validation'],
+  stock_check: ['stock_picking'],
+  printing: ['ready_to_print', 'printing'],
+  quality: ['quality_check'],
+  packing: ['packing'],
+  ready: ['completed']
+};
 const TEAM_BY_WORK_ROLE = Object.fromEntries(
   Object.entries(TEAM_WORK_ROLES).flatMap(([team, roles]) => roles.map(role => [role, team]))
 );
@@ -54,26 +70,36 @@ const safelyNotify = async (operation) => {
   }
 };
 
+const isAdminUser = (user) => Boolean(user?.isAdmin || user?.role === 'admin');
+const isBossUser = (user) => user?.role === 'employee' && user?.workRole === 'boss';
+const isCustomerServiceUser = (user) => user?.role === 'employee' && user?.workRole === 'customer_service';
+const isManagerUser = (user) => isAdminUser(user) || isBossUser(user);
+const canViewCustomers = (user) => isManagerUser(user) || isCustomerServiceUser(user);
+const mixedIdValues = (value) => {
+  const text = String(value || '');
+  const values = text ? [text] : [];
+  if (mongoose.Types.ObjectId.isValid(text)) values.push(new mongoose.Types.ObjectId(text));
+  return values;
+};
+
 const canUseTeam = (user, team) => {
-  if (user?.isAdmin || user?.role === 'admin') return true;
+  if (isManagerUser(user)) return true;
   const workRole = WORK_ROLES.includes(user?.workRole) ? user.workRole : 'general';
   return workRole === 'general' || (TEAM_WORK_ROLES[team] || []).includes(workRole);
 };
 
-const isAdminUser = (user) => Boolean(user?.isAdmin || user?.role === 'admin');
 const userTeam = (user) => TEAM_BY_WORK_ROLE[user?.workRole] || null;
 const sameUserId = (left, right) => Boolean(left && right && String(left?._id || left) === String(right?._id || right));
 const isUnassigned = (workflowCase) => !workflowCase.assignedTo;
 
 const canSeeCase = (user, workflowCase) => {
-  if (isAdminUser(user)) return true;
-  if (sameUserId(workflowCase.assignedTo, user?.id || user?._id)) return true;
-  return isUnassigned(workflowCase) && Boolean(userTeam(user)) && workflowCase.assignedTeam === userTeam(user);
+  if (isManagerUser(user) || isCustomerServiceUser(user)) return true;
+  return sameUserId(workflowCase.assignedTo, user?.id || user?._id);
 };
 
 const requireOwnedCase = (user, workflowCase) => {
-  if (isAdminUser(user)) return null;
-  if (!canSeeCase(user, workflowCase)) return 'This task belongs to another employee';
+  if (isManagerUser(user)) return null;
+  if (!sameUserId(workflowCase.assignedTo, user?.id || user?._id) && !isUnassigned(workflowCase)) return 'This task belongs to another employee';
   if (isUnassigned(workflowCase)) return 'Claim this task before recording work';
   return null;
 };
@@ -81,14 +107,14 @@ const requireOwnedCase = (user, workflowCase) => {
 const unassignedFilter = () => ({ $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }] });
 
 const scopedCaseFilter = (user, scope = 'mine') => {
-  if (isAdminUser(user)) {
+  if (isManagerUser(user)) {
     if (scope === 'mine') return { assignedTo: user.id };
     if (scope === 'available') return unassignedFilter();
     return {};
   }
 
-  const team = userTeam(user);
-  if (scope === 'available') return team ? { assignedTeam: team, ...unassignedFilter() } : { _id: null };
+  if (isCustomerServiceUser(user) && scope === 'all') return {};
+
   return { assignedTo: user.id };
 };
 
@@ -147,19 +173,63 @@ const normalizeDimensions = (input = {}, fallback = {}) => {
 };
 
 const populateCase = (query) => query
-  .populate('orderId', 'status totalAmount createdAt userId')
-  .populate('customerId', 'name email phone')
+  .populate({
+    path: 'orderId',
+    select: 'orderNumber status totalAmount notes createdAt userId items validationStatus validationCaseId validatedAt',
+    populate: [
+      { path: 'items.productId', select: 'name serialNumber imageUrl printMethod' },
+      { path: 'userId', select: 'name email phone forcedProductionMethod' }
+    ]
+  })
+  .populate('customerId', 'name email phone forcedProductionMethod')
   .populate('productId', 'name serialNumber imageUrl type catalogId fulfillmentPolicy printMethod modelFileStatus')
   .populate('assignedTo', 'name email workRole')
   .populate('createdBy', 'name email workRole');
+
+// Older workflow records did not always keep a populated customer on the task.
+// Resolve it through the original order so every employee can identify the client.
+const hydrateCaseCustomers = async (caseDocuments) => {
+  const single = !Array.isArray(caseDocuments);
+  const cases = (single ? [caseDocuments] : caseDocuments)
+    .filter(Boolean)
+    .map(item => item?.toObject ? item.toObject() : item);
+  const hasProfile = value => Boolean(value && typeof value === 'object' && (value.name || value.email));
+  const missing = cases.filter(item => !hasProfile(item.customerId) && !hasProfile(item.orderId?.userId) && !hasProfile(item.customer));
+  if (!missing.length) return single ? cases[0] : cases;
+
+  const orderIds = [...new Set(missing.map(item => String(item.orderId?._id || item.orderId || '')).filter(mongoose.Types.ObjectId.isValid))];
+  const rawOrders = orderIds.length
+    ? await Order.find({ _id: { $in: orderIds } }).select('userId').lean()
+    : [];
+  const rawOrdersById = new Map(rawOrders.map(order => [String(order._id), order]));
+  const customerIds = [...new Set(missing.map(item => {
+    const orderId = String(item.orderId?._id || item.orderId || '');
+    const source = item.customerId || rawOrdersById.get(orderId)?.userId;
+    return String(source?._id || source || '');
+  }).filter(mongoose.Types.ObjectId.isValid))];
+  const customers = customerIds.length
+    ? await User.find({ _id: { $in: customerIds } }).select('name email phone forcedProductionMethod').lean()
+    : [];
+  const customersById = new Map(customers.map(customer => [String(customer._id), customer]));
+
+  for (const item of missing) {
+    const orderId = String(item.orderId?._id || item.orderId || '');
+    const rawCustomerId = item.customerId || rawOrdersById.get(orderId)?.userId;
+    const customer = customersById.get(String(rawCustomerId?._id || rawCustomerId || ''));
+    if (!customer) continue;
+    item.customerId = customer;
+    if (item.orderId && typeof item.orderId === 'object') item.orderId.userId = customer;
+  }
+  return single ? cases[0] : cases;
+};
 
 const refreshOrderFulfillment = async (orderId, actorId, app) => {
   if (!orderId) return;
   const openCases = await WorkflowCase.find({
     orderId,
     status: { $nin: ['completed', 'cancelled'] }
-  }).select('status');
-  let fulfillmentState = openCases.some(item => ['needs_customer_info', 'rejected'].includes(item.status))
+  }).select('status isBlocked');
+  let fulfillmentState = openCases.some(item => item.isBlocked || ['needs_customer_info', 'rejected'].includes(item.status))
     ? 'blocked'
     : (openCases.length ? 'in_progress' : 'ready');
 
@@ -205,21 +275,21 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
 
 router.get('/summary', operationsAuth, async (req, res) => {
   try {
-    const mineFilter = { ...scopedCaseFilter(req.user, 'mine'), status: ACTIVE_STATUSES };
-    const availableFilter = { ...scopedCaseFilter(req.user, 'available'), status: ACTIVE_STATUSES };
+    const mineFilter = { ...visibleTaskFilter(), ...scopedCaseFilter(req.user, 'mine'), status: ACTIVE_STATUSES };
+    const availableFilter = { ...visibleTaskFilter(), ...scopedCaseFilter(req.user, 'available'), status: ACTIVE_STATUSES };
     const now = new Date();
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
     const [total, customerService, boss, wax, resin, quality, completed, stock, packing, mineCases, available] = await Promise.all([
-      WorkflowCase.countDocuments({ status: { $nin: ['cancelled', 'rejected'] } }),
-      WorkflowCase.countDocuments({ assignedTeam: 'customer_service', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
-      WorkflowCase.countDocuments({ assignedTeam: 'boss', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
-      WorkflowCase.countDocuments({ assignedTeam: 'wax_print', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
-      WorkflowCase.countDocuments({ assignedTeam: 'resin_print', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
-      WorkflowCase.countDocuments({ assignedTeam: 'quality', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
-      WorkflowCase.countDocuments({ status: 'completed' }),
-      WorkflowCase.countDocuments({ assignedTeam: 'stock', status: ACTIVE_STATUSES }),
-      WorkflowCase.countDocuments({ assignedTeam: 'packing', status: ACTIVE_STATUSES }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), status: { $nin: ['cancelled', 'rejected'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'customer_service', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'boss', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'wax_print', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'resin_print', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'quality', status: { $nin: ['cancelled', 'rejected', 'completed'] } }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), status: 'completed' }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'stock', status: ACTIVE_STATUSES }),
+      WorkflowCase.countDocuments({ ...visibleTaskFilter(), assignedTeam: 'packing', status: ACTIVE_STATUSES }),
       WorkflowCase.find(mineFilter).select('priority taskKind deadlineAt targetMinutes stageQueuedAt startedAt status createdAt').lean(),
       WorkflowCase.countDocuments(availableFilter)
     ]);
@@ -239,19 +309,228 @@ router.get('/summary', operationsAuth, async (req, res) => {
   }
 });
 
+// The boss manages the operations team from the same portal as every employee.
+router.get('/team', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can manage the team' });
+    const employees = await User.find({ role: 'employee', isActive: { $ne: false } })
+      .select('name email role workRole isActive createdAt')
+      .sort({ name: 1, email: 1 })
+      .lean();
+    res.json(employees.map(employee => ({ ...employee, id: String(employee._id) })));
+  } catch (error) {
+    console.error('Error fetching workflow team:', error);
+    res.status(500).json({ message: 'Failed to fetch the operations team' });
+  }
+});
+
+router.patch('/team/:id', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can manage the team' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid employee ID' });
+    const workRole = String(req.body.workRole || '');
+    if (!WORK_ROLES.includes(workRole)) return res.status(400).json({ message: 'Invalid employee work role' });
+    const employee = await User.findOneAndUpdate(
+      { _id: req.params.id, role: 'employee', isActive: { $ne: false } },
+      { $set: { workRole } },
+      { new: true }
+    ).select('name email role workRole isActive createdAt');
+    if (!employee) return res.status(404).json({ message: 'Active employee not found' });
+    res.json({ ...employee.toObject(), id: String(employee._id) });
+  } catch (error) {
+    console.error('Error updating workflow role:', error);
+    res.status(500).json({ message: 'Failed to update the employee role' });
+  }
+});
+
+// The boss can force a customer's future printable items to Wax or Resin.
+router.get('/customers', operationsAuth, async (req, res) => {
+  try {
+    if (!canViewCustomers(req.user)) return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can view customers' });
+    const search = cleanText(req.query.search, 120);
+    const filter = { role: 'user', isActive: { $ne: false } };
+    if (search) {
+      const pattern = new RegExp(escapeRegExp(search), 'i');
+      filter.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }];
+    }
+    const customers = await User.find(filter)
+      .select('name email phone forcedProductionMethod isActive createdAt')
+      .sort({ name: 1, email: 1 })
+      .limit(100)
+      .lean();
+    res.json(customers.map(customer => ({
+      ...customer,
+      id: String(customer._id),
+      forcedProductionMethod: customer.forcedProductionMethod || 'automatic'
+    })));
+  } catch (error) {
+    console.error('Error fetching customer production routing:', error);
+    res.status(500).json({ message: 'Failed to fetch customer routing' });
+  }
+});
+
+router.patch('/customers/:id/routing', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can manage customer routing' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid customer ID' });
+    const forcedProductionMethod = String(req.body.forcedProductionMethod || 'automatic');
+    if (!['automatic', 'wax', 'resin'].includes(forcedProductionMethod)) {
+      return res.status(400).json({ message: 'Customer routing must be automatic, wax, or resin' });
+    }
+    const existingCustomer = await User.findOne({ _id: req.params.id, role: 'user', isActive: { $ne: false } })
+      .select('forcedProductionMethod');
+    if (!existingCustomer) return res.status(404).json({ message: 'Active customer not found' });
+    const customer = await User.findOneAndUpdate(
+      { _id: req.params.id, role: 'user', isActive: { $ne: false } },
+      { $set: { forcedProductionMethod } },
+      { new: true }
+    ).select('name email phone forcedProductionMethod isActive createdAt');
+    await AuditLog.create({
+      category: 'workflow',
+      action: 'customer_routing_changed',
+      actorId: req.user.id,
+      entityType: 'customer',
+      entityId: String(customer._id),
+      details: {
+        customerName: customer.name,
+        customerEmail: customer.email,
+        fromProductionMethod: existingCustomer.forcedProductionMethod || 'automatic',
+        toProductionMethod: forcedProductionMethod
+      }
+    });
+    res.json({ ...customer.toObject(), id: String(customer._id) });
+  } catch (error) {
+    console.error('Error updating customer production routing:', error);
+    res.status(500).json({ message: 'Failed to update customer routing' });
+  }
+});
+
+router.get('/customers/:id/overview', operationsAuth, async (req, res) => {
+  try {
+    if (!canViewCustomers(req.user)) return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can view customer analytics' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid customer ID' });
+
+    const customer = await User.findOne({ _id: req.params.id, role: 'user', isActive: { $ne: false } })
+      .select('name email phone forcedProductionMethod isActive createdAt')
+      .lean();
+    if (!customer) return res.status(404).json({ message: 'Active customer not found' });
+
+    const customerIds = mixedIdValues(customer._id);
+    const orders = await Order.find({ userId: { $in: customerIds } })
+      .sort({ createdAt: -1 })
+      .limit(1000)
+      .populate('catalogId', 'name')
+      .populate('items.productId', 'name serialNumber imageUrl type size availableSizes relatedProducts printMethod fulfillmentPolicy price')
+      .lean();
+    const orderIds = orders.map(order => order._id);
+    const workflowCases = await populateCase(WorkflowCase.find({
+      ...visibleTaskFilter(),
+      $or: [
+        { customerId: { $in: customerIds } },
+        ...(orderIds.length ? [{ orderId: { $in: orderIds } }] : [])
+      ]
+    }).sort({ createdAt: -1 }).limit(2000)).lean();
+
+    const insights = buildCustomerInsights(orders, workflowCases);
+    const [{ wishlistProductIds = [] } = {}, accessibleCatalogs, popularityOrders] = await Promise.all([
+      Wishlist.find({ userId: { $in: customerIds } }).select('productId').lean()
+        .then(items => ({ wishlistProductIds: items.map(item => String(item.productId)) })),
+      Catalog.findAccessibleByUser(customer._id, 'user').select('_id products').lean(),
+      Order.find({ status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).limit(3000).select('items.productId items.quantity').lean()
+    ]);
+    const accessibleProductIds = [...new Set(accessibleCatalogs.flatMap(catalog => (catalog.products || []).map(String)))];
+    const accessibleCatalogIds = accessibleCatalogs.map(catalog => catalog._id);
+    const candidates = accessibleCatalogIds.length || accessibleProductIds.length
+      ? await Product.find({
+        isActive: { $ne: false },
+        $or: [
+          ...(accessibleProductIds.length ? [{ _id: { $in: accessibleProductIds } }] : []),
+          ...(accessibleCatalogIds.length ? [{ catalogId: { $in: accessibleCatalogIds } }] : [])
+        ]
+      }).select('name serialNumber imageUrl type price size availableSizes relatedProducts fulfillmentPolicy printMethod isActive').lean()
+      : [];
+    const globalProductUnits = new Map();
+    for (const order of popularityOrders) {
+      for (const item of order.items || []) {
+        const productId = String(item.productId?._id || item.productId || '');
+        if (productId) globalProductUnits.set(productId, (globalProductUnits.get(productId) || 0) + Number(item.quantity || 0));
+      }
+    }
+    const recommendations = recommendProducts({
+      products: candidates,
+      insights,
+      wishlistProductIds,
+      globalProductUnits,
+      forcedProductionMethod: customer.forcedProductionMethod || 'automatic'
+    });
+    const { productStats, ...publicInsights } = insights;
+
+    res.json({
+      customer: { ...customer, id: String(customer._id), forcedProductionMethod: customer.forcedProductionMethod || 'automatic' },
+      analytics: publicInsights,
+      recommendations,
+      orders: orders.slice(0, 100),
+      activeCases: workflowCases.filter(item => !['completed', 'cancelled', 'rejected'].includes(item.status)).slice(0, 100),
+      recentCases: workflowCases.slice(0, 100)
+    });
+  } catch (error) {
+    console.error('Error fetching customer overview:', error);
+    res.status(500).json({ message: 'Failed to load the customer overview' });
+  }
+});
+
 router.get('/cases', operationsAuth, async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
     const scope = ['mine', 'available', 'all'].includes(String(req.query.scope)) ? String(req.query.scope) : 'mine';
-    const filter = scopedCaseFilter(req.user, scope);
+    const filter = {
+      ...(isManagerUser(req.user) && req.query.includeArchived === 'true' ? {} : visibleTaskFilter()),
+      ...scopedCaseFilter(req.user, scope)
+    };
 
-    if (req.query.team && isAdminUser(req.user)) filter.assignedTeam = String(req.query.team);
-    if (req.query.status) filter.status = String(req.query.status);
-    if (req.query.active === 'true') filter.status = ACTIVE_STATUSES;
+    if (req.query.team && isManagerUser(req.user)) filter.assignedTeam = String(req.query.team);
+    if (req.query.stage) {
+      const stage = String(req.query.stage);
+      if (!Object.prototype.hasOwnProperty.call(WORKFLOW_STAGE_FILTERS, stage)) {
+        return res.status(400).json({ message: 'Invalid workflow stage' });
+      }
+      filter.status = { $in: WORKFLOW_STAGE_FILTERS[stage] };
+    } else if (req.query.status) filter.status = String(req.query.status);
+    else if (req.query.active === 'true') filter.status = ACTIVE_STATUSES;
+    if (scope === 'mine' && req.query.status === 'completed') {
+      const participantIds = [String(req.user.id)];
+      if (mongoose.Types.ObjectId.isValid(String(req.user.id))) {
+        participantIds.push(new mongoose.Types.ObjectId(String(req.user.id)));
+      }
+      delete filter.assignedTo;
+      filter.$or = [
+        { assignedTo: req.user.id },
+        { 'history.actorId': { $in: participantIds } }
+      ];
+    }
     if (req.query.method) filter.productionMethod = String(req.query.method);
     if (req.query.taskKind && ['order', 'extra'].includes(String(req.query.taskKind))) filter.taskKind = String(req.query.taskKind);
     if (req.query.orderId && mongoose.Types.ObjectId.isValid(req.query.orderId)) filter.orderId = req.query.orderId;
+    if (req.query.customerId) {
+      if (!canViewCustomers(req.user)) return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can filter by customer' });
+      if (!mongoose.Types.ObjectId.isValid(req.query.customerId)) return res.status(400).json({ message: 'Invalid customer ID' });
+      const customerIds = mixedIdValues(req.query.customerId);
+      const customerOrderIds = await Order.find({ userId: { $in: customerIds } }).distinct('_id');
+      const customerScope = {
+        $or: [
+          { customerId: { $in: customerIds } },
+          ...(customerOrderIds.length ? [{ orderId: { $in: customerOrderIds } }] : [])
+        ]
+      };
+      if (filter.$or) {
+        const scopeOr = filter.$or;
+        delete filter.$or;
+        filter.$and = [...(filter.$and || []), { $or: scopeOr }, customerScope];
+      } else {
+        filter.$and = [...(filter.$and || []), customerScope];
+      }
+    }
     if (req.query.search) {
       const searchValue = String(req.query.search).trim();
       const pattern = new RegExp(escapeRegExp(searchValue), 'i');
@@ -266,10 +545,11 @@ router.get('/cases', operationsAuth, async (req, res) => {
       }
     }
 
-    const [cases, total] = await Promise.all([
+    const [caseDocuments, total] = await Promise.all([
       populateCase(WorkflowCase.find(filter).sort(taskSort).skip((page - 1) * limit).limit(limit)),
       WorkflowCase.countDocuments(filter)
     ]);
+    const cases = await hydrateCaseCustomers(caseDocuments);
 
     res.json({
       cases,
@@ -283,21 +563,46 @@ router.get('/cases', operationsAuth, async (req, res) => {
 
 router.get('/analytics', operationsAuth, async (req, res) => {
   try {
-    if (!isAdminUser(req.user)) return res.status(403).json({ message: 'Only an administrator can view employee timing' });
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can view employee timing' });
     const now = new Date();
-    const [employees, activeCases, timedCases, recentOrders] = await Promise.all([
+    const [employees, activeCases, timedCases, recentOrders, completedOrders, failureCases, allProducts] = await Promise.all([
       User.find({ role: 'employee', isActive: { $ne: false } }).select('name email workRole').lean(),
-      WorkflowCase.find({ status: ACTIVE_STATUSES })
-        .select('requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt startedAt createdAt orderId priority taskKind')
+      WorkflowCase.find({ ...visibleTaskFilter(), status: ACTIVE_STATUSES })
+        .select('requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt startedAt createdAt orderId productId priority taskKind isBlocked blockedReason blockedAt')
         .populate('assignedTo', 'name email workRole')
         .populate('orderId', 'createdAt status fulfillmentState')
+        .populate('productId', 'name serialNumber imageUrl')
         .lean(),
-      WorkflowCase.find({ 'history.workMinutes': { $gte: 0 } })
+      WorkflowCase.find({ ...visibleTaskFilter(), 'history.workMinutes': { $gte: 0 } })
         .sort({ completedAt: -1, updatedAt: -1 })
         .limit(2000)
-        .select('history completedAt assignedTo')
+        .select('history completedAt assignedTo productionMethod')
         .lean(),
-      Order.find({}).sort({ createdAt: -1 }).limit(25).select('createdAt status fulfillmentState items totalAmount').lean()
+      Order.find({}).sort({ createdAt: -1 }).limit(25).select('createdAt status fulfillmentState items totalAmount').lean(),
+      Order.find({ status: { $in: ['shipped', 'delivered'] } })
+        .sort({ updatedAt: -1 })
+        .limit(2000)
+        .select('createdAt updatedAt')
+        .lean(),
+      WorkflowCase.find({
+        ...visibleTaskFilter(),
+        history: {
+          $elemMatch: {
+            action: 'status_changed',
+            fromStatus: { $in: ['printing', 'quality_check'] },
+            toStatus: { $in: ['ready_to_print', 'modeling'] }
+          }
+        }
+      })
+        .sort({ updatedAt: -1 })
+        .limit(100)
+        .select('requestedName orderId productId productionMethod history')
+        .populate('productId', 'name serialNumber imageUrl')
+        .lean(),
+      Product.find({})
+        .select('name serialNumber imageUrl isActive stockSyncState printMethod fulfillmentPolicy price updatedAt')
+        .sort({ updatedAt: -1 })
+        .lean()
     ]);
 
     const employeeMap = new Map(employees.map(employee => [String(employee._id), {
@@ -313,6 +618,7 @@ router.get('/analytics', operationsAuth, async (req, res) => {
     }]));
 
     const lateTasks = [];
+    const blockedTasks = [];
     const unassignedByTeam = {};
     for (const item of activeCases) {
       const assigneeId = item.assignedTo?._id ? String(item.assignedTo._id) : null;
@@ -340,15 +646,42 @@ router.get('/analytics', operationsAuth, async (req, res) => {
           priority: item.priority
         });
       }
+      if (item.isBlocked) {
+        blockedTasks.push({
+          id: item._id,
+          requestedName: item.requestedName,
+          assignedTeam: item.assignedTeam,
+          assignedTo: item.assignedTo || null,
+          orderId: item.orderId?._id || item.orderId || null,
+          blockedReason: item.blockedReason,
+          blockedAt: item.blockedAt,
+          product: item.productId || null,
+          priority: item.priority
+        });
+      }
     }
 
+    const completionByTeamMap = new Map();
+    let totalCompletedMinutes = 0;
+    let completedStepCount = 0;
     for (const item of timedCases) {
       for (const event of item.history || []) {
         if (event.workMinutes === null || event.workMinutes === undefined) continue;
+        const minutes = Number(event.workMinutes || 0);
         const metric = employeeMap.get(String(event.actorId?._id || event.actorId));
-        if (!metric) continue;
-        metric.completedSteps += 1;
-        metric.totalWorkMinutes += Number(event.workMinutes || 0);
+        if (metric) {
+          metric.completedSteps += 1;
+          metric.totalWorkMinutes += minutes;
+        }
+        totalCompletedMinutes += minutes;
+        completedStepCount += 1;
+        const team = teamForStatus(event.fromStatus, item.productionMethod);
+        if (team && team !== 'none') {
+          const teamMetric = completionByTeamMap.get(team) || { totalMinutes: 0, count: 0 };
+          teamMetric.totalMinutes += minutes;
+          teamMetric.count += 1;
+          completionByTeamMap.set(team, teamMetric);
+        }
       }
     }
 
@@ -357,10 +690,49 @@ router.get('/analytics', operationsAuth, async (req, res) => {
       averageWorkMinutes: metric.completedSteps ? Math.round(metric.totalWorkMinutes / metric.completedSteps) : null
     })).sort((left, right) => right.lateTasks - left.lateTasks || right.activeTasks - left.activeTasks || left.name.localeCompare(right.name));
 
+    const printFailures = failureCases.flatMap(workflowCase => (workflowCase.history || [])
+      .filter(event => event.action === 'status_changed'
+        && ['printing', 'quality_check'].includes(event.fromStatus)
+        && ['ready_to_print', 'modeling'].includes(event.toStatus))
+      .map(event => ({
+        caseId: workflowCase._id,
+        requestedName: workflowCase.requestedName,
+        orderId: workflowCase.orderId,
+        product: workflowCase.productId || null,
+        productionMethod: workflowCase.productionMethod,
+        reason: event.note || 'Print returned for rework',
+        failedAt: event.createdAt,
+        returnedTo: event.toStatus
+      })))
+      .sort((left, right) => new Date(right.failedAt) - new Date(left.failedAt))
+      .slice(0, 25);
+
+    const productsWaiting = allProducts.map(product => {
+      const needsImage = !product.imageUrl || /placeholder/i.test(product.imageUrl);
+      const needsDetails = product.stockSyncState === 'needs_details' || product.isActive === false;
+      const needsClassification = product.fulfillmentPolicy !== 'stock_only' && (!product.printMethod || product.printMethod === 'none');
+      return { ...product, needsImage, needsDetails, needsClassification };
+    }).filter(product => product.needsImage || product.needsDetails || product.needsClassification);
+
+    const completionByTeam = Object.fromEntries([...completionByTeamMap].map(([team, metric]) => [team, {
+      completedSteps: metric.count,
+      averageMinutes: metric.count ? Math.round(metric.totalMinutes / metric.count) : null
+    }]));
+    const averageOrderMinutes = completedOrders.length
+      ? Math.round(completedOrders.reduce((sum, order) => sum + minutesBetween(order.createdAt, order.updatedAt), 0) / completedOrders.length)
+      : null;
+
     res.json({
       generatedAt: now,
       employees: employeeTiming,
       lateTasks: lateTasks.sort((left, right) => right.lateMinutes - left.lateMinutes),
+      blockedTasks: blockedTasks.sort((left, right) => new Date(right.blockedAt) - new Date(left.blockedAt)),
+      printFailures,
+      averageTaskMinutes: completedStepCount ? Math.round(totalCompletedMinutes / completedStepCount) : null,
+      averageOrderMinutes,
+      completionByTeam,
+      productsWaiting: productsWaiting.slice(0, 50),
+      productsWaitingTotal: productsWaiting.length,
       unassignedByTeam,
       recentOrders: recentOrders.map(order => ({
         id: order._id,
@@ -377,15 +749,54 @@ router.get('/analytics', operationsAuth, async (req, res) => {
   }
 });
 
+router.get('/audit', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can view the audit trail' });
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+    const filter = {};
+    if (['inventory', 'workflow', 'machine', 'backup', 'system'].includes(String(req.query.category))) {
+      filter.category = String(req.query.category);
+    }
+    const records = await AuditLog.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('actorId', 'name email')
+      .lean();
+    res.json(records);
+  } catch (error) {
+    console.error('Error fetching audit trail:', error);
+    res.status(500).json({ message: 'Failed to fetch the audit trail' });
+  }
+});
+
+router.get('/system-safety', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can view system monitoring' });
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [lastBackup, errorsLast24Hours, recentErrors] = await Promise.all([
+      BackupRun.findOne({ status: 'completed' }).sort({ completedAt: -1 }).select('-filePath').lean(),
+      SystemError.countDocuments({ lastSeenAt: { $gte: since }, resolvedAt: null }),
+      SystemError.find({ resolvedAt: null }).sort({ lastSeenAt: -1 }).limit(5).select('-stack').lean()
+    ]);
+    res.json({ lastBackup, errorsLast24Hours, recentErrors });
+  } catch (error) {
+    console.error('Error fetching system safety status:', error);
+    res.status(500).json({ message: 'Failed to fetch system safety status' });
+  }
+});
+
 router.post('/cases/:id/claim', operationsAuth, async (req, res) => {
   try {
+    if (!isManagerUser(req.user)) {
+      return res.status(403).json({ message: 'Tasks are assigned automatically. Only the boss can change an assignment.' });
+    }
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
     if (['completed', 'cancelled', 'rejected'].includes(workflowCase.status)) {
       return res.status(409).json({ message: 'Closed tasks cannot be claimed' });
     }
-    if (!isAdminUser(req.user) && userTeam(req.user) !== workflowCase.assignedTeam) {
+    if (!isManagerUser(req.user) && userTeam(req.user) !== workflowCase.assignedTeam) {
       return res.status(403).json({ message: 'This task belongs to another team' });
     }
     if (workflowCase.assignedTo && !sameUserId(workflowCase.assignedTo, req.user.id)) {
@@ -415,7 +826,7 @@ router.post('/cases/:id/release', operationsAuth, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
-    if (!isAdminUser(req.user) && !sameUserId(workflowCase.assignedTo, req.user.id)) {
+    if (!isManagerUser(req.user) && !sameUserId(workflowCase.assignedTo, req.user.id)) {
       return res.status(403).json({ message: 'Only the assigned employee can release this task' });
     }
     const now = new Date();
@@ -439,7 +850,7 @@ router.post('/cases/:id/release', operationsAuth, async (req, res) => {
 
 router.patch('/cases/:id/assignment', operationsAuth, async (req, res) => {
   try {
-    if (!isAdminUser(req.user)) return res.status(403).json({ message: 'Only an administrator can assign tasks' });
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can assign tasks' });
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
@@ -486,12 +897,20 @@ router.post('/cases/:id/start', operationsAuth, async (req, res) => {
     if (['completed', 'cancelled', 'rejected'].includes(workflowCase.status)) {
       return res.status(409).json({ message: 'Closed tasks cannot be started' });
     }
+    if (workflowCase.isBlocked) {
+      return res.status(409).json({ message: 'Resume this blocked task before starting it' });
+    }
     if (!workflowCase.startedAt) {
       const now = new Date();
+      const previousStatus = workflowCase.status;
       workflowCase.startedAt = now;
+      // Starting a task records employee work, not a printer job. The separate
+      // ready_to_print -> printing transition requires a chosen machine.
       workflowCase.history.push({
         actorId: req.user.id,
         action: 'task_started',
+        fromStatus: previousStatus,
+        toStatus: workflowCase.status,
         note: cleanText(req.body.note, 1000),
         queueMinutes: minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, now)
       });
@@ -501,6 +920,58 @@ router.post('/cases/:id/start', operationsAuth, async (req, res) => {
   } catch (error) {
     console.error('Error starting workflow task:', error);
     res.status(500).json({ message: error.message || 'Failed to start task' });
+  }
+});
+
+router.post('/cases/:id/block', operationsAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const reason = cleanText(req.body.reason, 1000);
+    if (!reason) return res.status(400).json({ message: 'Explain why the task is blocked' });
+    const workflowCase = await WorkflowCase.findById(req.params.id);
+    if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
+    const ownershipError = requireOwnedCase(req.user, workflowCase);
+    if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
+    if (['completed', 'cancelled', 'rejected'].includes(workflowCase.status)) {
+      return res.status(409).json({ message: 'Closed tasks cannot be blocked' });
+    }
+
+    const now = new Date();
+    workflowCase.isBlocked = true;
+    workflowCase.blockedReason = reason;
+    workflowCase.blockedAt = now;
+    workflowCase.blockedBy = req.user.id;
+    workflowCase.history.push({ actorId: req.user.id, action: 'task_blocked', note: reason });
+    await workflowCase.save();
+    await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+    await safelyNotify(() => notifyOrderBlocked(req.app, workflowCase, reason));
+    res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
+  } catch (error) {
+    console.error('Error blocking workflow task:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to block task' });
+  }
+});
+
+router.post('/cases/:id/unblock', operationsAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const workflowCase = await WorkflowCase.findById(req.params.id);
+    if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
+    const ownershipError = requireOwnedCase(req.user, workflowCase);
+    if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
+    if (workflowCase.isBlocked) {
+      workflowCase.isBlocked = false;
+      workflowCase.blockedReason = '';
+      workflowCase.blockedAt = null;
+      workflowCase.blockedBy = null;
+      workflowCase.history.push({ actorId: req.user.id, action: 'task_resumed', note: cleanText(req.body.note, 1000) });
+      await workflowCase.save();
+      await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+    }
+    res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
+  } catch (error) {
+    console.error('Error resuming workflow task:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to resume task' });
   }
 });
 
@@ -534,7 +1005,7 @@ router.patch('/products/:id/production', operationsAuth, requireTeam('boss'), as
 router.get('/cases/:id', operationsAuth, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
-    const workflowCase = await populateCase(WorkflowCase.findById(req.params.id));
+    const workflowCase = await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(req.params.id)));
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
     if (!canSeeCase(req.user, workflowCase)) return res.status(403).json({ message: 'This task belongs to another employee' });
     res.json(workflowCase);
@@ -581,7 +1052,7 @@ router.post('/cases', operationsAuth, requireTeam('customer_service'), async (re
     const deadlineAt = deadlineValue ? new Date(deadlineValue) : null;
     if (deadlineAt && Number.isNaN(deadlineAt.getTime())) return res.status(400).json({ message: 'Invalid deadline' });
     const targetMinutes = parseTargetMinutes(req.body.targetMinutes, targetMinutesForTeam(initialTeam));
-    const assignToCreator = req.body.assignToMe === true && (isAdminUser(req.user) || userTeam(req.user) === initialTeam);
+    const assignToCreator = req.body.assignToMe === true && (isManagerUser(req.user) || userTeam(req.user) === initialTeam);
     const automaticAssignee = assignToCreator ? null : await findTeamAssignee(initialTeam);
     const now = new Date();
     const workflowCase = await WorkflowCase.create({
@@ -783,6 +1254,87 @@ router.post('/cases/:id/models', operationsAuth, requireTeam('boss'), async (req
   }
 });
 
+router.post('/cases/:id/reroute-print', operationsAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const workflowCase = await WorkflowCase.findById(req.params.id);
+    if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
+    const ownershipError = requireOwnedCase(req.user, workflowCase);
+    if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
+    if (!['ready_to_print', 'printing'].includes(workflowCase.status)) {
+      return res.status(409).json({ message: 'Only a task waiting to print or currently printing can change printer' });
+    }
+    if (!['wax', 'resin'].includes(workflowCase.productionMethod)) {
+      return res.status(409).json({ message: 'This task does not have a Wax or Resin route yet' });
+    }
+    if (!isManagerUser(req.user) && req.user.workRole !== workflowCase.assignedTeam) {
+      return res.status(403).json({ message: 'Only the assigned printing team can reroute this task' });
+    }
+
+    const reason = cleanText(req.body.reason, 1000);
+    if (!reason) return res.status(400).json({ message: 'Add a short reason for changing the printer' });
+
+    const previousMethod = workflowCase.productionMethod;
+    const previousMachineCode = workflowCase.print?.machineId || '';
+    const nextMethod = previousMethod === 'wax' ? 'resin' : 'wax';
+    const previousStatus = workflowCase.status;
+    const previousAssignee = workflowCase.assignedTo;
+    const nextTeam = teamForStatus('ready_to_print', nextMethod);
+    const now = new Date();
+    const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
+    const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
+    const automaticAssignee = await findTeamAssignee(nextTeam);
+
+    workflowCase.productionMethod = nextMethod;
+    workflowCase.status = 'ready_to_print';
+    workflowCase.assignedTeam = nextTeam;
+    workflowCase.assignedTo = automaticAssignee?._id || null;
+    workflowCase.assignedAt = automaticAssignee ? now : null;
+    workflowCase.startedAt = null;
+    workflowCase.stageQueuedAt = now;
+    workflowCase.targetMinutes = targetMinutesForTeam(nextTeam);
+    workflowCase.isBlocked = false;
+    workflowCase.blockedReason = '';
+    workflowCase.blockedAt = null;
+    workflowCase.blockedBy = null;
+    workflowCase.print = { machineId: '', sentAt: null, startedAt: null, completedAt: null };
+    workflowCase.history.push({
+      actorId: req.user.id,
+      action: 'production_rerouted',
+      fromStatus: previousStatus,
+      toStatus: 'ready_to_print',
+      note: `${previousMethod} → ${nextMethod}: ${reason}`,
+      queueMinutes,
+      workMinutes
+    });
+    await workflowCase.save();
+
+    if (previousStatus === 'printing' && previousMachineCode) {
+      await releaseMachineFromCase({ machineCode: previousMachineCode, workflowCase, actorId: req.user.id, outcome: 'failed', reason });
+    }
+
+    if (workflowCase.orderId && workflowCase.orderItemId) {
+      await Order.updateOne(
+        { _id: workflowCase.orderId, 'items._id': workflowCase.orderItemId },
+        { $set: { 'items.$.productionMethod': nextMethod, 'items.$.fulfillmentStatus': 'production' } }
+      );
+    }
+
+    if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+    if (previousStatus === 'printing') {
+      await safelyNotify(() => notifyFailedPrint(req.app, workflowCase, reason));
+    } else if (workflowCase.assignedTo) {
+      await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase, 'reassigned'));
+    }
+    await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+
+    res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
+  } catch (error) {
+    console.error('Error rerouting print task:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to reroute the print task' });
+  }
+});
+
 router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
@@ -790,6 +1342,7 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
     const ownershipError = requireOwnedCase(req.user, workflowCase);
     if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
+    if (workflowCase.isBlocked) return res.status(409).json({ message: 'Resume this blocked task before completing it' });
     const nextStatus = String(req.body.status || '');
     const targetTeam = nextStatus === 'completed'
       ? workflowCase.assignedTeam
@@ -802,12 +1355,35 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     }
     const transitionError = validateTransition(workflowCase, nextStatus);
     if (transitionError) return res.status(409).json({ message: transitionError });
-    if (!isAdminUser(req.user) && !workflowCase.startedAt) {
+    const startsPrintingNow = workflowCase.status === 'ready_to_print' && nextStatus === 'printing';
+    if (!isManagerUser(req.user) && !workflowCase.startedAt && !startsPrintingNow) {
       return res.status(409).json({ message: 'Start this task before marking the step complete' });
+    }
+
+    let selectedMachine = null;
+    if (nextStatus === 'printing') {
+      const requestedMachine = cleanText(req.body.machineId, 120);
+      // The operator chooses the physical printer in the manufacturer's app.
+      // A machine code is optional here and is only validated when supplied by an integration.
+      if (requestedMachine) {
+        selectedMachine = await findMachine(requestedMachine);
+        if (!selectedMachine) return res.status(404).json({ message: 'Selected printer is not registered' });
+        if (!selectedMachine.enabled) return res.status(409).json({ message: 'Selected printer is disabled' });
+        if (selectedMachine.productionMethod !== workflowCase.productionMethod) {
+          return res.status(409).json({ message: `Choose a ${workflowCase.productionMethod} printer for this task` });
+        }
+        if (['offline', 'failed', 'maintenance'].includes(selectedMachine.status)) {
+          return res.status(409).json({ message: `Selected printer is ${selectedMachine.status}` });
+        }
+        if (selectedMachine.currentCaseId && String(selectedMachine.currentCaseId) !== String(workflowCase._id)) {
+          return res.status(409).json({ message: 'Selected printer is already assigned to another task' });
+        }
+      }
     }
 
     const now = new Date();
     const previousStatus = workflowCase.status;
+    const previousMachineCode = workflowCase.print?.machineId || '';
     const previousTeam = workflowCase.assignedTeam;
     const previousAssignee = workflowCase.assignedTo;
     const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
@@ -820,7 +1396,8 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       workflowCase.completedAt = null;
       workflowCase.stageQueuedAt = now;
       workflowCase.targetMinutes = targetMinutesForTeam(targetTeam);
-      workflowCase.startedAt = null;
+      // Starting in the portal records the manufacturer-app print start.
+      workflowCase.startedAt = nextStatus === 'printing' ? now : null;
       if (previousTeam !== targetTeam) {
         const automaticAssignee = await findTeamAssignee(targetTeam);
         workflowCase.assignedTo = automaticAssignee?._id || null;
@@ -830,7 +1407,7 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       }
     }
     if (nextStatus === 'printing') {
-      workflowCase.print.machineId = cleanText(req.body.machineId, 120);
+      workflowCase.print.machineId = selectedMachine?.code || '';
       workflowCase.print.sentAt = workflowCase.print.sentAt || new Date();
       workflowCase.print.startedAt = now;
     }
@@ -845,6 +1422,18 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       workMinutes
     });
     await workflowCase.save();
+    if (nextStatus === 'printing' && selectedMachine) {
+      await assignMachineToCase({ machine: selectedMachine, workflowCase, actorId: req.user.id });
+    } else if (previousStatus === 'printing' && previousMachineCode) {
+      const failed = ['ready_to_print', 'modeling'].includes(nextStatus);
+      await releaseMachineFromCase({
+        machineCode: previousMachineCode,
+        workflowCase,
+        actorId: req.user.id,
+        outcome: failed ? 'failed' : nextStatus,
+        reason: failed ? cleanText(req.body.note, 1000) : ''
+      });
+    }
     if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
       if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
       if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));

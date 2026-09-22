@@ -31,6 +31,16 @@ const productSchema = new mongoose.Schema({
     min: 0,
     default: 0
   },
+  canonicalReference: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  stockSyncState: {
+    type: String,
+    enum: ['manual', 'synced', 'needs_details'],
+    default: 'manual'
+  },
   // `stock` is the quantity currently available to promise to customers.
   // New orders move units from stock to reservedStock until they ship or cancel.
   stock: {
@@ -154,6 +164,7 @@ const productSchema = new mongoose.Schema({
 
 productSchema.index({ stock: 1, isActive: 1 });
 productSchema.index({ serialNumber: 1 });
+productSchema.index({ canonicalReference: 1 });
 
 // Update the updatedAt field before saving
 productSchema.pre('save', function(next) {

@@ -56,6 +56,10 @@ const workflowCaseSchema = new mongoose.Schema({
   assignedAt: { type: Date, default: null },
   startedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
+  isBlocked: { type: Boolean, default: false, index: true },
+  blockedReason: { type: String, trim: true, maxlength: 1000, default: '' },
+  blockedAt: { type: Date, default: null },
+  blockedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
   customer: {
     name: { type: String, trim: true, maxlength: 160, default: '' },
     email: { type: String, trim: true, lowercase: true, maxlength: 320, default: '' },
@@ -86,5 +90,51 @@ const workflowCaseSchema = new mongoose.Schema({
 
 workflowCaseSchema.index({ assignedTeam: 1, assignedTo: 1, status: 1, priority: -1, deadlineAt: 1, createdAt: 1 });
 workflowCaseSchema.index({ orderId: 1, createdAt: 1 });
+workflowCaseSchema.index({ customerId: 1, status: 1, createdAt: -1 });
+
+workflowCaseSchema.pre('save', async function() {
+  if (!this.isModified('history')) return;
+  let previousCount = 0;
+  if (!this.isNew) {
+    const previous = await this.constructor.findById(this._id)
+      .select('history._id')
+      .session(this.$session() || null)
+      .lean();
+    previousCount = previous?.history?.length || 0;
+  }
+  this.$locals.newAuditHistory = this.history.slice(previousCount).map(entry => entry.toObject ? entry.toObject() : entry);
+});
+
+workflowCaseSchema.post('save', async function(workflowCase, next) {
+  try {
+    const entries = workflowCase.$locals.newAuditHistory || [];
+    if (entries.length) {
+      const AuditLog = require('./AuditLog');
+      await AuditLog.create(entries.map(entry => ({
+        category: 'workflow',
+        action: entry.action,
+        actorId: entry.actorId,
+        entityType: 'workflow_case',
+        entityId: String(workflowCase._id),
+        orderId: workflowCase.orderId ? String(workflowCase.orderId) : null,
+        details: {
+          requestedName: workflowCase.requestedName,
+          fromStatus: entry.fromStatus,
+          toStatus: entry.toStatus,
+          assignedTeam: workflowCase.assignedTeam,
+          assignedTo: workflowCase.assignedTo ? String(workflowCase.assignedTo) : null,
+          productionMethod: workflowCase.productionMethod,
+          note: entry.note,
+          queueMinutes: entry.queueMinutes,
+          workMinutes: entry.workMinutes
+        },
+        createdAt: entry.createdAt || new Date()
+      })), { session: workflowCase.$session() || undefined });
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = mongoose.model('WorkflowCase', workflowCaseSchema);

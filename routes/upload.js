@@ -102,6 +102,17 @@ router.post('/image-base64', auth, async (req, res) => {
       return res.status(400).json({ message: 'Image data and filename are required' });
     }
 
+    // Reject a bogus MIME type here rather than letting Cloudinary fail with
+    // an opaque 500. A malformed client type used to arrive as e.g.
+    // "image/asawer/cache/ImagePicker/<id>" and died inside the data URI.
+    const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (!ALLOWED_MIME.includes(resolvedMimeType.toLowerCase())) {
+      console.log('Rejected base64 upload with unsupported type:', resolvedMimeType);
+      return res.status(400).json({
+        message: `Unsupported image type "${resolvedMimeType}". Use JPEG, PNG, GIF or WebP.`,
+      });
+    }
+
     // Upload to Cloudinary directly from base64
     const dataURI = `data:${resolvedMimeType};base64,${image}`;
     const result = await cloudinary.uploader.upload(dataURI, {
@@ -142,7 +153,7 @@ router.use((error, req, res, next) => {
     }
   }
 
-  if (error.message.includes('Only image files are allowed')) {
+  if (error?.message?.includes('Only image files are allowed')) {
     return res.status(400).json({ message: error.message });
   }
 

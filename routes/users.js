@@ -5,6 +5,7 @@ const { auth } = require('../middlewares/auth');
 const router = express.Router();
 
 const Notification = require('../models/Notification');
+const { notificationFilterForUser } = require('../utils/notificationPolicy');
 const ALLOWED_ROLES = ['user', 'employee', 'admin'];
 const ALLOWED_WORK_ROLES = ['general', 'stock', 'customer_service', 'boss', 'wax_print', 'resin_print', 'quality', 'packing'];
 const getRole = (user) => user.isAdmin ? 'admin' : (user.role || 'user');
@@ -339,7 +340,7 @@ router.get('/me/notifications', auth, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
-    const filter = { user: req.user.id };
+    const filter = notificationFilterForUser(req.user);
     const total = await Notification.countDocuments(filter);
     const notifications = await Notification.find(filter)
       .sort({ createdAt: -1 })

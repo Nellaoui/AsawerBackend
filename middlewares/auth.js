@@ -13,8 +13,6 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ message: 'No token, authorization denied' });
     }
 
-    console.log('🔐 Auth middleware - Token preview:', token.substring(0, 20) + '...');
-
     // Handle test tokens for development
     if (token.startsWith('test-token-')) {
       if (process.env.NODE_ENV !== 'development') {
@@ -60,7 +58,8 @@ const auth = async (req, res, next) => {
           name: user.name || 'Test User',
           phone: user.phone || '',
           isAdmin: user.isAdmin || false,
-          role: user.role || (user.isAdmin ? 'admin' : 'user')
+          role: user.role || (user.isAdmin ? 'admin' : 'user'),
+          workRole: user.workRole || 'general'
         };
 
         console.log(`✅ Auth middleware - Test user authenticated:`, {
@@ -81,7 +80,7 @@ const auth = async (req, res, next) => {
     }
 
     // Handle real JWT tokens
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.auth = decoded;
     console.log('✅ Auth middleware - Token decoded successfully, user ID:', decoded.userId);
 

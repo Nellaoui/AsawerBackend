@@ -4,12 +4,24 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
+const StockVariant = require('../models/StockVariant');
+const StockOrphan = require('../models/StockOrphan');
 const { operationsAuth } = require('../middlewares/auth');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
-const { notifyCaseAssignment, notifyLowStock } = require('../utils/workflowNotifications');
+const { notifyCaseAssignment } = require('../utils/workflowNotifications');
 
 const router = express.Router();
+
+const inventoryRoleAuth = (req, res, next) => {
+  const allowed = req.user?.isAdmin
+    || req.user?.role === 'admin'
+    || (req.user?.role === 'employee' && ['stock', 'boss'].includes(req.user?.workRole));
+  if (!allowed) {
+    return res.status(403).json({ message: 'Product management is limited to stock staff and the boss' });
+  }
+  next();
+};
 
 const safelyNotify = async (operation) => {
   try {
@@ -22,7 +34,7 @@ const safelyNotify = async (operation) => {
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const serializeProduct = (product) => {
+const serializeProduct = (product, stockVariants = []) => {
   const value = product.toObject ? product.toObject() : product;
   const catalog = value.catalogId && typeof value.catalogId === 'object' ? value.catalogId : null;
 
@@ -33,12 +45,24 @@ const serializeProduct = (product) => {
     reservedStock: Number.isFinite(value.reservedStock) ? value.reservedStock : 0,
     lowStockThreshold: Number.isFinite(value.lowStockThreshold) ? value.lowStockThreshold : 2,
     stockLocation: value.stockLocation || '',
-    catalogName: catalog?.name || ''
+    catalogName: catalog?.name || '',
+    stockSyncState: value.stockSyncState || 'manual',
+    stockVariants: stockVariants.map(variant => ({
+      id: String(variant._id),
+      reference: variant.displayReference,
+      printMethod: variant.printMethod,
+      size: variant.size,
+      onHandQuantity: Number(variant.onHandQuantity || 0),
+      reservedQuantity: Number(variant.reservedQuantity || 0),
+      availableQuantity: Math.max(Number(variant.onHandQuantity || 0) - Number(variant.reservedQuantity || 0), 0),
+      sourceSheet: variant.sourceSheet,
+      lastSyncedAt: variant.lastSyncedAt
+    }))
   };
 };
 
 // GET /api/inventory - Searchable stock list and dashboard totals.
-router.get('/', operationsAuth, async (req, res) => {
+router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
@@ -91,8 +115,20 @@ router.get('/', operationsAuth, async (req, res) => {
       ])
     ]);
 
+    const variants = products.length
+      ? await StockVariant.find({ productIds: { $in: products.map(product => product._id) } }).sort({ printMethod: 1, sizeKey: 1 }).lean()
+      : [];
+    const variantsByProduct = new Map();
+    for (const variant of variants) {
+      for (const productId of variant.productIds || []) {
+        const id = String(productId);
+        if (!variantsByProduct.has(id)) variantsByProduct.set(id, []);
+        variantsByProduct.get(id).push(variant);
+      }
+    }
+
     res.json({
-      products: products.map(serializeProduct),
+      products: products.map(product => serializeProduct(product, variantsByProduct.get(String(product._id)) || [])),
       summary: totals[0] || {
         products: 0,
         availableUnits: 0,
@@ -114,7 +150,7 @@ router.get('/', operationsAuth, async (req, res) => {
 });
 
 // GET /api/inventory/movements - Recent, immutable stock audit trail.
-router.get('/movements', operationsAuth, async (req, res) => {
+router.get('/movements', operationsAuth, inventoryRoleAuth, async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
     const filter = {};
@@ -135,8 +171,75 @@ router.get('/movements', operationsAuth, async (req, res) => {
   }
 });
 
+// GET /api/inventory/orphans - Counted stock that has no product in the app.
+// These rows come off the paper worksheets; somebody has to create the product
+// before the quantity can become sellable stock.
+router.get('/orphans', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  try {
+    const status = ['pending', 'resolved', 'ignored'].includes(req.query.status)
+      ? req.query.status
+      : 'pending';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+
+    const [orphans, counts, deadVariants] = await Promise.all([
+      StockOrphan.find({ status }).sort({ units: -1, reference: 1 }).limit(limit).lean(),
+      StockOrphan.aggregate([
+        { $group: { _id: '$status', rows: { $sum: 1 }, units: { $sum: '$units' } } }
+      ]),
+      // A StockVariant whose products have all been deleted is orphaned too.
+      StockVariant.aggregate([
+        { $lookup: { from: 'products', localField: 'productIds', foreignField: '_id', as: 'live' } },
+        { $match: { live: { $size: 0 } } },
+        { $project: { displayReference: 1, size: 1, onHandQuantity: 1 } }
+      ])
+    ]);
+
+    const summary = { pending: { rows: 0, units: 0 }, resolved: { rows: 0, units: 0 }, ignored: { rows: 0, units: 0 } };
+    for (const row of counts) {
+      if (summary[row._id]) summary[row._id] = { rows: row.rows, units: row.units };
+    }
+
+    res.json({
+      status,
+      summary,
+      orphans,
+      danglingVariants: deadVariants,
+      totalUnits: orphans.reduce((sum, row) => sum + (row.units || 0), 0)
+    });
+  } catch (error) {
+    console.error('Error fetching stock orphans:', error);
+    res.status(500).json({ message: 'Failed to fetch stock without products' });
+  }
+});
+
+// PATCH /api/inventory/orphans/:id - Mark an orphan resolved or ignored.
+router.patch('/orphans/:id', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid id' });
+  }
+  const status = req.body?.status;
+  if (!['pending', 'resolved', 'ignored'].includes(status)) {
+    return res.status(400).json({ message: 'status must be pending, resolved or ignored' });
+  }
+  try {
+    const orphan = await StockOrphan.findById(req.params.id);
+    if (!orphan) return res.status(404).json({ message: 'Not found' });
+    orphan.status = status;
+    orphan.resolvedAt = status === 'pending' ? null : new Date();
+    orphan.resolvedBy = status === 'pending' ? null : req.user.id;
+    if (req.body?.productId && mongoose.Types.ObjectId.isValid(req.body.productId)) {
+      orphan.resolvedProductId = req.body.productId;
+    }
+    await orphan.save();
+    res.json(orphan);
+  } catch (error) {
+    console.error('Error updating stock orphan:', error);
+    res.status(500).json({ message: 'Failed to update' });
+  }
+});
+
 // PATCH /api/inventory/products/:id - Receive, remove, or set available stock.
-router.patch('/products/:id', operationsAuth, async (req, res) => {
+router.patch('/products/:id', operationsAuth, inventoryRoleAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid product ID' });
   }
@@ -158,8 +261,6 @@ router.patch('/products/:id', operationsAuth, async (req, res) => {
 
   let session;
   let updatedProduct;
-  let stockBeforeValue;
-  let thresholdBeforeValue;
 
   try {
     session = await mongoose.startSession();
@@ -179,8 +280,6 @@ router.patch('/products/:id', operationsAuth, async (req, res) => {
       }
 
       const stockBefore = product.stock;
-      stockBeforeValue = stockBefore;
-      thresholdBeforeValue = Number(product.lowStockThreshold ?? 2);
       const stockAfter = action === 'set'
         ? quantity
         : stockBefore + (action === 'receive' ? quantity : -quantity);
@@ -226,14 +325,6 @@ router.patch('/products/:id', operationsAuth, async (req, res) => {
     });
 
     await updatedProduct.populate('catalogId', 'name');
-    const wasLowStock = Number(stockBeforeValue) <= Number(thresholdBeforeValue);
-    const isLowStock = Number(updatedProduct.stock) <= Number(updatedProduct.lowStockThreshold ?? 2);
-    if (
-      isLowStock
-      && (!wasLowStock || Number(updatedProduct.stock) < Number(stockBeforeValue))
-    ) {
-      await safelyNotify(() => notifyLowStock(req.app, updatedProduct, `inventory:${Date.now()}`));
-    }
     res.json(serializeProduct(updatedProduct));
   } catch (error) {
     console.error('Error updating stock:', error);
@@ -244,7 +335,7 @@ router.patch('/products/:id', operationsAuth, async (req, res) => {
 });
 
 // POST /api/inventory/products/:id/damage - Record a broken unit and route its replacement.
-router.post('/products/:id/damage', operationsAuth, async (req, res) => {
+router.post('/products/:id/damage', operationsAuth, inventoryRoleAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid product ID' });
   }
@@ -259,7 +350,6 @@ router.post('/products/:id/damage', operationsAuth, async (req, res) => {
 
   let session;
   let workflowCaseId;
-  let damagedProduct;
   try {
     session = await mongoose.startSession();
     await session.withTransaction(async () => {
@@ -338,7 +428,6 @@ router.post('/products/:id/damage', operationsAuth, async (req, res) => {
         await order.save({ session });
       }
       await product.save({ session });
-      damagedProduct = product.toObject();
       await InventoryMovement.create([{
         productId: product._id,
         orderId: order?._id || null,
@@ -353,8 +442,6 @@ router.post('/products/:id/damage', operationsAuth, async (req, res) => {
 
     const workflowCase = await WorkflowCase.findById(workflowCaseId).populate('productId', 'name serialNumber printMethod modelFileStatus');
     await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
-    await safelyNotify(() => notifyLowStock(req.app, damagedProduct, `damage:${workflowCaseId}`));
-
     res.status(201).json({
       message: 'Damage recorded and replacement routed',
       workflowCase

@@ -1,5 +1,12 @@
 const mongoose = require('mongoose');
 
+const mixedUserIds = value => {
+  const text = String(value || '');
+  const values = text ? [text] : [];
+  if (mongoose.Types.ObjectId.isValid(text)) values.push(new mongoose.Types.ObjectId(text));
+  return values;
+};
+
 const orderItemSchema = new mongoose.Schema({
   productId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -42,6 +49,11 @@ const orderItemSchema = new mongoose.Schema({
     min: 0,
     default: null
   },
+  inventoryVariantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'StockVariant',
+    default: null
+  },
   printQuantity: {
     type: Number,
     min: 0,
@@ -54,8 +66,8 @@ const orderItemSchema = new mongoose.Schema({
   },
   fulfillmentStatus: {
     type: String,
-    enum: ['stock_reserved', 'production', 'ready', 'cancelled'],
-    default: 'stock_reserved'
+    enum: ['awaiting_validation', 'stock_reserved', 'production', 'ready', 'cancelled'],
+    default: 'awaiting_validation'
   },
   workflowCaseId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -65,6 +77,16 @@ const orderItemSchema = new mongoose.Schema({
 });
 
 const orderSchema = new mongoose.Schema({
+  orderNumber: {
+    type: String,
+    trim: true,
+    maxlength: 40
+  },
+  submissionKey: {
+    type: String,
+    trim: true,
+    maxlength: 160
+  },
   userId: {
     // Mixed allows both ObjectId (real users) and string (test tokens)
     type: mongoose.Schema.Types.Mixed,
@@ -97,6 +119,33 @@ const orderSchema = new mongoose.Schema({
     enum: ['clear', 'blocked', 'in_progress', 'ready'],
     default: 'clear'
   },
+  validationStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    // Existing orders predate this gate and must not be sent through it again.
+    default: 'approved',
+    index: true
+  },
+  validationCaseId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WorkflowCase',
+    default: null
+  },
+  validatedBy: {
+    type: mongoose.Schema.Types.Mixed,
+    ref: 'User',
+    default: null
+  },
+  validatedAt: {
+    type: Date,
+    default: null
+  },
+  validationNote: {
+    type: String,
+    trim: true,
+    maxlength: 1000,
+    default: ''
+  },
   inventoryReservedAt: {
     type: Date,
     default: null
@@ -128,6 +177,13 @@ const orderSchema = new mongoose.Schema({
   }
 });
 
+orderSchema.index({ orderNumber: 1 }, { unique: true, sparse: true });
+orderSchema.index({ userId: 1, status: 1, createdAt: -1 });
+orderSchema.index(
+  { userId: 1, submissionKey: 1 },
+  { unique: true, partialFilterExpression: { submissionKey: { $type: 'string' } } }
+);
+
 // Pre-save middleware to update timestamps
 orderSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
@@ -154,7 +210,7 @@ orderSchema.methods.getSummary = function() {
 
 // Static method to find orders by user
 orderSchema.statics.findByUser = function(userId, options = {}) {
-  const query = this.find({ userId });
+  const query = this.find({ userId: { $in: mixedUserIds(userId) } });
   
   if (options.status) {
     query.where('status').equals(options.status);
@@ -180,7 +236,7 @@ orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
   }
 
   if (filters.userId) {
-    query.where('userId').equals(filters.userId);
+    query.where('userId').in(mixedUserIds(filters.userId));
   }
 
   if (filters.catalogId) {

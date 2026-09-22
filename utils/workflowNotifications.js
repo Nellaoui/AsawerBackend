@@ -2,6 +2,8 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const WorkflowCase = require('../models/WorkflowCase');
 const { sendPushToUser } = require('./pushNotification');
+const { canNotifyUser } = require('./notificationPolicy');
+const { visibleTaskFilter, isVisibleWorkflowCase } = require('./workflowVisibility');
 
 const closedStatuses = ['completed', 'cancelled', 'rejected'];
 
@@ -26,8 +28,9 @@ const emitNotification = (app, notification) => {
 
 const notifyUser = async (app, { userId, title, body, type = 'general', data = {}, dedupeKey }) => {
   if (!userId) return null;
-  const user = await User.findOne({ _id: userId, isActive: { $ne: false } }).select('_id');
+  const user = await User.findOne({ _id: userId, isActive: { $ne: false } }).select('_id role');
   if (!user) return null;
+  if (!canNotifyUser(user, type, data)) return null;
 
   let notification;
   try {
@@ -57,7 +60,7 @@ const notifyUser = async (app, { userId, title, body, type = 'general', data = {
 
 const activeAdminIds = async () => {
   const users = await User.find({
-    $or: [{ isAdmin: true }, { role: 'admin' }],
+    $or: [{ isAdmin: true }, { role: 'admin' }, { role: 'employee', workRole: 'boss' }],
     isActive: { $ne: false }
   }).select('_id').lean();
   return users.map(user => user._id);
@@ -78,7 +81,7 @@ const taskData = workflowCase => ({
 });
 
 const notifyCaseAssignment = async (app, workflowCase, event = 'new_task') => {
-  if (!workflowCase?.assignedTo || closedStatuses.includes(workflowCase.status)) return null;
+  if (!isVisibleWorkflowCase(workflowCase) || !workflowCase.assignedTo || closedStatuses.includes(workflowCase.status)) return null;
   const assigneeId = workflowCase.assignedTo?._id || workflowCase.assignedTo;
   const title = event === 'reassigned' ? 'Task reassigned to you' : 'New task assigned';
   const body = `${workflowCase.requestedName} · ${String(workflowCase.assignedTeam || '').replaceAll('_', ' ')}`;
@@ -92,15 +95,16 @@ const notifyCaseAssignment = async (app, workflowCase, event = 'new_task') => {
   });
 };
 
-const notifyTaskRemoved = async (app, userId, workflowCase) => notifyUser(app, {
+const notifyTaskRemoved = async (app, userId, workflowCase) => isVisibleWorkflowCase(workflowCase) ? notifyUser(app, {
   userId,
   title: 'Task reassigned',
   body: `${workflowCase.requestedName} was moved to another employee.`,
   type: 'task_removed',
   data: taskData(workflowCase)
-});
+}) : null;
 
 const notifyOrderBlocked = async (app, workflowCase, reason = '') => {
+  if (!isVisibleWorkflowCase(workflowCase)) return null;
   const adminIds = await activeAdminIds();
   const recipients = [workflowCase.assignedTo?._id || workflowCase.assignedTo, ...adminIds];
   return notifyUsers(app, recipients, {
@@ -108,25 +112,12 @@ const notifyOrderBlocked = async (app, workflowCase, reason = '') => {
     body: `${workflowCase.requestedName} is blocked${reason ? `: ${reason}` : '.'}`,
     type: 'order_blocked',
     data: taskData(workflowCase),
-    dedupeKey: `blocked:${workflowCase._id}:${workflowCase.stageQueuedAt ? new Date(workflowCase.stageQueuedAt).getTime() : workflowCase.status}`
-  });
-};
-
-const notifyLowStock = async (app, product, contextKey = '') => {
-  if (!product || product.fulfillmentPolicy === 'print_on_demand' || Number(product.stock) > Number(product.lowStockThreshold ?? 2)) return [];
-  const stockEmployees = await User.find({ role: 'employee', workRole: 'stock', isActive: { $ne: false } }).select('_id').lean();
-  const adminIds = await activeAdminIds();
-  const recipients = [...stockEmployees.map(user => user._id), ...adminIds];
-  return notifyUsers(app, recipients, {
-    title: Number(product.stock) <= 0 ? 'Product out of stock' : 'Product stock is low',
-    body: `${product.name} has ${Number(product.stock || 0)} available unit(s).`,
-    type: 'low_stock',
-    data: { productId: String(product._id), stock: Number(product.stock || 0), lowStockThreshold: Number(product.lowStockThreshold ?? 2) },
-    ...(contextKey ? { dedupeKey: `low-stock:${product._id}:${contextKey}` } : {})
+    dedupeKey: `blocked:${workflowCase._id}:${workflowCase.blockedAt ? new Date(workflowCase.blockedAt).getTime() : Date.now()}`
   });
 };
 
 const notifyFailedPrint = async (app, workflowCase, note = '') => {
+  if (!isVisibleWorkflowCase(workflowCase)) return null;
   const adminIds = await activeAdminIds();
   const recipients = [workflowCase.assignedTo?._id || workflowCase.assignedTo, ...adminIds];
   return notifyUsers(app, recipients, {
@@ -148,6 +139,7 @@ let deadlineInterval = null;
 const checkWorkflowDeadlines = async app => {
   const now = new Date();
   const cases = await WorkflowCase.find({
+    ...visibleTaskFilter(),
     assignedTo: { $ne: null },
     status: { $nin: closedStatuses }
   }).select('orderId requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt createdAt').lean();
@@ -192,7 +184,6 @@ module.exports = {
   checkWorkflowDeadlines,
   notifyCaseAssignment,
   notifyFailedPrint,
-  notifyLowStock,
   notifyOrderBlocked,
   notifyTaskRemoved,
   notifyUser,

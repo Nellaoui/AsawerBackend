@@ -1,13 +1,10 @@
 export {};
 
 // Isolate the route handler so these tests never connect to a real database.
-jest.mock('mongoose', () => ({
-  startSession: jest.fn(),
-  Types: { ObjectId: { isValid: (value: string) => /^[a-f\d]{24}$/i.test(value) } },
-}), { virtual: true });
 jest.mock('express', () => ({ Router: () => ({
   stack: [] as any[],
   get: jest.fn(),
+  post: jest.fn(),
   patch(path: string, ...handlers: any[]) {
     this.stack.push({ route: { path, stack: handlers.map(handle => ({ handle })) } });
   },

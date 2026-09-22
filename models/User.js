@@ -37,6 +37,11 @@ const userSchema = new mongoose.Schema({
     enum: ['general', 'stock', 'customer_service', 'boss', 'wax_print', 'resin_print', 'quality', 'packing'],
     default: 'general'
   },
+  forcedProductionMethod: {
+    type: String,
+    enum: ['automatic', 'wax', 'resin'],
+    default: 'automatic'
+  },
   isActive: {
     type: Boolean,
     default: true

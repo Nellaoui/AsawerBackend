@@ -294,11 +294,11 @@ router.post('/', auth, async (req, res) => {
       let recipients = [];
       if (catalog.isPublic) {
         // all non-admin active users
-        recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+        recipients = await User.find({ role: 'user', isActive: true }).select('_id name email');
       } else if (Array.isArray(catalog.allowedUserIds) && catalog.allowedUserIds.length > 0) {
         // only allowed users
         const ids = catalog.allowedUserIds.map(id => id.toString ? id.toString() : String(id));
-        recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+        recipients = await User.find({ _id: { $in: ids }, role: 'user', isActive: true }).select('_id name email');
       }
 
       for (const user of recipients) {
@@ -511,10 +511,10 @@ router.post('/:id/products', auth, async (req, res) => {
       // Determine recipients: users who can access this catalog
       let recipients = [];
       if (catalog.isPublic) {
-        recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+        recipients = await User.find({ role: 'user', isActive: true }).select('_id name email');
       } else {
         const ids = (catalog.allowedUserIds || []).map(id => id && id.toString ? id.toString() : String(id));
-        recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+        recipients = await User.find({ _id: { $in: ids }, role: 'user', isActive: true }).select('_id name email');
       }
 
       for (const user of recipients) {
@@ -647,10 +647,10 @@ router.post('/:id/products', auth, async (req, res) => {
 
           let recipients = [];
           if (catalog.isPublic) {
-            recipients = await User.find({ isAdmin: false, isActive: true }).select('_id name email');
+            recipients = await User.find({ role: 'user', isActive: true }).select('_id name email');
           } else {
             const ids = (catalog.allowedUserIds || []).map(id => id && id.toString ? id.toString() : String(id));
-            recipients = await User.find({ _id: { $in: ids }, isActive: true }).select('_id name email');
+            recipients = await User.find({ _id: { $in: ids }, role: 'user', isActive: true }).select('_id name email');
           }
 
           const productCount = addedIds.length;

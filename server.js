@@ -6,14 +6,24 @@ const http = require('http');
 const { Server } = require('socket.io');
 const dns = require('dns');
 require('dotenv').config();
+if (!process.env.JWT_SECRET || !process.env.JWT_SECRET.trim()) {
+  throw new Error('JWT_SECRET must be configured before starting the API');
+}
+if (process.env.NODE_ENV === 'production' && process.env.JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET must contain at least 32 characters in production');
+}
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications');
+const { startBackupScheduler } = require('./utils/backupService');
+const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
+const { ensureDefaultMachines } = require('./utils/machineRegistry');
 
 // Use Google DNS for SRV record resolution (fixes local DNS issues)
 dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 const app = express();
+installErrorMonitoring();
 
 // Middleware
 // Enable CORS for all origins and handle preflight OPTIONS requests globally
@@ -43,7 +53,6 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Debug middleware to log all requests
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-  console.log('Headers:', req.headers.authorization ? 'Authorization: ' + req.headers.authorization.substring(0, 20) + '...' : 'No Authorization');
   next();
 });
 
@@ -57,7 +66,9 @@ const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
+  ensureDefaultMachines().catch(error => console.error('Failed to register default printers:', error));
   startWorkflowDeadlineNotifier(app);
+  startBackupScheduler();
 });
 
 // We'll create an HTTP server and attach Socket.IO so routes can use io via app.get('io')
@@ -98,7 +109,7 @@ io.use(async (socket, next) => {
       return next();
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     if (decoded && decoded.userId) {
       const user = await User.findById(decoded.userId).select('-password');
       if (user) socket.data.userId = user._id.toString();
@@ -152,7 +163,7 @@ app.set('socketsByUser', socketsByUser);
 // Health check — no DB query, responds immediately.
 // Used by the mobile app to wake the server on startup (Render cold start).
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), inventoryApi: 1, workflowApi: 1, catalogMembershipApi: 2, defaultStock: 0 });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), inventoryApi: 1, workflowApi: 1, machineApi: 1, catalogMembershipApi: 2, defaultStock: 0 });
 });
 
 // Routes
@@ -162,6 +173,7 @@ app.use('/api/catalogs', require('./routes/catalogs'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/workflow', require('./routes/workflow'));
+app.use('/api/machines', require('./routes/machines'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
@@ -169,6 +181,9 @@ app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/clasp-images', require('./routes/claspImages'));
 app.use('/api/size-presets', require('./routes/sizePresets'));
+
+// The operations portal is served on the same HTTPS origin as its API.
+app.use('/admin', require('./portalRoutes'));
 
 // Serve support page
 app.get('/support', (req, res) => {
@@ -191,8 +206,8 @@ app.get('/', (req, res) => {
 });
 
 // Error handling middleware
+app.use(monitorExpressError);
 app.use((err, req, res, next) => {
-  console.error(err.stack);
   res.status(500).json({ message: 'Something went wrong!' });
 });
 

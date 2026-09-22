@@ -89,6 +89,9 @@ router.post('/notify', adminAuth, async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role === 'employee') {
+      return res.status(400).json({ message: 'Employee notifications are created automatically from actionable workflow events' });
+    }
 
     // persist notification
     const notif = await Notification.create({ user: userId, title, body, data });
@@ -138,6 +141,9 @@ router.post('/notify-user', adminAuth, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
+    }
+    if (user.role === 'employee') {
+      return res.status(400).json({ message: 'Employee notifications are created automatically from actionable workflow events' });
     }
 
     // Send push notification
@@ -190,11 +196,14 @@ router.post('/notify-all', adminAuth, async (req, res) => {
     }
 
     // Find users (optionally filter by role)
-    const filter = { isActive: true };
+    if (role === 'employee') {
+      return res.status(400).json({ message: 'Employee notifications are created automatically from actionable workflow events' });
+    }
+    const filter = { isActive: true, role: { $ne: 'employee' } };
     if (role === 'admin') {
       filter.isAdmin = true;
     } else if (role === 'user') {
-      filter.isAdmin = false;
+      filter.role = 'user';
     }
 
     const users = await User.find(filter).select('_id email');
@@ -257,7 +266,7 @@ router.post('/impersonate/:userId', adminAuth, async (req, res) => {
         originalAdminId: req.user.id || req.user._id,
         originalAdminName: req.user.name,
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: IMPERSONATION_TOKEN_EXPIRES_IN }
     );
 
