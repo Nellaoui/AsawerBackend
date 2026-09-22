@@ -68,6 +68,16 @@
     @media (max-width:900px) { .stats { grid-template-columns:repeat(2,1fr); } header,.toolbar { flex-wrap:wrap; } main { padding:18px; } }
     /* Customer service can set products up but not move stock. */
     body.setup-only [data-stock-only]{display:none!important}
+    /* Photo picker and the clickable "fix this product" rows. */
+    .field-label{display:block;font-size:.85rem;margin-bottom:6px}
+    .photo-row{display:flex;gap:12px;align-items:flex-start}
+    .photo-row>.photo-controls{flex:1;min-width:0}
+    .photo-preview,.photo-empty{flex:0 0 auto}
+    .photo-preview{width:76px;height:76px;object-fit:cover;border-radius:10px;border:1px solid #ffffff22;background:#0b0f15}
+    .photo-empty{width:76px;height:76px;border-radius:10px;border:1px dashed #ffffff33;display:flex;align-items:center;justify-content:center;text-align:center;font-size:.7rem;color:var(--muted);padding:6px}
+    .fix-row{cursor:pointer}
+    .fix-row:hover,.fix-row:focus-visible{background:#ffffff0a}
+    input[type=file]{width:100%;font-size:.85rem;color:var(--muted)}
   </style>
   <style>
     :root{--bg:#080b10;--panel:#11161e;--line:#293140;--gold:#f0c75e;--muted:#9da8b8;--red:#fb7185;--green:#4ade80;--blue:#60a5fa}
@@ -160,7 +170,7 @@
 
   <dialog id="productDialog">
     <form id="productForm">
-      <div class="modal-head"><h2>Add a product</h2><p class="subtitle">Created inactive with no price. Someone with stock rights adds the photo and price before it goes live.</p></div>
+      <div class="modal-head"><h2 id="productDialogTitle">Add a product</h2><p id="productDialogHint" class="subtitle">Add the photo and supply route now and the product is ready straight away. A price is optional.</p></div>
       <div class="modal-body">
       <div id="productError" class="error" aria-live="assertive"></div>
       <label>Reference<input id="productSerial" required placeholder="BA 150 5mm" autocomplete="off"></label>
@@ -175,8 +185,32 @@
           <option value="Other">Other</option>
         </select>
       </label>
-      <label>Sizes (comma separated)<input id="productSizes" placeholder="54, 56, 58"></label>
-      <label>Note<input id="productNote" placeholder="What is still missing?"></label>
+      <div>
+        <span class="field-label" id="productPhotoLabel">Photo</span>
+        <div class="photo-row">
+          <img id="productPhotoPreview" class="photo-preview" alt="Selected product photo" hidden>
+          <div id="productPhotoEmpty" class="photo-empty">No photo yet</div>
+          <div class="photo-controls">
+            <input id="productPhotoFile" type="file" accept="image/jpeg,image/jpg,image/png,image/gif,image/webp" aria-labelledby="productPhotoLabel">
+            <p id="productPhotoStatus" class="muted" style="margin:6px 0 0" aria-live="polite">JPEG, PNG, GIF or WebP, up to 5 MB.</p>
+          </div>
+        </div>
+      </div>
+      <div class="two">
+        <label>Price (optional)<input id="productPrice" type="number" min="0" step="0.01" placeholder="Leave empty if not priced"></label>
+        <label>Sizes (comma separated)<input id="productSizes" placeholder="54, 56, 58"></label>
+      </div>
+      <label>Supply
+        <select id="productSupply">
+          <option value="stock_only">From stock only</option>
+          <option value="stock_then_print:wax">Stock, then print - wax</option>
+          <option value="stock_then_print:resin">Stock, then print - resin</option>
+          <option value="print_on_demand:wax">Print on demand - wax</option>
+          <option value="print_on_demand:resin">Print on demand - resin</option>
+          <option value="">Not decided yet</option>
+        </select>
+      </label>
+      <label id="productNoteField">Note<input id="productNote" placeholder="What is still missing?"></label>
       </div>
       <div class="modal-foot">
         <button class="button secondary" type="button" id="productCancel">Cancel</button>
@@ -319,7 +353,10 @@
         const badges=missing.map(m=>`<span class="badge draft">${escapeHtml(m)}</span>`).join(' ')
           +(reported?` <span class="badge" style="background:#7f1d1d;color:#fff">reported</span>`:'');
         const note=reported&&p.setupIssue.note?`<br><span class="muted">${escapeHtml(p.setupIssue.note)}</span>`:'';
-        return `<tr><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions">${reported?(canPublish?`<button class="button secondary small" data-issue="${escapeHtml(p._id)}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${escapeHtml(p._id)}" data-open="true">Report issue</button>`}</div></td></tr>`;
+        const id=escapeHtml(p._id);
+        const label=escapeHtml(p.name||p.serialNumber||'this product');
+        // The whole row opens the fix form - the buttons beside it stop the click.
+        return `<tr class="fix-row" data-fix="${id}" tabindex="0" role="button" aria-label="Fix ${label}"><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions"><button class="button small" data-fix="${id}">Fix now</button>${reported?(canPublish?`<button class="button secondary small" data-issue="${id}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${id}" data-open="true">Report issue</button>`}</div></td></tr>`;
       }).join(''):'<tr><td colspan="4" class="muted">Every product is ready to sell.</td></tr>';
     }
     document.addEventListener('click', async event=>{
@@ -335,35 +372,132 @@
       }catch(error){show('workspaceError',error.message);button.disabled=false}
     });
 
-    // ---- Add a product --------------------------------------------------
-    function openProductDialog(prefill={}){
+    // ---- Add or fix a product -------------------------------------------
+    // One dialog does both jobs: 'create' posts a new product, 'fix' patches
+    // the one already sitting in the problem list.
+    const MAX_PHOTO_BYTES=5*1024*1024;
+    const supplySelectValue=p=>p.fulfillmentPolicy==='stock_only'
+      ? 'stock_only'
+      : (p.printMethod&&p.printMethod!=='none' ? p.fulfillmentPolicy+':'+p.printMethod : '');
+    function setTypeValue(type){
+      // Products imported from the sheets carry types that are not in the list.
+      const select=$('productType'),value=type||'Bague';
+      if(![...select.options].some(option=>option.value===value)) select.add(new Option(value,value));
+      select.value=value;
+    }
+    function renderPhoto(){
+      const image=$('productPhotoPreview'),empty=$('productPhotoEmpty');
+      if(state.photoUrl){image.src=state.photoUrl;image.hidden=false;empty.hidden=true}
+      else{image.removeAttribute('src');image.hidden=true;empty.hidden=false}
+    }
+    function openProductDialog(prefill={},mode='create'){
       show('productError');
+      state.productMode=mode;
+      if(mode==='create'){state.fixingId=null;state.photoUrl=''}
+      $('productDialogTitle').textContent=mode==='fix'?'Fix this product':'Add a product';
+      $('productDialogHint').textContent=mode==='fix'
+        ?'Add whatever is missing. A photo and a supply route take it off this list. A price is optional.'
+        :'Add the photo and supply route now and the product is ready straight away. A price is optional.';
+      $('productSave').textContent=mode==='fix'?'Save product':'Create product';
       $('productSerial').value=prefill.serialNumber||'';
+      $('productSerial').readOnly=mode==='fix';
       $('productName').value=prefill.name||prefill.serialNumber||'';
-      $('productType').value=prefill.type||'Bague';
+      setTypeValue(prefill.type);
       $('productSizes').value=(prefill.sizes||[]).join(', ');
+      $('productPrice').value=Number(prefill.price)>0?Number(prefill.price):'';
+      $('productSupply').value=prefill.supply===undefined?'stock_only':prefill.supply;
       $('productNote').value=prefill.note||'';
+      $('productNoteField').hidden=mode==='fix';
+      $('productPhotoFile').value='';
+      $('productPhotoStatus').textContent=state.photoUrl?'Photo on file. Choose a file to replace it.':'JPEG, PNG, GIF or WebP, up to 5 MB.';
+      renderPhoto();
       $('productDialog').showModal();
     }
-    $('addProduct').addEventListener('click',()=>openProductDialog());
-    $('productCancel').addEventListener('click',()=>$('productDialog').close());
-    $('productSave').addEventListener('click', async ()=>{
-      const payload={
-        serialNumber:$('productSerial').value.trim(),
-        name:$('productName').value.trim(),
-        type:$('productType').value,
-        availableSizes:$('productSizes').value.split(',').map(v=>v.trim()).filter(Boolean),
-        note:$('productNote').value.trim()
-      };
-      if(!payload.serialNumber||!payload.name)return show('productError','Reference and name are required.');
+    function openFixDialog(id){
+      const product=state.needsSetup.find(row=>String(row._id)===String(id));
+      if(!product)return;
+      state.fixingId=product._id;
+      state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
+      openProductDialog({
+        serialNumber:product.serialNumber,name:product.name,type:product.type,
+        sizes:product.availableSizes||[],price:product.price,
+        supply:supplySelectValue(product),note:product.setupIssue&&product.setupIssue.note
+      },'fix');
+    }
+    document.addEventListener('click',event=>{
+      // Report issue / Mark fixed live inside the row and keep their own job.
+      if(event.target.closest('[data-issue]'))return;
+      const target=event.target.closest('[data-fix]');
+      if(!target)return;
+      openFixDialog(target.dataset.fix);
+    });
+    document.addEventListener('keydown',event=>{
+      if(event.key!=='Enter'&&event.key!==' ')return;
+      const row=event.target.closest&&event.target.closest('tr[data-fix]');
+      if(!row)return;
+      event.preventDefault();
+      openFixDialog(row.dataset.fix);
+    });
+    $('productPhotoFile').addEventListener('change',async event=>{
+      const file=event.target.files&&event.target.files[0];
+      if(!file)return;
+      if(file.size>MAX_PHOTO_BYTES){event.target.value='';return show('productError','That photo is larger than 5 MB. Use a smaller one.')}
+      show('productError');
+      $('productPhotoStatus').textContent='Uploading the photo...';
       $('productSave').disabled=true;
       try{
-        await api('/inventory/products',{method:'POST',body:JSON.stringify(payload)});
-        $('productDialog').close();
-        show('message','Product created. Add the photo and price before publishing.');
-        if(state.pendingOrphanId){
-          await api('/inventory/orphans/'+state.pendingOrphanId,{method:'PATCH',body:JSON.stringify({status:'resolved'})}).catch(()=>{});
-          state.pendingOrphanId=null;
+        const base64=await new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          reader.onerror=()=>reject(new Error('That file could not be read'));
+          reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
+          reader.readAsDataURL(file);
+        });
+        const data=await api('/upload/image-base64',{method:'POST',body:JSON.stringify({image:base64,filename:file.name,mimeType:file.type||'image/jpeg'})});
+        state.photoUrl=data.imageUrl;
+        renderPhoto();
+        $('productPhotoStatus').textContent='Photo ready. Save to keep it.';
+      }catch(error){
+        event.target.value='';
+        $('productPhotoStatus').textContent='Upload failed. Try again.';
+        show('productError',error.message);
+      }finally{$('productSave').disabled=false}
+    });
+    $('addProduct').addEventListener('click',()=>{state.pendingOrphanId=null;openProductDialog()});
+    $('productCancel').addEventListener('click',()=>$('productDialog').close());
+    function supplyPayload(){
+      const raw=$('productSupply').value;
+      if(!raw)return{fulfillmentPolicy:'stock_then_print',printMethod:'none'};
+      if(raw==='stock_only')return{fulfillmentPolicy:'stock_only',printMethod:'none'};
+      const [fulfillmentPolicy,printMethod]=raw.split(':');
+      return{fulfillmentPolicy,printMethod};
+    }
+    $('productSave').addEventListener('click', async ()=>{
+      const name=$('productName').value.trim();
+      if(!name)return show('productError','Name is required.');
+      const rawPrice=$('productPrice').value.trim();
+      const price=rawPrice===''?0:Number(rawPrice);
+      if(!Number.isFinite(price)||price<0)return show('productError','Price must be zero or more, or left empty.');
+      const sizes=$('productSizes').value.split(',').map(value=>value.trim()).filter(Boolean);
+      const supply=supplyPayload();
+      $('productSave').disabled=true;
+      try{
+        if(state.productMode==='fix'){
+          const body={name,type:$('productType').value,availableSizes:sizes,price,...supply};
+          if(state.photoUrl)body.imageUrl=state.photoUrl;
+          const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
+          $('productDialog').close();
+          const left=[data.stillMissing&&data.stillMissing.image?'a photo':null,data.stillMissing&&data.stillMissing.supplyRoute?'a supply route':null].filter(Boolean);
+          show('message',data.ready?'Saved. This product is ready to sell.':'Saved. Still needs '+left.join(' and ')+'.');
+        }else{
+          const serialNumber=$('productSerial').value.trim();
+          if(!serialNumber)return show('productError','Reference and name are required.');
+          const data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,availableSizes:sizes,price,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim(),...supply})});
+          $('productDialog').close();
+          show('message',data.ready?'Product created and ready to sell.':'Product created. It needs a photo before it can be sold.');
+          if(state.pendingOrphanId){
+            await api('/inventory/orphans/'+state.pendingOrphanId,{method:'PATCH',body:JSON.stringify({status:'resolved'})}).catch(()=>{});
+            state.pendingOrphanId=null;
+          }
         }
         await Promise.all([loadInventory({live:true}),loadNeedsSetup(),loadOrphans()]);
       }catch(error){show('productError',error.message)}

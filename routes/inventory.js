@@ -42,6 +42,24 @@ const canPublishProducts = (user) => Boolean(
   || (user?.role === 'employee' && ['stock', 'boss'].includes(user?.workRole))
 );
 
+const PLACEHOLDER_IMAGE = 'https://via.placeholder.com/150';
+const FULFILLMENT_POLICIES = ['stock_only', 'print_on_demand', 'stock_then_print'];
+const PRINT_METHODS = ['none', 'wax', 'resin'];
+
+// A product counts as having a photo once the value is a real http(s) URL and
+// not the placeholder stamped on a draft. Returns '' when there is no photo.
+const cleanImageUrl = (value) => {
+  const url = String(value || '').trim();
+  if (!url || /placeholder/i.test(url)) return '';
+  const lower = url.toLowerCase();
+  return lower.startsWith('http://') || lower.startsWith('https://') ? url : '';
+};
+
+// Every product is either held in stock or printed, and a printed one needs a
+// method. Anything else leaves the workshop unable to supply it.
+const hasSupplyRoute = (product) => product.fulfillmentPolicy === 'stock_only'
+  || (Boolean(product.printMethod) && product.printMethod !== 'none');
+
 const safelyNotify = async (operation) => {
   try {
     return await operation();
@@ -275,8 +293,10 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
       const needsPrice = !product.price || Number(product.price) <= 0;
       const reported = Boolean(product.setupIssue?.open);
       return { ...product, needsImage, needsDetails, needsClassification, needsPrice, reported };
+    // `needsPrice` is still reported so the form can show it, but a product
+    // with no price is not a problem - it is priced when it is ready to sell.
     }).filter((product) => product.needsImage || product.needsDetails
-      || product.needsClassification || product.needsPrice || product.reported);
+      || product.needsClassification || product.reported);
 
     res.json({
       total: flagged.length,
@@ -290,8 +310,10 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
   }
 });
 
-// POST /api/inventory/products - Create a draft product from the portal.
-// Always inactive with no price: somebody with publish rights finishes it.
+// POST /api/inventory/products - Create a product from the portal.
+// A photo and a supply route can be supplied here, in which case the product is
+// born ready and never reaches the problem list. Without them it is created as
+// a draft, exactly as before. Price is optional either way.
 router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
@@ -313,14 +335,25 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       ? req.body.availableSizes.map((size) => String(size).trim()).filter(Boolean)
       : [];
 
+    const imageUrl = cleanImageUrl(req.body?.imageUrl);
+    const rawPrice = Number(req.body?.price);
+    const price = Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : 0;
+    const fulfillmentPolicy = FULFILLMENT_POLICIES.includes(req.body?.fulfillmentPolicy)
+      ? req.body.fulfillmentPolicy
+      : 'stock_then_print';
+    const printMethod = PRINT_METHODS.includes(req.body?.printMethod) ? req.body.printMethod : 'none';
+    const ready = Boolean(imageUrl) && hasSupplyRoute({ fulfillmentPolicy, printMethod });
+
     const product = await Product.create({
       name,
       serialNumber,
       type,
       description: String(req.body?.description || '').trim()
-        || 'Created from the operations portal. Add the image, price and customer-facing details before publishing.',
-      imageUrl: 'https://via.placeholder.com/150',
-      price: 0,
+        || (ready
+          ? `${name} (${type}) - added from the operations portal.`
+          : 'Created from the operations portal. Add the image, price and customer-facing details before publishing.'),
+      imageUrl: imageUrl || PLACEHOLDER_IMAGE,
+      price,
       stock: 0,
       reservedStock: 0,
       availableSizes: sizes,
@@ -328,18 +361,21 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
         ? req.body.catalogId
         : undefined,
       createdBy: req.user.id,
-      isActive: false,
-      fulfillmentPolicy: 'stock_then_print',
-      stockSyncState: 'needs_details',
-      setupIssue: {
-        open: true,
-        note: String(req.body?.note || '').trim() || 'New product created from the portal. Needs image, price and details.',
-        reportedBy: req.user.id,
-        reportedAt: new Date()
-      }
+      isActive: ready,
+      fulfillmentPolicy,
+      printMethod,
+      stockSyncState: ready ? 'manual' : 'needs_details',
+      setupIssue: ready
+        ? { open: false, note: '', resolvedBy: req.user.id, resolvedAt: new Date() }
+        : {
+          open: true,
+          note: String(req.body?.note || '').trim() || 'New product created from the portal. Needs image, price and details.',
+          reportedBy: req.user.id,
+          reportedAt: new Date()
+        }
     });
 
-    res.status(201).json(product);
+    res.status(201).json({ ...product.toObject(), ready });
   } catch (error) {
     console.error('Error creating product from portal:', error);
     res.status(500).json({ message: 'Failed to create the product' });
@@ -382,6 +418,117 @@ router.patch('/products/:id/issue', operationsAuth, productSetupAuth, async (req
   } catch (error) {
     console.error('Error updating product issue:', error);
     res.status(500).json({ message: 'Failed to update the product issue' });
+  }
+});
+
+// PATCH /api/inventory/products/:id/setup - Fill in what a product is missing.
+// Deliberately open to everyone who can reach the portal: whoever spots the gap
+// can close it, rather than reporting it and waiting. Price is optional, so a
+// product leaves the problem list once it has a photo and a supply route.
+router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name).trim();
+      if (!name) return res.status(400).json({ message: 'Name cannot be empty' });
+      product.name = name;
+    }
+
+    if (req.body?.type !== undefined) {
+      const type = String(req.body.type).trim();
+      if (!type) return res.status(400).json({ message: 'Type cannot be empty' });
+      product.type = type;
+    }
+
+    if (req.body?.imageUrl !== undefined) {
+      const imageUrl = cleanImageUrl(req.body.imageUrl);
+      if (!imageUrl) {
+        return res.status(400).json({ message: 'Upload a photo first, then save' });
+      }
+      product.imageUrl = imageUrl;
+    }
+
+    if (req.body?.price !== undefined) {
+      const price = Number(req.body.price);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ message: 'Price must be zero or more' });
+      }
+      product.price = price;
+    }
+
+    if (req.body?.fulfillmentPolicy !== undefined) {
+      if (!FULFILLMENT_POLICIES.includes(req.body.fulfillmentPolicy)) {
+        return res.status(400).json({ message: 'Unknown supply route' });
+      }
+      product.fulfillmentPolicy = req.body.fulfillmentPolicy;
+    }
+
+    if (req.body?.printMethod !== undefined) {
+      if (!PRINT_METHODS.includes(req.body.printMethod)) {
+        return res.status(400).json({ message: 'Print method must be none, wax or resin' });
+      }
+      product.printMethod = req.body.printMethod;
+    }
+
+    if (Array.isArray(req.body?.availableSizes)) {
+      product.availableSizes = req.body.availableSizes
+        .map((size) => String(size).trim())
+        .filter(Boolean);
+    }
+
+    if (req.body?.description !== undefined) {
+      product.description = String(req.body.description).trim().slice(0, 2000);
+    }
+
+    if (req.body?.stockLocation !== undefined) {
+      product.stockLocation = String(req.body.stockLocation).trim().slice(0, 120);
+    }
+
+    // Price is intentionally absent from this check.
+    const ready = Boolean(cleanImageUrl(product.imageUrl)) && hasSupplyRoute(product);
+    if (ready) {
+      product.isActive = true;
+      // Leave a sheet-synced product synced; only a draft graduates to manual.
+      if (product.stockSyncState === 'needs_details') product.stockSyncState = 'manual';
+      product.setupIssue = {
+        ...(product.setupIssue || {}),
+        open: false,
+        resolvedBy: req.user.id,
+        resolvedAt: new Date()
+      };
+    }
+
+    await product.save();
+
+    res.json({
+      ready,
+      stillMissing: {
+        image: !cleanImageUrl(product.imageUrl),
+        supplyRoute: !hasSupplyRoute(product)
+      },
+      product: {
+        _id: product._id,
+        name: product.name,
+        serialNumber: product.serialNumber,
+        type: product.type,
+        imageUrl: product.imageUrl,
+        price: product.price,
+        isActive: product.isActive,
+        fulfillmentPolicy: product.fulfillmentPolicy,
+        printMethod: product.printMethod,
+        availableSizes: product.availableSizes,
+        stockSyncState: product.stockSyncState,
+        setupIssue: product.setupIssue
+      }
+    });
+  } catch (error) {
+    console.error('Error completing product setup:', error);
+    res.status(500).json({ message: 'Failed to save the product details' });
   }
 });
 
