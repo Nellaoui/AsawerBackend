@@ -6,6 +6,7 @@ const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
 const StockVariant = require('../models/StockVariant');
 const StockOrphan = require('../models/StockOrphan');
+const User = require('../models/User');
 const { operationsAuth } = require('../middlewares/auth');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
@@ -199,9 +200,27 @@ router.get('/movements', operationsAuth, inventoryRoleAuth, async (req, res) => 
       .sort({ createdAt: -1 })
       .limit(limit)
       .populate('productId', 'name serialNumber imageUrl')
-      .populate('actorId', 'name email');
+      .lean();
 
-    res.json(movements);
+    // actorId deliberately accepts both a User ObjectId and immutable labels
+    // such as "system:stock-reset". Populating the mixed field directly makes
+    // Mongoose cast those labels to ObjectId and rejects the entire history
+    // response. Resolve only genuine user ids and leave system labels intact.
+    const userActorIds = [...new Set(movements
+      .map(movement => movement.actorId)
+      .filter(actorId => actorId instanceof mongoose.Types.ObjectId)
+      .map(actorId => String(actorId)))];
+    const actors = userActorIds.length
+      ? await User.find({ _id: { $in: userActorIds } }).select('name email').lean()
+      : [];
+    const actorsById = new Map(actors.map(actor => [String(actor._id), actor]));
+
+    const serializedMovements = movements.map(movement => {
+      const actor = actorsById.get(String(movement.actorId));
+      return actor ? { ...movement, actorId: actor } : movement;
+    });
+
+    res.json(serializedMovements);
   } catch (error) {
     console.error('Error fetching inventory movements:', error);
     res.status(500).json({ message: 'Failed to fetch inventory history' });
