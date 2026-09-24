@@ -36,6 +36,14 @@ const productSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  // Set when this product was folded into another one because the two were the
+  // same piece written differently. Kept rather than deleted so an old order
+  // still resolves and the merge can be traced.
+  mergedInto: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product',
+    default: null
+  },
   stockSyncState: {
     type: String,
     enum: ['manual', 'synced', 'needs_details'],

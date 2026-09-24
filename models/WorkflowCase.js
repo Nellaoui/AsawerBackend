@@ -32,6 +32,11 @@ const modelVersionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 }, { _id: true });
 
+const reprintPartSchema = new mongoose.Schema({
+  code: { type: String, enum: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'], required: true },
+  quantity: { type: Number, min: 1, max: 100000, required: true }
+}, { _id: false });
+
 const workflowCaseSchema = new mongoose.Schema({
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null, index: true },
   orderItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
@@ -57,6 +62,8 @@ const workflowCaseSchema = new mongoose.Schema({
   startedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
   isBlocked: { type: Boolean, default: false, index: true },
+  archivedAt: { type: Date, default: null, index: true },
+  archivedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
   blockedReason: { type: String, trim: true, maxlength: 1000, default: '' },
   blockedAt: { type: Date, default: null },
   blockedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
@@ -78,6 +85,9 @@ const workflowCaseSchema = new mongoose.Schema({
   customerApprovedAt: { type: Date, default: null },
   customerApprovedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
   modelVersions: [modelVersionSchema],
+  reprintParts: [reprintPartSchema],
+  reprintReason: { type: String, trim: true, maxlength: 1000, default: '' },
+  reprintRequestedAt: { type: Date, default: null },
   print: {
     machineId: { type: String, trim: true, maxlength: 120, default: '' },
     sentAt: { type: Date, default: null },

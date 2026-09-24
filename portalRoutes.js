@@ -16,7 +16,10 @@ function servePortal(page) {
 }
 
 router.get('/workflow', servePortal('workflow.html'));
-router.get('/inventory-embed', servePortal('index.html'));
+router.get('/inventory-embed', (req, res, next) => {
+  if (req.query.embedded !== '1') return res.redirect(302, '/admin/workflow');
+  next();
+}, servePortal('index.html'));
 router.get('/manage-inventory', (req, res) => res.redirect(302, '/admin/workflow'));
 
 module.exports = router;

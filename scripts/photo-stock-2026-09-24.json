@@ -1,0 +1,329 @@
+{
+  "batchId": "photo-stock-2026-09-24-wax",
+  "capturedAt": "2026-09-24T00:00:00.000Z",
+  "printMethod": "wax",
+  "source": "Four handwritten stock-count photos supplied 2026-09-24 (IMG_0581-0584)",
+  "excluded": [],
+  "items": [
+    {
+      "reference": "BRA SERP",
+      "photo": 1,
+      "sizes": {
+        "G": 1
+      }
+    },
+    {
+      "reference": "BRA 629",
+      "photo": 1,
+      "sizes": {
+        "62": 1,
+        "59": 3,
+        "58": 2
+      }
+    },
+    {
+      "reference": "BRA 629 M2",
+      "photo": 1,
+      "sizes": {
+        "60": 3,
+        "56": 2,
+        "58": 4,
+        "62": 1
+      }
+    },
+    {
+      "reference": "BRA 658 S",
+      "photo": 1,
+      "sizes": {
+        "57": 2,
+        "54": 2,
+        "60": 1,
+        "TOIL": 1
+      }
+    },
+    {
+      "reference": "BA 553",
+      "photo": 2,
+      "sizes": {
+        "59": 1
+      }
+    },
+    {
+      "reference": "BA 550",
+      "photo": 2,
+      "sizes": {
+        "58": 1,
+        "60": 1
+      }
+    },
+    {
+      "reference": "BA 397",
+      "photo": 2,
+      "sizes": {
+        "61": 1
+      }
+    },
+    {
+      "reference": "BA 374",
+      "photo": 2,
+      "sizes": {
+        "58": 4,
+        "62": 2,
+        "56": 4,
+        "55": 1,
+        "54": 1,
+        "60": 1,
+        "53": 3,
+        "52": 1
+      }
+    },
+    {
+      "reference": "M8 GOU VISSE",
+      "photo": 3,
+      "sizes": {
+        "7mm": 1
+      }
+    },
+    {
+      "reference": "M5 GOU VISSE",
+      "photo": 3,
+      "sizes": {
+        "M5": 5
+      }
+    },
+    {
+      "reference": "GOU VISSE L",
+      "photo": 3,
+      "sizes": {
+        "L": 1
+      }
+    },
+    {
+      "reference": "GOU 046",
+      "photo": 3,
+      "sizes": {
+        "9mm": 2
+      }
+    },
+    {
+      "reference": "GOU 177",
+      "photo": 3,
+      "sizes": {
+        "177": 1,
+        "19mm": 1
+      }
+    },
+    {
+      "reference": "COL 144",
+      "photo": 3,
+      "sizes": {
+        "144": 1
+      }
+    },
+    {
+      "reference": "GOU RO 019",
+      "photo": 3,
+      "sizes": {
+        "22mm": 1
+      }
+    },
+    {
+      "reference": "GOU RO 026 FRN",
+      "photo": 3,
+      "sizes": {
+        "7mm": 1
+      }
+    },
+    {
+      "reference": "COL SERP",
+      "photo": 3,
+      "sizes": {
+        "BU": 2,
+        "G": 1
+      }
+    },
+    {
+      "reference": "BA 147 M2 10MM",
+      "photo": 4,
+      "sizes": {
+        "56": 7,
+        "58": 4
+      }
+    },
+    {
+      "reference": "BA 147 M2 7MM",
+      "photo": 4,
+      "sizes": {
+        "64": 2,
+        "58": 1,
+        "60": 2,
+        "62": 1
+      }
+    },
+    {
+      "reference": "BA MO S",
+      "photo": 4,
+      "sizes": {
+        "52": 2,
+        "54": 5
+      }
+    },
+    {
+      "reference": "BA 138",
+      "photo": 4,
+      "sizes": {
+        "60": 2,
+        "56": 1
+      }
+    },
+    {
+      "reference": "BA 560",
+      "photo": 4,
+      "sizes": {
+        "58": 1
+      }
+    },
+    {
+      "reference": "BA 660",
+      "photo": 4,
+      "sizes": {
+        "55": 1
+      }
+    },
+    {
+      "reference": "BA RO 023",
+      "photo": 4,
+      "sizes": {
+        "55": 2,
+        "57": 2,
+        "62": 1,
+        "60": 2
+      }
+    },
+    {
+      "reference": "BA 273",
+      "photo": 4,
+      "sizes": {
+        "52": 1
+      }
+    },
+    {
+      "reference": "BM 014",
+      "photo": 4,
+      "sizes": {
+        "58": 1
+      }
+    },
+    {
+      "reference": "BM 001",
+      "photo": 4,
+      "sizes": {
+        "56": 4,
+        "58": 23
+      }
+    },
+    {
+      "reference": "BA 317",
+      "photo": 4,
+      "sizes": {
+        "58": 4
+      }
+    },
+    {
+      "reference": "BA 316",
+      "photo": 4,
+      "sizes": {
+        "58": 4,
+        "57": 1,
+        "60": 2,
+        "54": 1
+      }
+    },
+    {
+      "reference": "M1 BA VISSE",
+      "photo": 4,
+      "sizes": {
+        "60": 5,
+        "62": 1,
+        "53": 1,
+        "52": 4,
+        "54": 5,
+        "55": 3,
+        "58": 1,
+        "59": 1,
+        "57": 2,
+        "56": 1
+      }
+    },
+    {
+      "reference": "BA VISSE M5",
+      "photo": 4,
+      "sizes": {
+        "64": 1,
+        "60": 2,
+        "53": 1,
+        "56": 2,
+        "58": 1
+      }
+    },
+    {
+      "reference": "M2 BA VISSE",
+      "photo": 4,
+      "sizes": {
+        "58": 10
+      }
+    },
+    {
+      "reference": "M3 BA VISSE",
+      "photo": 4,
+      "sizes": {
+        "58": 5
+      }
+    },
+    {
+      "reference": "BA 7014 R",
+      "photo": 4,
+      "sizes": {
+        "58": 1,
+        "56": 1,
+        "55": 1,
+        "64": 1
+      }
+    },
+    {
+      "reference": "BA 001",
+      "photo": 4,
+      "sizes": {
+        "60": 1,
+        "62": 1,
+        "54": 1,
+        "58": 2
+      }
+    },
+    {
+      "reference": "BA 001 S",
+      "photo": 4,
+      "sizes": {
+        "60": 1,
+        "55": 1,
+        "59": 1,
+        "58": 7
+      }
+    },
+    {
+      "reference": "BA 280",
+      "photo": 4,
+      "sizes": {
+        "54": 1,
+        "60": 1
+      }
+    },
+    {
+      "reference": "BA 382",
+      "photo": 4,
+      "sizes": {
+        "58": 3
+      }
+    }
+  ]
+}

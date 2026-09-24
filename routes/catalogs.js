@@ -88,8 +88,9 @@ router.get('/', auth, async (req, res) => {
       });
       
       // Get all catalogs and filter in memory for more reliable ID comparison
+      // Drafts (inactive products) stay hidden from customers until they are fixed.
       const allCatalogs = await Catalog.find({})
-        .populate('products')
+        .populate({ path: 'products', match: { isActive: { $ne: false } } })
         .sort({ createdAt: -1 });
       
       console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
@@ -192,6 +193,7 @@ router.get('/:id', auth, async (req, res) => {
     const catalog = await Catalog.findById(catalogId)
       .populate({
         path: 'products',
+        ...(req.user.role === 'admin' ? {} : { match: { isActive: { $ne: false } } }),
         populate: { path: 'relatedProducts' }
       });
 

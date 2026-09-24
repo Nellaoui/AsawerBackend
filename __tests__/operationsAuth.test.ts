@@ -1,6 +1,6 @@
 export {};
 
-jest.mock('jsonwebtoken', () => ({ verify: jest.fn() }), { virtual: true });
+jest.mock('jsonwebtoken', () => ({ verify: jest.fn() }));
 jest.mock('../models/User', () => ({ findById: jest.fn(), findOne: jest.fn() }));
 
 const jwt = require('jsonwebtoken');

@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
+const Catalog = require('../models/Catalog');
 const InventoryMovement = require('../models/InventoryMovement');
 const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
@@ -8,6 +9,7 @@ const StockVariant = require('../models/StockVariant');
 const StockOrphan = require('../models/StockOrphan');
 const User = require('../models/User');
 const { operationsAuth } = require('../middlewares/auth');
+const { normalizeProductReference, canonicalProductReference, canonicalStockReference, normalizeStockSize } = require('../utils/stockReference');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { notifyCaseAssignment } = require('../utils/workflowNotifications');
@@ -98,6 +100,36 @@ const serializeProduct = (product, stockVariants = []) => {
     }))
   };
 };
+
+// Product.stock is the sum of its size stock; keep it in step after any size change.
+const recomputeProductStock = async (productIds, session = null) => {
+  const ids = productIds.map(id => new mongoose.Types.ObjectId(String(id)));
+  const totals = await StockVariant.aggregate([
+    { $match: { productIds: { $in: ids } } },
+    { $unwind: '$productIds' },
+    { $match: { productIds: { $in: ids } } },
+    { $group: { _id: '$productIds', onHand: { $sum: '$onHandQuantity' }, reserved: { $sum: '$reservedQuantity' } } }
+  ]).session(session);
+  if (!totals.length) return;
+  await Product.bulkWrite(totals.map(total => ({
+    updateOne: {
+      filter: { _id: total._id },
+      update: { $set: { stock: Math.max(total.onHand - total.reserved, 0), reservedStock: total.reserved } }
+    }
+  })), { session });
+};
+
+const serializeVariant = (variant) => ({
+  id: String(variant._id),
+  reference: variant.displayReference,
+  printMethod: variant.printMethod,
+  size: variant.size,
+  onHandQuantity: Number(variant.onHandQuantity || 0),
+  reservedQuantity: Number(variant.reservedQuantity || 0),
+  availableQuantity: Math.max(Number(variant.onHandQuantity || 0) - Number(variant.reservedQuantity || 0), 0),
+  sourceSheet: variant.sourceSheet,
+  lastSyncedAt: variant.lastSyncedAt
+});
 
 // GET /api/inventory - Searchable stock list and dashboard totals.
 router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
@@ -296,6 +328,27 @@ router.patch('/orphans/:id', operationsAuth, productSetupAuth, async (req, res) 
 
 // GET /api/inventory/needs-setup - Products that are not ready to sell.
 // Same rules the boss dashboard uses, but reachable by anyone doing setup.
+// The app lists a catalogue's products from Catalog.products, so a product's
+// catalogId and that array must always move together.
+const findCatalog = async (catalogId) => (
+  catalogId && mongoose.Types.ObjectId.isValid(catalogId) ? Catalog.findById(catalogId).select('_id name') : null
+);
+const syncCatalogMembership = async (productId, catalogId) => {
+  await Catalog.updateMany({ _id: { $ne: catalogId }, products: productId }, { $pull: { products: productId } });
+  if (catalogId) await Catalog.updateOne({ _id: catalogId }, { $addToSet: { products: productId } });
+};
+
+// GET /api/inventory/catalogs - Catalogue choices for the product form.
+router.get('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
+  try {
+    const catalogs = await Catalog.find({}).select('name isPublic').sort({ name: 1 }).lean();
+    res.json(catalogs.map(catalog => ({ _id: catalog._id, name: catalog.name, isPublic: catalog.isPublic !== false })));
+  } catch (error) {
+    console.error('Error fetching catalogues:', error);
+    res.status(500).json({ message: 'Failed to fetch catalogues' });
+  }
+});
+
 router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const products = await Product.find({})
@@ -312,10 +365,14 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
       const needsPrice = !product.price || Number(product.price) <= 0;
       const reported = Boolean(product.setupIssue?.open);
       return { ...product, needsImage, needsDetails, needsClassification, needsPrice, reported };
-    // `needsPrice` is still reported so the form can show it, but a product
-    // with no price is not a problem - it is priced when it is ready to sell.
-    }).filter((product) => product.needsImage || product.needsDetails
-      || product.needsClassification || product.reported);
+    // Only a missing photo, missing details, or a reported fault is a problem.
+    // `needsPrice` and `needsClassification` are still reported so the form can
+    // show them, but neither holds a product back: it is priced and routed when
+    // it is ready to sell.
+    }).filter((product) => product.needsImage || product.needsDetails || product.reported);
+    const catalogNames = new Map((await Catalog.find({ _id: { $in: flagged.map(p => p.catalogId).filter(Boolean) } }).select('name').lean())
+      .map(catalog => [String(catalog._id), catalog.name]));
+    for (const product of flagged) product.catalogName = catalogNames.get(String(product.catalogId)) || '';
 
     res.json({
       total: flagged.length,
@@ -336,23 +393,70 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
 router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
-    const serialNumber = String(req.body?.serialNumber || '').trim();
     const type = String(req.body?.type || '').trim();
+    // Store one spelling. bra312, BRA-312, BRA312 sertie and BRA 312 Simple
+    // are the same bracelet written four ways; they all land as BRA 312 or
+    // BRA 312 S so the catalogue never collects duplicates of one reference.
+    const serialNumber = normalizeProductReference(req.body?.serialNumber);
     if (!name || !serialNumber || !type) {
       return res.status(400).json({ message: 'Name, reference and type are required' });
     }
 
-    const duplicate = await Product.findOne({ serialNumber });
+    // Look for the product however its reference happens to be written. An
+    // exact match on the stored string would miss BRA312 when BRA 312 exists,
+    // so narrow with the family and number, then compare canonical forms.
+    const canonical = canonicalProductReference(serialNumber);
+    const parts = serialNumber.match(/^([A-Za-z]+)\s*([0-9]+)/);
+    const candidates = parts
+      ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i') })
+        .select('_id name serialNumber type imageUrl price isActive availableSizes fulfillmentPolicy printMethod setupIssue')
+        .limit(50)
+        .lean()
+      : await Product.find({ serialNumber }).select('_id name serialNumber type imageUrl price isActive availableSizes fulfillmentPolicy printMethod setupIssue').limit(50).lean();
+    const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
+
     if (duplicate) {
+      // The portal opens this product for editing instead of creating a second
+      // one, so hand back enough to do that without another round trip.
       return res.status(409).json({
-        message: `A product with reference "${serialNumber}" already exists`,
-        productId: duplicate._id
+        message: `"${duplicate.serialNumber}" already exists. Open it and add what is missing instead of creating it again.`,
+        productId: duplicate._id,
+        existing: duplicate,
+        normalizedReference: serialNumber
       });
     }
+
+    const initialStockBySize = req.body?.initialStockBySize;
+    if (initialStockBySize !== undefined && (!Array.isArray(initialStockBySize) || initialStockBySize.length > 50)) {
+      return res.status(400).json({ message: 'Add no more than 50 stock sizes' });
+    }
+    if (initialStockBySize?.length && !canPublishProducts(req.user)) {
+      return res.status(403).json({ message: 'Only stock staff or a manager can enter starting stock' });
+    }
+    const printMethod = PRINT_METHODS.includes(req.body?.printMethod) ? req.body.printMethod : 'none';
+    if (initialStockBySize?.length && !['wax', 'resin'].includes(printMethod)) {
+      return res.status(400).json({ message: 'Choose Wax or Resin for sized stock' });
+    }
+    const stockSizes = [];
+    const seenSizes = new Set();
+    for (const row of initialStockBySize || []) {
+      const size = String(row?.size || '').trim();
+      const sizeKey = normalizeStockSize(size);
+      const quantity = Number(row?.quantity);
+      if (!size || !sizeKey || size.length > 80 || !Number.isSafeInteger(quantity) || quantity < 0) {
+        return res.status(400).json({ message: 'Each size needs a valid name and non-negative whole-number quantity' });
+      }
+      if (seenSizes.has(sizeKey)) return res.status(400).json({ message: `Size ${size} was entered more than once` });
+      seenSizes.add(sizeKey);
+      stockSizes.push({ size, sizeKey, quantity });
+    }
+    const startingTotal = stockSizes.reduce((total, row) => total + row.quantity, 0);
+    if (!Number.isSafeInteger(startingTotal)) return res.status(400).json({ message: 'Starting stock total is too large' });
 
     const sizes = Array.isArray(req.body?.availableSizes)
       ? req.body.availableSizes.map((size) => String(size).trim()).filter(Boolean)
       : [];
+    for (const row of stockSizes) if (!sizes.some(size => normalizeStockSize(size) === row.sizeKey)) sizes.push(row.size);
 
     const imageUrl = cleanImageUrl(req.body?.imageUrl);
     const rawPrice = Number(req.body?.price);
@@ -360,10 +464,11 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     const fulfillmentPolicy = FULFILLMENT_POLICIES.includes(req.body?.fulfillmentPolicy)
       ? req.body.fulfillmentPolicy
       : 'stock_then_print';
-    const printMethod = PRINT_METHODS.includes(req.body?.printMethod) ? req.body.printMethod : 'none';
-    const ready = Boolean(imageUrl) && hasSupplyRoute({ fulfillmentPolicy, printMethod });
+    const ready = Boolean(imageUrl);
+    const catalog = await findCatalog(req.body?.catalogId);
+    if (req.body?.catalogId && !catalog) return res.status(400).json({ message: 'That catalogue no longer exists' });
 
-    const product = await Product.create({
+    const productFields = {
       name,
       serialNumber,
       type,
@@ -373,12 +478,10 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
           : 'Created from the operations portal. Add the image, price and customer-facing details before publishing.'),
       imageUrl: imageUrl || PLACEHOLDER_IMAGE,
       price,
-      stock: 0,
+      stock: startingTotal,
       reservedStock: 0,
       availableSizes: sizes,
-      catalogId: req.body?.catalogId && mongoose.Types.ObjectId.isValid(req.body.catalogId)
-        ? req.body.catalogId
-        : undefined,
+      catalogId: catalog?._id,
       createdBy: req.user.id,
       isActive: ready,
       fulfillmentPolicy,
@@ -392,7 +495,46 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
           reportedBy: req.user.id,
           reportedAt: new Date()
         }
-    });
+    };
+
+    let product;
+    if (stockSizes.length) {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          [product] = await Product.create([productFields], { session });
+          const canonicalReference = canonicalProductReference(product.serialNumber || serialNumber);
+          await StockVariant.create(stockSizes.map(row => ({
+            canonicalReference,
+            displayReference: product.serialNumber,
+            productIds: [product._id],
+            primaryProductId: product._id,
+            printMethod,
+            size: row.size,
+            sizeKey: row.sizeKey,
+            onHandQuantity: row.quantity,
+            reservedQuantity: 0,
+            sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin',
+            notes: 'Starting stock entered with product creation'
+          })), { session });
+          const movements = stockSizes.filter(row => row.quantity > 0).map(row => ({
+            productId: product._id,
+            actorId: req.user.id,
+            type: 'receive',
+            quantity: row.quantity,
+            stockBefore: 0,
+            stockAfter: row.quantity,
+            notes: `Starting stock: size ${row.size} (${printMethod})`
+          }));
+          if (movements.length) await InventoryMovement.create(movements, { session });
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      product = await Product.create(productFields);
+    }
+    if (catalog) await syncCatalogMembership(product._id, catalog._id);
 
     res.status(201).json({ ...product.toObject(), ready });
   } catch (error) {
@@ -508,8 +650,17 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
       product.stockLocation = String(req.body.stockLocation).trim().slice(0, 120);
     }
 
-    // Price is intentionally absent from this check.
-    const ready = Boolean(cleanImageUrl(product.imageUrl)) && hasSupplyRoute(product);
+    let catalogChanged = false;
+    if (req.body?.catalogId !== undefined) {
+      const catalog = await findCatalog(req.body.catalogId);
+      if (!catalog) return res.status(400).json({ message: 'Choose a catalogue for this product' });
+      catalogChanged = String(product.catalogId || '') !== String(catalog._id);
+      product.catalogId = catalog._id;
+    }
+
+    // A photo is the only thing a product cannot be sold without. Price and
+    // print method are optional and are filled in when they are known.
+    const ready = Boolean(cleanImageUrl(product.imageUrl));
     if (ready) {
       product.isActive = true;
       // Leave a sheet-synced product synced; only a draft graduates to manual.
@@ -523,6 +674,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
     }
 
     await product.save();
+    if (catalogChanged) await syncCatalogMembership(product._id, product.catalogId);
 
     res.json({
       ready,
@@ -530,6 +682,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         image: !cleanImageUrl(product.imageUrl),
         supplyRoute: !hasSupplyRoute(product)
       },
+      // `supplyRoute` is reported for the badge only; it never blocks.
       product: {
         _id: product._id,
         name: product.name,
@@ -541,6 +694,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         fulfillmentPolicy: product.fulfillmentPolicy,
         printMethod: product.printMethod,
         availableSizes: product.availableSizes,
+        catalogId: product.catalogId,
         stockSyncState: product.stockSyncState,
         setupIssue: product.setupIssue
       }
@@ -548,6 +702,154 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
   } catch (error) {
     console.error('Error completing product setup:', error);
     res.status(500).json({ message: 'Failed to save the product details' });
+  }
+});
+
+// POST /api/inventory/products/:id/variants - Add a sellable stock size.
+// Size stock is kept separately because an order must reserve the exact size.
+router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid product ID' });
+  const size = String(req.body.size || '').trim();
+  const sizeKey = normalizeStockSize(size);
+  const printMethod = String(req.body.printMethod || '').toLowerCase();
+  const quantity = Number(req.body.quantity || 0);
+  if (!size || !sizeKey || size.length > 80) return res.status(400).json({ message: 'Enter a valid size' });
+  if (!['wax', 'resin'].includes(printMethod)) return res.status(400).json({ message: 'Choose Wax or Resin' });
+  if (!Number.isSafeInteger(quantity) || quantity < 0) return res.status(400).json({ message: 'Quantity must be a non-negative whole number' });
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
+    const variant = await StockVariant.create({
+      canonicalReference,
+      displayReference: product.serialNumber,
+      productIds: [product._id],
+      primaryProductId: product._id,
+      printMethod,
+      size,
+      sizeKey,
+      onHandQuantity: quantity,
+      reservedQuantity: 0,
+      sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin',
+      notes: 'Created manually in the stock portal'
+    });
+    product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
+      .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+    await product.save();
+    if (quantity) await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: 0, stockAfter: quantity, notes: `Size ${size} (${printMethod}): created in stock portal` });
+    await recomputeProductStock([product._id]);
+    res.status(201).json(serializeVariant(variant));
+  } catch (error) {
+    if (error?.code === 11000) return res.status(409).json({ message: 'That size already exists for this printing method' });
+    console.error('Error adding stock size:', error);
+    res.status(500).json({ message: 'Failed to add stock size' });
+  }
+});
+
+// PUT /api/inventory/products/:id/size-stock - Set the on-hand quantity of
+// several sizes at once. Missing sizes are created; each change is logged.
+router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid product ID' });
+  const printMethod = String(req.body.printMethod || '').toLowerCase();
+  if (!['wax', 'resin'].includes(printMethod)) return res.status(400).json({ message: 'Choose Wax or Resin' });
+  const rows = Array.isArray(req.body.sizes) ? req.body.sizes : [];
+  if (!rows.length || rows.length > 60) return res.status(400).json({ message: 'Send between 1 and 60 sizes' });
+  const cleaned = [];
+  for (const row of rows) {
+    const size = String(row?.size || '').trim();
+    const sizeKey = normalizeStockSize(size);
+    const quantity = Number(row?.quantity);
+    if (!size || !sizeKey || size.length > 80) return res.status(400).json({ message: 'Every row needs a size' });
+    if (!Number.isSafeInteger(quantity) || quantity < 0) return res.status(400).json({ message: `Size ${size}: quantity must be a whole number, 0 or more` });
+    if (cleaned.some(item => item.sizeKey === sizeKey)) return res.status(400).json({ message: `Size ${size} is listed twice` });
+    cleaned.push({ size, sizeKey, quantity });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    const changed = [];
+    await session.withTransaction(async () => {
+      changed.length = 0;
+      const product = await Product.findById(req.params.id).session(session);
+      if (!product) throw Object.assign(new Error('Product not found'), { status: 404 });
+      const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
+      for (const row of cleaned) {
+        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey }).session(session)
+          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey }).session(session);
+        const before = Number(variant?.onHandQuantity || 0);
+        if (variant && row.quantity < Number(variant.reservedQuantity || 0)) {
+          throw Object.assign(new Error(`Size ${row.size}: ${variant.reservedQuantity} unit(s) are reserved for orders`), { status: 409 });
+        }
+        if (!variant) {
+          if (!row.quantity) continue;
+          variant = new StockVariant({
+            canonicalReference,
+            displayReference: product.serialNumber,
+            productIds: [product._id],
+            primaryProductId: product._id,
+            printMethod,
+            size: row.size,
+            sizeKey: row.sizeKey,
+            onHandQuantity: 0,
+            reservedQuantity: 0,
+            sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin',
+            notes: 'Created in the stock portal'
+          });
+        } else if (!variant.productIds.some(id => String(id) === String(product._id))) {
+          variant.productIds.push(product._id);
+        }
+        if (before === row.quantity && !variant.isNew) continue;
+        variant.onHandQuantity = row.quantity;
+        await variant.save({ session });
+        changed.push({ size: row.size, before, after: row.quantity });
+        await InventoryMovement.create([{
+          productId: product._id,
+          actorId: req.user.id,
+          type: 'set',
+          quantity: row.quantity - before,
+          stockBefore: before,
+          stockAfter: row.quantity,
+          notes: `Size ${row.size} (${printMethod}): set in stock portal`
+        }], { session });
+      }
+      product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), ...cleaned.map(row => row.size)])]
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      await product.save({ session });
+      await recomputeProductStock([product._id], session);
+    });
+    res.json({ changed });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error('Error saving size stock:', error);
+    res.status(500).json({ message: 'Failed to save size stock' });
+  } finally {
+    await session.endSession();
+  }
+});
+
+// PATCH /api/inventory/products/:id/variants/:variantId - Adjust one exact size.
+router.patch('/products/:id/variants/:variantId', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id) || !mongoose.Types.ObjectId.isValid(req.params.variantId)) return res.status(400).json({ message: 'Invalid product or size ID' });
+  const action = String(req.body.action || '').toLowerCase();
+  const quantity = Number(req.body.quantity);
+  const notes = String(req.body.notes || '').trim();
+  if (!['receive', 'remove', 'set'].includes(action)) return res.status(400).json({ message: 'Action must be receive, remove, or set' });
+  if (!Number.isSafeInteger(quantity) || quantity < 0 || (action !== 'set' && quantity === 0)) return res.status(400).json({ message: 'Quantity must be a valid whole number' });
+  if (notes.length > 500) return res.status(400).json({ message: 'Reference or note must be 500 characters or fewer' });
+  try {
+    const variant = await StockVariant.findOne({ _id: req.params.variantId, productIds: req.params.id });
+    if (!variant) return res.status(404).json({ message: 'Size stock was not found for this product' });
+    const before = Number(variant.onHandQuantity || 0);
+    const after = action === 'set' ? quantity : before + (action === 'receive' ? quantity : -quantity);
+    if (after < Number(variant.reservedQuantity || 0)) return res.status(409).json({ message: `Cannot set below ${variant.reservedQuantity || 0} reserved unit(s)` });
+    variant.onHandQuantity = after;
+    await variant.save();
+    await InventoryMovement.create({ productId: req.params.id, actorId: req.user.id, type: action, quantity: after - before, stockBefore: before, stockAfter: after, notes: `Size ${variant.size} (${variant.printMethod})${notes ? `: ${notes}` : ''}` });
+    await recomputeProductStock(variant.productIds);
+    res.json(serializeVariant(variant));
+  } catch (error) {
+    console.error('Error updating stock size:', error);
+    res.status(500).json({ message: 'Failed to update stock size' });
   }
 });
 

@@ -1,4 +1,4 @@
-const { targetMinutesForTeam, teamForStatus, validateTransition } = require('../utils/workflowRules');
+const { targetMinutesForTeam, teamForStatus, validateTransition, normalizeReprintParts } = require('../utils/workflowRules');
 
 const makeCase = (overrides: Record<string, unknown> = {}) => ({
   status: 'needs_customer_info',
@@ -41,7 +41,7 @@ describe('order exception workflow rules', () => {
     const withFile = makeCase({
       status: 'modeling',
       modelVersions: [{ fileUrl: 'https://files.example/model.stl', isPrintReady: false }],
-  });
+    });
     expect(validateTransition(withFile, 'file_validation')).toMatch(/customer approval/i);
   });
 
@@ -53,11 +53,20 @@ describe('order exception workflow rules', () => {
     });
     expect(validateTransition(base, 'ready_to_print')).toMatch(/wax or resin/i);
     expect(validateTransition({ ...base, productionMethod: 'wax' }, 'ready_to_print')).toBeNull();
-    });
+  });
 
   test('keeps failed quality work inside the same case for a reprint', () => {
     const qualityCase = makeCase({ status: 'quality_check', productionMethod: 'resin' });
     expect(validateTransition(qualityCase, 'ready_to_print')).toBeNull();
     expect(validateTransition(qualityCase, 'completed')).toBeNull();
+  });
+
+  test('accepts exact reprint parts and quantities, and rejects ambiguous requests', () => {
+    expect(normalizeReprintParts([{ code: 'a', quantity: 2 }, { code: 'D', quantity: 1 }]))
+      .toEqual([{ code: 'A', quantity: 2 }, { code: 'D', quantity: 1 }]);
+    expect(() => normalizeReprintParts([])).toThrow(/at least one part/i);
+    expect(() => normalizeReprintParts([{ code: 'A', quantity: 1 }, { code: 'a', quantity: 2 }])).toThrow(/unique/i);
+    expect(() => normalizeReprintParts([{ code: 'K', quantity: 1 }])).toThrow(/A to J/i);
+    expect(() => normalizeReprintParts([{ code: 'B', quantity: 0 }])).toThrow(/positive whole-number/i);
   });
 });

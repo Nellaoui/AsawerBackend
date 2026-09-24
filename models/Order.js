@@ -104,6 +104,8 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'confirmed', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'],
     default: 'pending'
   },
+  operationsArchivedAt: { type: Date, default: null },
+  operationsArchivedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
   inventoryState: {
     // Existing orders remain untracked; newly created orders reserve inventory.
     type: String,

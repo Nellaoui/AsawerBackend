@@ -68,6 +68,9 @@
     @media (max-width:900px) { .stats { grid-template-columns:repeat(2,1fr); } header,.toolbar { flex-wrap:wrap; } main { padding:18px; } }
     /* Customer service can set products up but not move stock. */
     body.setup-only [data-stock-only]{display:none!important}
+    body.setup-only [data-create-stock],#productDialog.fixing [data-create-stock],#productDialog.stock-only [data-create-stock]{display:none!important}
+    .size-list{display:grid;gap:9px;margin-top:8px}.size-entry{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;align-items:end;gap:8px}.size-entry .button{white-space:nowrap}.size-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.size-heading .button{flex:none}
+    @media(max-width:620px){.size-entry{grid-template-columns:1fr 1fr}.size-entry .button{grid-column:1/-1}}
     /* Photo picker and the clickable "fix this product" rows. */
     .field-label{display:block;font-size:.85rem;margin-bottom:6px}
     .photo-row{display:flex;gap:12px;align-items:flex-start}
@@ -144,7 +147,7 @@
           <div class="panel-head">
             <div>
               <h2>Products with an issue</h2>
-              <p class="subtitle">Missing a photo, a price, a print method, or reported as wrong. Fix these before they can be sold.</p>
+              <p class="subtitle">Missing a photo, or reported as wrong. Fix these before they can be sold.</p>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <span id="setupTotal" class="muted"></span>
@@ -170,7 +173,7 @@
 
   <dialog id="productDialog">
     <form id="productForm">
-      <div class="modal-head"><h2 id="productDialogTitle">Add a product</h2><p id="productDialogHint" class="subtitle">Add the photo and supply route now and the product is ready straight away. A price is optional.</p></div>
+      <div class="modal-head"><h2 id="productDialogTitle">Add a product</h2><p id="productDialogHint" class="subtitle">Add the photo now and the product is ready to sell straight away. A price is optional.</p></div>
       <div class="modal-body">
       <div id="productError" class="error" aria-live="assertive"></div>
       <label>Reference<input id="productSerial" required placeholder="BA 150 5mm" autocomplete="off"></label>
@@ -185,6 +188,7 @@
           <option value="Other">Other</option>
         </select>
       </label>
+      <label>Catalogue<select id="productCatalog" required><option value="">Choose a catalogue</option></select><span class="muted" style="font-size:.8rem">Customers see the product in this catalogue once it has a photo.</span></label>
       <div>
         <span class="field-label" id="productPhotoLabel">Photo</span>
         <div class="photo-row">
@@ -198,18 +202,14 @@
       </div>
       <div class="two">
         <label>Price (optional)<input id="productPrice" type="number" min="0" step="0.01" placeholder="Leave empty if not priced"></label>
-        <label>Sizes (comma separated)<input id="productSizes" placeholder="54, 56, 58"></label>
+        <label>Production method<select id="productPrintMethod" required><option value="">Choose method</option><option value="wax">Wax</option><option value="resin">Resin</option><option value="none">Stock only (no printing)</option></select></label>
       </div>
-      <label>Supply
-        <select id="productSupply">
-          <option value="stock_only">From stock only</option>
-          <option value="stock_then_print:wax">Stock, then print - wax</option>
-          <option value="stock_then_print:resin">Stock, then print - resin</option>
-          <option value="print_on_demand:wax">Print on demand - wax</option>
-          <option value="print_on_demand:resin">Print on demand - resin</option>
-          <option value="">Not decided yet</option>
-        </select>
-      </label>
+      <div>
+        <div class="size-heading"><span class="field-label">Sizes for this product</span><button id="addProductSize" class="button secondary small" type="button">+ Add size</button></div>
+        <div id="productSizeRows" class="size-list"></div>
+        <datalist id="commonProductSizes"><option value="48"><option value="50"><option value="52"><option value="54"><option value="56"><option value="58"><option value="60"><option value="62"><option value="64"><option value="66"><option value="68"><option value="70"><option value="One size"></datalist>
+        <p class="muted" style="margin:8px 0 0">Add each size separately. Stock staff can enter the starting quantity for each size.</p>
+      </div>
       <label id="productNoteField">Note<input id="productNote" placeholder="What is still missing?"></label>
       </div>
       <div class="modal-foot">
@@ -262,12 +262,16 @@
   </dialog>
 
   <dialog id="variantsDialog">
+    <form id="sizeStockForm">
     <div class="modal-head"><h2>Stock by size</h2><p id="variantsProduct" class="subtitle"></p></div>
     <div class="modal-body">
-      <div class="table-wrap"><table class="variant-table"><thead><tr><th>Method</th><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th><th>Source</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
-      <p class="muted">These quantities come from the Wax and Resin sheets. The order system checks this exact size before it creates employee tasks.</p>
+      <div id="sizeStockError" class="error" aria-live="assertive"></div>
+      <label>Production method<select id="sizeStockMethod"><option value="wax">Wax</option><option value="resin">Resin</option></select></label>
+      <div class="table-wrap"><table class="variant-table"><thead><tr><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
+      <p class="muted">Type how many pieces are on the shelf for each size, then save. Use + Add size for a size that is not listed.</p>
     </div>
-    <div class="modal-foot"><button id="closeVariants" type="button" class="button">Close</button></div>
+    <div class="modal-foot"><button id="addVariant" type="button" class="button secondary">+ Add size</button><button id="closeVariants" type="button" class="button secondary">Cancel</button><button id="saveSizeStock" type="submit" class="button">Save quantities</button></div>
+    </form>
   </dialog>
 
   <script>
@@ -284,7 +288,13 @@
       if (state.token) headers.Authorization = `Bearer ${state.token}`;
       const response = await fetch(`${API}${path}`, { ...options, headers });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+      if (!response.ok) {
+        const error = new Error(data.message || `Request failed (${response.status})`);
+        // Callers need the body of a 409 to open the product that already exists.
+        error.status = response.status;
+        error.existing = data.existing;
+        throw error;
+      }
       return data;
     }
     function setAuthenticated(value) { $('loginCard').hidden=value; $('workspace').hidden=!value; $('account').hidden=!value; }
@@ -304,7 +314,7 @@
       if (!canSetupProducts) return signOut('Product management is limited to operations staff.');
       document.body.classList.toggle('setup-only',!canManageStock);
       $('userName').textContent=`${state.user.name || state.user.email} · ${state.user.isAdmin ? 'Admin' : 'Employee'}`;
-      setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();
+      setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();loadCatalogChoices();
     }
     let inventoryRequestId=0;
     let inventorySearchTimer;
@@ -329,6 +339,12 @@
     function queueInventorySearch(){clearTimeout(inventorySearchTimer);++inventoryRequestId;inventorySearchTimer=setTimeout(()=>{state.page=1;loadInventory({live:true})},300)}
     function renderSummary(s) { $('statProducts').textContent=s.products; $('statAvailable').textContent=s.availableUnits; $('statReserved').textContent=s.reservedUnits; $('statLow').textContent=s.lowStockProducts; $('statOut').textContent=s.outOfStockProducts; }
     // ---- Products that are not ready to sell ---------------------------
+    async function loadCatalogChoices(){
+      try{
+        state.catalogs=await api('/inventory/catalogs');
+        $('productCatalog').innerHTML='<option value="">Choose a catalogue</option>'+state.catalogs.map(c=>`<option value="${escapeHtml(c._id)}">${escapeHtml(c.name)}${c.isPublic?'':' (private)'}</option>`).join('');
+      }catch(error){console.error('Could not load catalogues:',error)}
+    }
     async function loadNeedsSetup(){
       try{
         const data=await api('/inventory/needs-setup');
@@ -343,7 +359,6 @@
       if(p.needsImage)out.push('photo');
       if(p.needsPrice)out.push('price');
       if(p.needsDetails)out.push('details');
-      if(p.needsClassification)out.push('print method');
       return out;
     }
     function renderNeedsSetup(canPublish){
@@ -356,7 +371,7 @@
         const id=escapeHtml(p._id);
         const label=escapeHtml(p.name||p.serialNumber||'this product');
         // The whole row opens the fix form - the buttons beside it stop the click.
-        return `<tr class="fix-row" data-fix="${id}" tabindex="0" role="button" aria-label="Fix ${label}"><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions"><button class="button small" data-fix="${id}">Fix now</button>${reported?(canPublish?`<button class="button secondary small" data-issue="${id}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${id}" data-open="true">Report issue</button>`}</div></td></tr>`;
+        return `<tr class="fix-row" data-fix="${id}" tabindex="0" role="button" aria-label="Fix ${label}"><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}${p.catalogName?' · '+escapeHtml(p.catalogName):''}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions"><button class="button small" data-fix="${id}">Fix now</button>${reported?(canPublish?`<button class="button secondary small" data-issue="${id}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${id}" data-open="true">Report issue</button>`}</div></td></tr>`;
       }).join(''):'<tr><td colspan="4" class="muted">Every product is ready to sell.</td></tr>';
     }
     document.addEventListener('click', async event=>{
@@ -376,9 +391,6 @@
     // One dialog does both jobs: 'create' posts a new product, 'fix' patches
     // the one already sitting in the problem list.
     const MAX_PHOTO_BYTES=5*1024*1024;
-    const supplySelectValue=p=>p.fulfillmentPolicy==='stock_only'
-      ? 'stock_only'
-      : (p.printMethod&&p.printMethod!=='none' ? p.fulfillmentPolicy+':'+p.printMethod : '');
     function setTypeValue(type){
       // Products imported from the sheets carry types that are not in the list.
       const select=$('productType'),value=type||'Bague';
@@ -390,22 +402,40 @@
       if(state.photoUrl){image.src=state.photoUrl;image.hidden=false;empty.hidden=true}
       else{image.removeAttribute('src');image.hidden=true;empty.hidden=false}
     }
+    function addProductSizeRow(size='',quantity=0){
+      const row=document.createElement('div');
+      row.className='size-entry';
+      row.innerHTML='<label>Size<input data-product-size list="commonProductSizes" maxlength="80" placeholder="54 or One size" value="'+escapeHtml(size)+'"></label><label data-create-stock>Starting quantity<input data-product-quantity type="number" min="0" step="1" value="'+escapeHtml(quantity)+'"></label><button class="button secondary small" type="button" data-remove-size aria-label="Remove size">Remove</button>';
+      $('productSizeRows').append(row);
+    }
+    function renderProductSizeRows(sizes=[]){
+      $('productSizeRows').replaceChildren();
+      for(const size of sizes)addProductSizeRow(size,0);
+      if(!sizes.length)addProductSizeRow();
+    }
+    function updateProductMethod(){
+      $('productDialog').classList.toggle('stock-only',$('productPrintMethod').value==='none');
+    }
     function openProductDialog(prefill={},mode='create'){
       show('productError');
       state.productMode=mode;
+      state.productOriginalPolicy=prefill.fulfillmentPolicy||'stock_then_print';
+      $('productDialog').classList.toggle('fixing',mode==='fix');
       if(mode==='create'){state.fixingId=null;state.photoUrl=''}
       $('productDialogTitle').textContent=mode==='fix'?'Fix this product':'Add a product';
       $('productDialogHint').textContent=mode==='fix'
-        ?'Add whatever is missing. A photo and a supply route take it off this list. A price is optional.'
-        :'Add the photo and supply route now and the product is ready straight away. A price is optional.';
+        ?'Add whatever is missing. A photo takes it off this list. A price is optional.'
+        :'Add the photo now and the product is ready to sell straight away. A price is optional.';
       $('productSave').textContent=mode==='fix'?'Save product':'Create product';
       $('productSerial').value=prefill.serialNumber||'';
       $('productSerial').readOnly=mode==='fix';
       $('productName').value=prefill.name||prefill.serialNumber||'';
       setTypeValue(prefill.type);
-      $('productSizes').value=(prefill.sizes||[]).join(', ');
+      $('productCatalog').value=prefill.catalogId||'';
+      renderProductSizeRows(prefill.sizes||[]);
+      $('productPrintMethod').value=prefill.printMethod||'';
+      updateProductMethod();
       $('productPrice').value=Number(prefill.price)>0?Number(prefill.price):'';
-      $('productSupply').value=prefill.supply===undefined?'stock_only':prefill.supply;
       $('productNote').value=prefill.note||'';
       $('productNoteField').hidden=mode==='fix';
       $('productPhotoFile').value='';
@@ -413,16 +443,29 @@
       renderPhoto();
       $('productDialog').showModal();
     }
-    function openFixDialog(id){
-      const product=state.needsSetup.find(row=>String(row._id)===String(id));
+    function openFixDialogFor(product){
       if(!product)return;
       state.fixingId=product._id;
       state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
-        sizes:product.availableSizes||[],price:product.price,
-        supply:supplySelectValue(product),note:product.setupIssue&&product.setupIssue.note
+        sizes:product.availableSizes||[],price:product.price,printMethod:product.printMethod,
+        fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
+        note:product.setupIssue&&product.setupIssue.note
       },'fix');
+    }
+    function openFixDialog(id){
+      openFixDialogFor(state.needsSetup.find(row=>String(row._id)===String(id)));
+    }
+    // The reference is stored one way - BRA 312, BRA 312 S. Show that while
+    // typing; the server normalises again and has the last word.
+    function tidyReference(value){
+      const folded=String(value||'').trim().replace(/\s+/g,' ')
+        .replace(/\b(simples?)\b/gi,'S').replace(/\b(serties?|sertis?)\b/gi,' ')
+        .replace(/\s+/g,' ').trim();
+      const parts=folded.match(/^([A-Za-z]+)[\s_-]*([0-9]+)\s*(.*)$/);
+      if(!parts)return folded.toUpperCase();
+      return [parts[1].toUpperCase(),parts[2],parts[3].trim().toUpperCase()].filter(Boolean).join(' ');
     }
     document.addEventListener('click',event=>{
       // Report issue / Mark fixed live inside the row and keep their own job.
@@ -463,37 +506,64 @@
       }finally{$('productSave').disabled=false}
     });
     $('addProduct').addEventListener('click',()=>{state.pendingOrphanId=null;openProductDialog()});
+    $('addProductSize').addEventListener('click',()=>{addProductSizeRow();$('productSizeRows').lastElementChild.querySelector('[data-product-size]').focus()});
+    $('productSizeRows').addEventListener('click',event=>{if(event.target.closest('[data-remove-size]'))event.target.closest('.size-entry').remove()});
+    $('productPrintMethod').addEventListener('change',updateProductMethod);
+    $('productForm').addEventListener('submit',event=>{event.preventDefault();$('productSave').click()});
     $('productCancel').addEventListener('click',()=>$('productDialog').close());
-    function supplyPayload(){
-      const raw=$('productSupply').value;
-      if(!raw)return{fulfillmentPolicy:'stock_then_print',printMethod:'none'};
-      if(raw==='stock_only')return{fulfillmentPolicy:'stock_only',printMethod:'none'};
-      const [fulfillmentPolicy,printMethod]=raw.split(':');
-      return{fulfillmentPolicy,printMethod};
-    }
+    $('productSerial').addEventListener('blur',()=>{
+      if(state.productMode==='fix')return;
+      const tidy=tidyReference($('productSerial').value);
+      if(tidy)$('productSerial').value=tidy;
+    });
     $('productSave').addEventListener('click', async ()=>{
       const name=$('productName').value.trim();
       if(!name)return show('productError','Name is required.');
       const rawPrice=$('productPrice').value.trim();
       const price=rawPrice===''?0:Number(rawPrice);
       if(!Number.isFinite(price)||price<0)return show('productError','Price must be zero or more, or left empty.');
-      const sizes=$('productSizes').value.split(',').map(value=>value.trim()).filter(Boolean);
-      const supply=supplyPayload();
+      const catalogId=$('productCatalog').value;
+      if(!catalogId)return show('productError','Choose the catalogue customers will find this product in.');
+      const method=$('productPrintMethod').value;
+      if(!['wax','resin','none'].includes(method))return show('productError','Choose Wax or Resin, or select stock only.');
+      const sizeRows=[...$('productSizeRows').querySelectorAll('.size-entry')].map(row=>({size:row.querySelector('[data-product-size]').value.trim(),quantity:Number(row.querySelector('[data-product-quantity]').value)}));
+      const chosenSizes=sizeRows.filter(row=>row.size);
+      if(!chosenSizes.length)return show('productError','Add at least one size. Use “One size” if the product has no numbered size.');
+      if(chosenSizes.length>50)return show('productError','Add no more than 50 sizes.');
+      if(new Set(chosenSizes.map(row=>row.size.toLowerCase().replace(/\s+/g,' '))).size!==chosenSizes.length)return show('productError','Each size should appear only once.');
+      if(sizeRows.some(row=>!Number.isSafeInteger(row.quantity)||row.quantity<0||(!row.size&&row.quantity>0)))return show('productError','Each size needs a valid whole-number quantity.');
+      if(method==='none'&&state.canManageStock&&state.productMode==='create'&&chosenSizes.some(row=>row.quantity>0))return show('productError','Choose Wax or Resin to add starting stock by size.');
+      if(state.pendingOrphanId&&state.canManageStock&&chosenSizes.some(row=>row.quantity>0))return show('productError','This reference already has counted worksheet stock. Create the product first, then reconcile its size stock without entering it twice.');
+      const sizes=chosenSizes.map(row=>row.size);
+      const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
       $('productSave').disabled=true;
       try{
         if(state.productMode==='fix'){
-          const body={name,type:$('productType').value,availableSizes:sizes,price,...supply};
+          const body={name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method,fulfillmentPolicy};
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
           $('productDialog').close();
-          const left=[data.stillMissing&&data.stillMissing.image?'a photo':null,data.stillMissing&&data.stillMissing.supplyRoute?'a supply route':null].filter(Boolean);
-          show('message',data.ready?'Saved. This product is ready to sell.':'Saved. Still needs '+left.join(' and ')+'.');
+          show('message',data.ready?'Saved. This product is ready to sell.':'Saved. It still needs a photo before it can be sold.');
         }else{
           const serialNumber=$('productSerial').value.trim();
           if(!serialNumber)return show('productError','Reference and name are required.');
-          const data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,availableSizes:sizes,price,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim(),...supply})});
+          let data;
+          try{
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method,fulfillmentPolicy,initialStockBySize:state.canManageStock&&method!=='none'&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+          }catch(error){
+            // 409: the reference is already in the catalogue, however it was
+            // spelled. Switch to fixing that product rather than making a second.
+            if(error.existing){
+              const keptPhoto=state.photoUrl;
+              openFixDialogFor(error.existing);
+              if(keptPhoto){state.photoUrl=keptPhoto;renderPhoto();$('productPhotoStatus').textContent='Photo ready. Save to keep it.'}
+              show('productError',error.message);
+              return;
+            }
+            throw error;
+          }
           $('productDialog').close();
-          show('message',data.ready?'Product created and ready to sell.':'Product created. It needs a photo before it can be sold.');
+          show('message',(data.ready?'Product created and ready to sell.':'Product created. It needs a photo before it can be sold.')+' Saved as '+(data.serialNumber||serialNumber)+'.');
           if(state.pendingOrphanId){
             await api('/inventory/orphans/'+state.pendingOrphanId,{method:'PATCH',body:JSON.stringify({status:'resolved'})}).catch(()=>{});
             state.pendingOrphanId=null;
@@ -511,7 +581,7 @@
       if(!orphan)return;
       const guess=/^GOU/i.test(orphan.reference)?'Gourmette':/^COL/i.test(orphan.reference)?'Collier':/^BRA/i.test(orphan.reference)?'Bracelet':/^BO/i.test(orphan.reference)?'Boucle':'Bague';
       state.pendingOrphanId=orphan._id;
-      openProductDialog({serialNumber:orphan.reference,name:orphan.reference,type:guess,sizes:orphan.sizes,note:`Counted on ${orphan.sourceSheet||'a stock sheet'}: ${orphan.units} unit(s).`});
+      openProductDialog({serialNumber:orphan.reference,name:orphan.reference,type:guess,sizes:orphan.sizes,printMethod:/^wax$/i.test(orphan.sourceSheet||'')?'wax':/^resin$/i.test(orphan.sourceSheet||'')?'resin':'',note:`Counted on ${orphan.sourceSheet||'a stock sheet'}: ${orphan.units} unit(s).`});
     });
 
     // ---- Counted stock with no product ---------------------------------
@@ -544,7 +614,7 @@
     });
 
     function renderProducts() {
-      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions">${synced?`<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">View sizes</button>`:`<button class="button small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
+      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions"><button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">Manage sizes</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
       $('pageLabel').textContent=`Page ${state.page} of ${state.pages} · ${state.total} products`;
       $('previous').disabled=state.page<=1; $('next').disabled=state.page>=state.pages;
     }
@@ -554,7 +624,34 @@
     function openStock(product,mode) { state.selected=product; $('dialogTitle').textContent=mode==='receive'?'Add stock':'Adjust stock'; $('dialogProduct').textContent=`${product.name} · ${product.serialNumber} · ${product.stock} available`; $('action').value=mode==='receive'?'receive':'set'; $('action').disabled=mode==='receive'; $('quantity').value=mode==='receive'?'1':String(product.stock); $('threshold').value=String(product.lowStockThreshold); $('location').value=product.stockLocation || ''; $('notes').value=''; show('stockError'); updatePreview(); $('stockDialog').showModal(); }
     function openProduction(product) { state.selected=product; $('productionProduct').textContent=`${product.name} · ${product.serialNumber}`; $('fulfillmentPolicy').value=product.fulfillmentPolicy || 'stock_then_print'; $('printMethod').value=product.printMethod || 'none'; show('productionError'); $('productionDialog').showModal(); }
     function openDamage(product) { state.selected=product; $('damageProduct').textContent=`${product.name} · ${product.serialNumber}`; $('damageQuantity').value='1'; $('damageOrder').value=''; $('damageNotes').value=''; show('damageError'); $('damageDialog').showModal(); }
-    function openVariants(product) { state.selected=product; $('variantsProduct').textContent=`${product.name} · ${product.serialNumber}`; $('variantsBody').innerHTML=(product.stockVariants||[]).map(variant=>`<tr><td>${escapeHtml(variant.printMethod)}</td><td><strong>${escapeHtml(variant.size)}</strong></td><td>${variant.onHandQuantity}</td><td style="color:var(--blue);font-weight:700">${variant.reservedQuantity}</td><td><span class="stock ${variant.availableQuantity===0?'out':''}">${variant.availableQuantity}</span></td><td>${escapeHtml(variant.sourceSheet)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No size stock is linked yet.</td></tr>'; $('variantsDialog').showModal(); }
+    const sizeKeyOf=size=>String(size||'').trim().replace(',','.').toUpperCase().replace(/\s+/g,' ').replace(/\.0+$/,'');
+    function sizeRowsFor(product,method){
+      const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method);
+      const sizes=[];
+      for(const size of [...(product.availableSizes||[]).map(String),...variants.map(v=>v.size)]){if(size&&!sizes.some(s=>sizeKeyOf(s)===sizeKeyOf(size)))sizes.push(size)}
+      sizes.sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+      return sizes.map(size=>{const v=variants.find(x=>sizeKeyOf(x.size)===sizeKeyOf(size));return{size,onHand:v?v.onHandQuantity:0,reserved:v?v.reservedQuantity:0}});
+    }
+    function sizeRowHtml(row,isNew=false){
+      const sizeCell=isNew?'<input data-new-size maxlength="80" placeholder="54" aria-label="New size">':`<strong>${escapeHtml(row.size)}</strong>`;
+      return `<tr data-size-row data-size="${escapeHtml(row.size)}" data-original="${isNew?'':row.onHand}"><td>${sizeCell}</td><td><input data-size-qty type="number" min="${row.reserved}" step="1" value="${row.onHand}" aria-label="On hand for size ${escapeHtml(row.size||'new')}" style="max-width:110px"></td><td style="color:var(--blue);font-weight:700">${row.reserved}</td><td><span class="stock ${row.onHand-row.reserved<=0?'out':''}">${Math.max(row.onHand-row.reserved,0)}</span></td></tr>`;
+    }
+    function renderSizeRows(){
+      const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value);
+      $('variantsBody').innerHTML=rows.map(row=>sizeRowHtml(row)).join('')||'<tr data-empty><td colspan="4" class="muted">No sizes yet. Use + Add size.</td></tr>';
+    }
+    function openVariants(product) {
+      state.selected=product; show('sizeStockError');
+      $('variantsProduct').textContent=`${product.name} · ${product.serialNumber}`;
+      const methods=(product.stockVariants||[]).map(v=>v.printMethod);
+      $('sizeStockMethod').value=['wax','resin'].includes(product.printMethod)?product.printMethod:(methods[0]||'wax');
+      renderSizeRows(); $('variantsDialog').showModal();
+    }
+    function addVariant() {
+      $('variantsBody').querySelector('[data-empty]')?.remove();
+      $('variantsBody').insertAdjacentHTML('beforeend',sizeRowHtml({size:'',onHand:0,reserved:0},true));
+      $('variantsBody').lastElementChild.querySelector('[data-new-size]').focus();
+    }
     function updatePreview() { const p=state.selected,q=Number($('quantity').value),a=$('action').value; if(!p || !Number.isFinite(q)) return $('preview').textContent=''; const after=a==='set'?q:p.stock+(a==='receive'?q:-q); $('preview').textContent=`Available now: ${p.stock} → after saving: ${after}`; }
     $('loginForm').addEventListener('submit',async event => { event.preventDefault(); show('loginError'); const button=event.submitter; button.disabled=true; try { const data=await api('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value.trim(),password:$('password').value})}); state.token=data.token; state.user=data.user; localStorage.setItem('authToken',data.token); $('password').value=''; enterWorkspace(); } catch(error) { show('loginError',error.message); } finally { button.disabled=false; } });
     $('logout').addEventListener('click',()=>signOut());
@@ -568,6 +665,30 @@
     $('cancelProduction').addEventListener('click',()=>$('productionDialog').close());
     $('productionForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const policy=$('fulfillmentPolicy').value;const method=$('printMethod').value;if(policy!=='stock_only'&&method==='none')return show('productionError','Choose wax or resin for a printable product.');const button=event.submitter;button.disabled=true;try{await api(`/workflow/products/${p.productId}/production`,{method:'PATCH',body:JSON.stringify({fulfillmentPolicy:policy,printMethod:method})});$('productionDialog').close();show('message',`${p.name} production rule saved.`);await loadInventory();}catch(error){show('productionError',error.message)}finally{button.disabled=false}});
     $('cancelDamage').addEventListener('click',()=>$('damageDialog').close());
+    $('sizeStockMethod').addEventListener('change',renderSizeRows);
+    $('sizeStockForm').addEventListener('submit',async event=>{
+      event.preventDefault(); show('sizeStockError');
+      const sizes=[];
+      for(const row of $('variantsBody').querySelectorAll('[data-size-row]')){
+        const size=(row.querySelector('[data-new-size]')?.value??row.dataset.size).trim();
+        const raw=row.querySelector('[data-size-qty]').value.trim();
+        const quantity=Number(raw);
+        if(!size){if(raw&&quantity>0)return show('sizeStockError','Type the size for every new row.');continue}
+        if(!Number.isSafeInteger(quantity)||quantity<0)return show('sizeStockError',`Size ${size}: enter a whole number, 0 or more.`);
+        if(row.dataset.original!==''&&Number(row.dataset.original)===quantity)continue;
+        sizes.push({size,quantity});
+      }
+      if(!sizes.length){$('variantsDialog').close();return}
+      $('saveSizeStock').disabled=true;
+      try{
+        const data=await api(`/inventory/products/${state.selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,sizes})});
+        $('variantsDialog').close();
+        show('message',data.changed.length?`Saved ${data.changed.length} size(s) for ${state.selected.serialNumber}.`:'Nothing changed.');
+        await loadInventory({live:true});
+      }catch(error){show('sizeStockError',error.message)}
+      finally{$('saveSizeStock').disabled=false}
+    });
+    $('addVariant').addEventListener('click',addVariant);
     $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
     $('damageForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const quantity=Number($('damageQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1)return show('damageError','Enter a positive whole-number quantity.');if(!confirm(`Report ${quantity} damaged unit(s) of ${p.name} and create its replacement task?`))return;const button=event.submitter;button.disabled=true;try{const data=await api(`/inventory/products/${p.productId}/damage`,{method:'POST',body:JSON.stringify({quantity,orderId:$('damageOrder').value.trim()||null,notes:$('damageNotes').value.trim()})});$('damageDialog').close();show('message',`${p.name}: damage recorded and replacement case #${String(data.workflowCase._id).slice(-6).toUpperCase()} created.`);await loadInventory();}catch(error){show('damageError',error.message)}finally{button.disabled=false}});
     restoreSession();

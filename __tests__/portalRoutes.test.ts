@@ -28,12 +28,21 @@ describe('public operations portal pages', () => {
     expect(html).toContain('id="imageViewer"');
     expect(html).toContain('id="zoomInImage"');
     expect(html).toContain('data-zoom-image');
+    expect(html).toContain("location.replace(SOCKET_ORIGIN+'/admin/workflow'+location.hash)");
+    expect(html).toContain("location.origin!==SOCKET_ORIGIN");
+    expect(html).toContain("/admin/inventory-embed?embedded=1");
   });
 
   test('serves the embedded product management page', async () => {
     const response = await fetch(`${baseUrl}/admin/inventory-embed?embedded=1`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('Asawer Stock Portal');
+  });
+
+  test('sends direct product-page visits back to the single portal', async () => {
+    const response = await fetch(`${baseUrl}/admin/inventory-embed`, { redirect: 'manual' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/admin/workflow');
   });
 
   test('redirects the older inventory URL to the unified portal', async () => {

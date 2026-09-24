@@ -30,6 +30,24 @@ const CASE_STATUSES = [
 ];
 
 const PRODUCTION_METHODS = ['undecided', 'wax', 'resin'];
+const REPRINT_PART_CODES = 'ABCDEFGHIJ'.split('');
+
+const normalizeReprintParts = (parts) => {
+  if (!Array.isArray(parts) || parts.length < 1 || parts.length > REPRINT_PART_CODES.length) {
+    throw new Error('Choose at least one part from A to J for the reprint');
+  }
+  const seen = new Set();
+  return parts.map(part => {
+    const code = String(part?.code || '').trim().toUpperCase();
+    const quantity = part?.quantity;
+    if (!REPRINT_PART_CODES.includes(code) || seen.has(code)) throw new Error('Each reprint part must have a unique code from A to J');
+    if (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100000) {
+      throw new Error('Each reprint part needs a positive whole-number quantity');
+    }
+    seen.add(code);
+    return { code, quantity };
+  });
+};
 
 const TEAM_TARGET_MINUTES = {
   stock: 30,
@@ -117,6 +135,8 @@ module.exports = {
   CASE_STATUSES,
   CASE_TYPES,
   PRODUCTION_METHODS,
+  REPRINT_PART_CODES,
+  normalizeReprintParts,
   TEAM_TARGET_MINUTES,
   latestModelVersion,
   targetMinutesForTeam,
