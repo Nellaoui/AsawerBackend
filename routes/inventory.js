@@ -349,6 +349,30 @@ router.get('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
   }
 });
 
+// POST /api/inventory/catalogs - Create a catalogue from the portal. It starts
+// empty, so customers are not notified here; they see it once it has products.
+router.post('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
+  if (!canPublishProducts(req.user)) return res.status(403).json({ message: 'Only stock staff and the boss can create catalogues' });
+  const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
+  if (!name || name.length > 80) return res.status(400).json({ message: 'Give the catalogue a name (80 characters at most)' });
+  try {
+    const existing = await Catalog.findOne({ name: new RegExp(`^${escapeRegExp(name)}$`, 'i') }).select('_id name isPublic').lean();
+    if (existing) return res.status(409).json({ message: `A catalogue called "${existing.name}" already exists`, catalog: existing });
+    const catalog = await Catalog.create({
+      name,
+      description: String(req.body?.description || '').trim().slice(0, 500),
+      ownerId: req.user.id,
+      isPublic: req.body?.isPublic !== false,
+      allowedUserIds: [],
+      products: []
+    });
+    res.status(201).json({ _id: catalog._id, name: catalog.name, isPublic: catalog.isPublic !== false });
+  } catch (error) {
+    console.error('Error creating catalogue:', error);
+    res.status(500).json({ message: 'Failed to create the catalogue' });
+  }
+});
+
 router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const products = await Product.find({})

@@ -5,6 +5,7 @@ jest.mock('express', () => ({ Router: () => ({
   stack: [] as any[],
   get: jest.fn(),
   post: jest.fn(),
+  put: jest.fn(),
   patch(path: string, ...handlers: any[]) {
     this.stack.push({ route: { path, stack: handlers.map(handle => ({ handle })) } });
   },

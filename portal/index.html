@@ -68,7 +68,7 @@
     @media (max-width:900px) { .stats { grid-template-columns:repeat(2,1fr); } header,.toolbar { flex-wrap:wrap; } main { padding:18px; } }
     /* Customer service can set products up but not move stock. */
     body.setup-only [data-stock-only]{display:none!important}
-    body.setup-only [data-create-stock],#productDialog.fixing [data-create-stock],#productDialog.stock-only [data-create-stock]{display:none!important}
+    body.setup-only [data-create-stock],body.setup-only [data-create-catalog],#productDialog.fixing [data-create-stock],#productDialog.stock-only [data-create-stock]{display:none!important}
     .size-list{display:grid;gap:9px;margin-top:8px}.size-entry{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;align-items:end;gap:8px}.size-entry .button{white-space:nowrap}.size-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.size-heading .button{flex:none}
     @media(max-width:620px){.size-entry{grid-template-columns:1fr 1fr}.size-entry .button{grid-column:1/-1}}
     /* Photo picker and the clickable "fix this product" rows. */
@@ -188,15 +188,15 @@
           <option value="Other">Other</option>
         </select>
       </label>
-      <label>Catalogue<select id="productCatalog" required><option value="">Choose a catalogue</option></select><span class="muted" style="font-size:.8rem">Customers see the product in this catalogue once it has a photo.</span></label>
+      <label>Catalogue<span style="display:flex;gap:8px"><select id="productCatalog" required style="flex:1"><option value="">Choose a catalogue</option></select><button id="newCatalog" type="button" class="button secondary small" data-create-catalog>+ New catalogue</button></span><span class="muted" style="font-size:.8rem">Customers see the product in this catalogue once it has a photo.</span></label>
       <div>
         <span class="field-label" id="productPhotoLabel">Photo</span>
         <div class="photo-row">
           <img id="productPhotoPreview" class="photo-preview" alt="Selected product photo" hidden>
           <div id="productPhotoEmpty" class="photo-empty">No photo yet</div>
           <div class="photo-controls">
-            <input id="productPhotoFile" type="file" accept="image/jpeg,image/jpg,image/png,image/gif,image/webp" aria-labelledby="productPhotoLabel">
-            <p id="productPhotoStatus" class="muted" style="margin:6px 0 0" aria-live="polite">JPEG, PNG, GIF or WebP, up to 5 MB.</p>
+            <input id="productPhotoFile" type="file" accept="image/jpeg,image/jpg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif" aria-labelledby="productPhotoLabel">
+            <p id="productPhotoStatus" class="muted" style="margin:6px 0 0" aria-live="polite">JPEG, PNG, GIF, WebP or HEIC, up to 5 MB.</p>
           </div>
         </div>
       </div>
@@ -345,6 +345,23 @@
         $('productCatalog').innerHTML='<option value="">Choose a catalogue</option>'+state.catalogs.map(c=>`<option value="${escapeHtml(c._id)}">${escapeHtml(c.name)}${c.isPublic?'':' (private)'}</option>`).join('');
       }catch(error){console.error('Could not load catalogues:',error)}
     }
+    async function createCatalogFromForm(){
+      const name=(prompt('Name of the new catalogue')||'').trim();
+      if(!name)return;
+      const isPublic=confirm(`Show "${name}" to all customers in the app?
+
+OK = every customer can see it
+Cancel = hidden (private)`);
+      try{
+        const catalog=await api('/inventory/catalogs',{method:'POST',body:JSON.stringify({name,isPublic})});
+        await loadCatalogChoices();
+        $('productCatalog').value=catalog._id;
+        show('productError');
+      }catch(error){
+        if(error.status===409){await loadCatalogChoices();show('productError',error.message+'. It is now selected.');const match=(state.catalogs||[]).find(c=>c.name.toLowerCase()===name.toLowerCase());if(match)$('productCatalog').value=match._id;return}
+        show('productError',error.message);
+      }
+    }
     async function loadNeedsSetup(){
       try{
         const data=await api('/inventory/needs-setup');
@@ -439,7 +456,7 @@
       $('productNote').value=prefill.note||'';
       $('productNoteField').hidden=mode==='fix';
       $('productPhotoFile').value='';
-      $('productPhotoStatus').textContent=state.photoUrl?'Photo on file. Choose a file to replace it.':'JPEG, PNG, GIF or WebP, up to 5 MB.';
+      $('productPhotoStatus').textContent=state.photoUrl?'Photo on file. Choose a file to replace it.':'JPEG, PNG, GIF, WebP or HEIC, up to 5 MB.';
       renderPhoto();
       $('productDialog').showModal();
     }
@@ -495,7 +512,7 @@
           reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
           reader.readAsDataURL(file);
         });
-        const data=await api('/upload/image-base64',{method:'POST',body:JSON.stringify({image:base64,filename:file.name,mimeType:file.type||'image/jpeg'})});
+        const data=await api('/upload/image-base64',{method:'POST',body:JSON.stringify({image:base64,filename:file.name,mimeType:file.type||(/\.hei[cf]$/i.test(file.name)?'image/heic':'image/jpeg')})});
         state.photoUrl=data.imageUrl;
         renderPhoto();
         $('productPhotoStatus').textContent='Photo ready. Save to keep it.';
@@ -511,6 +528,7 @@
     $('productPrintMethod').addEventListener('change',updateProductMethod);
     $('productForm').addEventListener('submit',event=>{event.preventDefault();$('productSave').click()});
     $('productCancel').addEventListener('click',()=>$('productDialog').close());
+    $('newCatalog').addEventListener('click',createCatalogFromForm);
     $('productSerial').addEventListener('blur',()=>{
       if(state.productMode==='fix')return;
       const tidy=tidyReference($('productSerial').value);

@@ -105,11 +105,13 @@ router.post('/image-base64', auth, async (req, res) => {
     // Reject a bogus MIME type here rather than letting Cloudinary fail with
     // an opaque 500. A malformed client type used to arrive as e.g.
     // "image/asawer/cache/ImagePicker/<id>" and died inside the data URI.
-    const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    // iPhone photos arrive as HEIC/HEIF; Cloudinary stores them as JPEG.
+    const HEIC_MIME = ['image/heic', 'image/heif'];
+    const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', ...HEIC_MIME];
     if (!ALLOWED_MIME.includes(resolvedMimeType.toLowerCase())) {
       console.log('Rejected base64 upload with unsupported type:', resolvedMimeType);
       return res.status(400).json({
-        message: `Unsupported image type "${resolvedMimeType}". Use JPEG, PNG, GIF or WebP.`,
+        message: `Unsupported image type "${resolvedMimeType}". Use JPEG, PNG, GIF, WebP or HEIC.`,
       });
     }
 
@@ -118,6 +120,7 @@ router.post('/image-base64', auth, async (req, res) => {
     const result = await cloudinary.uploader.upload(dataURI, {
       folder: 'products',
       public_id: path.parse(filename).name,
+      ...(HEIC_MIME.includes(resolvedMimeType.toLowerCase()) ? { format: 'jpg' } : {})
     });
 
     console.log('Base64 image saved successfully to Cloudinary:', {
@@ -138,7 +141,14 @@ router.post('/image-base64', auth, async (req, res) => {
 
   } catch (error) {
     console.error('Error uploading base64 image:', error);
-    res.status(500).json({ message: 'Error uploading image' });
+    // Cloudinary answers 401 when the cloud name, API key and secret don't
+    // belong together. Its reason ("api_secret mismatch", "Unknown API key"...)
+    // names the wrong setting and holds no secret, so pass it on.
+    const reason = String(error?.message || error?.error?.message || '').split('. String to sign')[0].slice(0, 120);
+    if (error?.http_code === 401 || /signature|api[ _]key|api_secret|cloud_name/i.test(reason)) {
+      return res.status(502).json({ message: `The image service refused the server's Cloudinary settings (${reason || 'unauthorized'}). Check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.` });
+    }
+    res.status(500).json({ message: reason ? `Error uploading image: ${reason}` : 'Error uploading image' });
   }
 });
 

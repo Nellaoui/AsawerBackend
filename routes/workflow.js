@@ -18,7 +18,8 @@ const {
   notifyCaseAssignment,
   notifyFailedPrint,
   notifyOrderBlocked,
-  notifyTaskRemoved
+  notifyTaskRemoved,
+  notifyUser
 } = require('../utils/workflowNotifications');
 const {
   CASE_STATUSES,
@@ -275,6 +276,23 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     { _id: orderId },
     { $set: { fulfillmentState } }
   );
+
+  // Packing was the last step: tell the customer on their phone. The dedupe
+  // key keeps it to one message per order however often this runs.
+  if (fulfillmentState === 'ready') {
+    const order = await Order.findById(orderId).select('userId orderNumber').lean();
+    if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId))) {
+      const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
+      await safelyNotify(() => notifyUser(app, {
+        userId: order.userId,
+        title: '🎉 Your order is ready',
+        body: `Order ${label} is finished and ready for you.`,
+        type: 'order_ready',
+        data: { type: 'order', orderId: String(orderId), status: 'ready' },
+        dedupeKey: `order-ready-${orderId}`
+      }));
+    }
+  }
 };
 
 router.get('/summary', operationsAuth, async (req, res) => {

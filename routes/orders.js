@@ -464,11 +464,11 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           // Sheet-backed products use exact reference + size + Wax/Resin stock.
           // Older manual products keep their scalar-stock fallback until linked.
           const policy = product.fulfillmentPolicy || 'stock_then_print';
-          const available = selectedVariant
+          let available = selectedVariant
             ? Math.max(selectedVariant.onHandQuantity - selectedVariant.reservedQuantity, 0)
             : (productVariants.length ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
-          const stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
-          const printQuantity = quantity - stockQuantity;
+          let stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
+          let printQuantity = quantity - stockQuantity;
 
           if (policy === 'stock_only' && printQuantity > 0) {
             const error = new Error(`${product.name} has only ${available} unit(s) available`);
@@ -477,40 +477,66 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             throw error;
           }
 
-          let reservedProduct = null;
-          let reservedVariant = null;
-          if (stockQuantity > 0) {
+          // Reserve atomically. If the shelf holds less than we read (another
+          // order got there first), take what is left and print the rest rather
+          // than refusing the whole order.
+          const reserve = async (wanted) => {
             if (selectedVariant) {
-              reservedVariant = await StockVariant.findOneAndUpdate(
+              const reservedVariant = await StockVariant.findOneAndUpdate(
                 {
                   _id: selectedVariant._id,
-                  $expr: { $gte: [{ $subtract: ['$onHandQuantity', '$reservedQuantity'] }, stockQuantity] }
+                  $expr: { $gte: [{ $subtract: ['$onHandQuantity', '$reservedQuantity'] }, wanted] }
                 },
-                { $inc: { reservedQuantity: stockQuantity } },
+                { $inc: { reservedQuantity: wanted } },
                 { new: true, session }
               );
-              if (reservedVariant) {
-                await Product.updateMany(
-                  { _id: { $in: reservedVariant.productIds } },
-                  { $inc: { stock: -stockQuantity, reservedStock: stockQuantity } },
-                  { session }
-                );
-                selectedVariant.reservedQuantity = reservedVariant.reservedQuantity;
-              }
-            } else {
-              reservedProduct = await Product.findOneAndUpdate(
-                { _id: productId, isActive: true, stock: { $gte: stockQuantity } },
-                { $inc: { stock: -stockQuantity, reservedStock: stockQuantity } },
-                { new: true, session }
+              if (!reservedVariant) return false;
+              await Product.updateMany(
+                { _id: { $in: reservedVariant.productIds } },
+                { $inc: { stock: -wanted, reservedStock: wanted } },
+                { session }
               );
+              selectedVariant.reservedQuantity = reservedVariant.reservedQuantity;
+              return true;
             }
+            const reservedProduct = await Product.findOneAndUpdate(
+              { _id: productId, isActive: true, stock: { $gte: wanted } },
+              { $inc: { stock: -wanted, reservedStock: wanted } },
+              { new: true, session }
+            );
+            if (!reservedProduct) return false;
+            // The same product can appear on several lines of one order (two
+            // sizes); the next line must see the stock this line just took.
+            product.stock = reservedProduct.stock;
+            product.reservedStock = reservedProduct.reservedStock;
+            return true;
+          };
 
-            if (!reservedVariant && !reservedProduct) {
+          if (stockQuantity > 0 && !(await reserve(stockQuantity))) {
+            const fresh = selectedVariant
+              ? await StockVariant.findById(selectedVariant._id).session(session).lean()
+              : await Product.findById(productId).select('stock').session(session).lean();
+            const nowAvailable = selectedVariant
+              ? Math.max(Number(fresh?.onHandQuantity || 0) - Number(fresh?.reservedQuantity || 0), 0)
+              : Math.max(Number(fresh?.stock || 0), 0);
+            if (selectedVariant && fresh) selectedVariant.reservedQuantity = Number(fresh.reservedQuantity || 0);
+            if (!selectedVariant && fresh) product.stock = Number(fresh.stock || 0);
+            const retryQuantity = Math.min(nowAvailable, quantity);
+            if (policy === 'stock_only' && retryQuantity < quantity) {
+              const error = new Error(`${product.name} has only ${nowAvailable} unit(s) available`);
+              error.statusCode = 409;
+              error.code = 'INSUFFICIENT_STOCK';
+              throw error;
+            }
+            if (retryQuantity > 0 && !(await reserve(retryQuantity))) {
               const error = new Error(`Stock for ${product.name} changed while this order was being placed. Please try again.`);
               error.statusCode = 409;
               error.code = 'STOCK_CHANGED';
               throw error;
             }
+            stockQuantity = retryQuantity;
+            printQuantity = quantity - retryQuantity;
+            available = nowAvailable;
           }
 
           allocationByItem[itemIndex] = {
