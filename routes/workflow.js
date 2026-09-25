@@ -9,6 +9,8 @@ const AuditLog = require('../models/AuditLog');
 const BackupRun = require('../models/BackupRun');
 const SystemError = require('../models/SystemError');
 const Wishlist = require('../models/Wishlist');
+const StockVariant = require('../models/StockVariant');
+const InventoryMovement = require('../models/InventoryMovement');
 const { operationsAuth } = require('../middlewares/auth');
 const { buildCustomerInsights, recommendProducts } = require('../utils/customerInsights');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
@@ -761,7 +763,7 @@ router.get('/analytics', operationsAuth, async (req, res) => {
       const needsDetails = product.stockSyncState === 'needs_details' || product.isActive === false;
       const needsClassification = product.fulfillmentPolicy !== 'stock_only' && (!product.printMethod || product.printMethod === 'none');
       return { ...product, needsImage, needsDetails, needsClassification };
-    }).filter(product => product.needsImage || product.needsDetails || product.needsClassification);
+    }).filter(product => product.needsImage || product.needsDetails);
 
     const completionByTeam = Object.fromEntries([...completionByTeamMap].map(([team, metric]) => [team, {
       completedSteps: metric.count,
@@ -1465,6 +1467,153 @@ router.post('/cases/:id/reroute-print', operationsAuth, async (req, res) => {
   } catch (error) {
     console.error('Error rerouting print task:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to reroute the print task' });
+  }
+});
+
+// The stock team could not find some reserved units on the shelf. Those units
+// are written off the stock count (they are not there) and sent to printing on
+// the route Customer Service chose, so the order keeps moving.
+router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
+  let session;
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const reason = cleanText(req.body.reason, 1000);
+    session = await mongoose.startSession();
+    let printCase;
+    let stockCaseId;
+    await session.withTransaction(async () => {
+      const fail = (message, statusCode = 409) => { const error = new Error(message); error.statusCode = statusCode; throw error; };
+      const workflowCase = await WorkflowCase.findById(req.params.id).session(session);
+      if (!workflowCase) fail('Workflow case not found', 404);
+      if (workflowCase.status !== 'stock_picking' || workflowCase.requestType !== 'stock_pick') fail('Only a stock picking task can send missing units to printing');
+      const ownershipError = requireOwnedCase(req.user, workflowCase);
+      if (ownershipError) fail(ownershipError, isUnassigned(workflowCase) ? 409 : 403);
+      if (!canUseTeam(req.user, 'stock')) fail('Only the stock team can report missing stock', 403);
+      if (workflowCase.isBlocked) fail('Resume this blocked task first');
+      const missing = Number(req.body.quantity);
+      if (!Number.isSafeInteger(missing) || missing < 1 || missing > workflowCase.quantity) {
+        fail(`Enter how many units are missing, from 1 to ${workflowCase.quantity}`, 400);
+      }
+
+      const order = await Order.findById(workflowCase.orderId).session(session);
+      const orderItem = order?.items.id(workflowCase.orderItemId);
+      if (!order || !orderItem) fail('This stock task is not linked to an order item');
+      const product = await Product.findById(orderItem.productId).session(session);
+      if (!product) fail('The product for this order item no longer exists');
+      const method = ['wax', 'resin'].includes(orderItem.productionMethod) ? orderItem.productionMethod
+        : ['wax', 'resin'].includes(workflowCase.productionMethod) ? workflowCase.productionMethod
+          : ['wax', 'resin'].includes(product.printMethod) ? product.printMethod : null;
+      if (!method) fail('Customer Service must choose Wax or Resin for this item before it can be printed');
+      if (Number(orderItem.stockQuantity || 0) < missing) fail('The order has fewer reserved units than that');
+
+      // The reserved units are not on the shelf: take them off the count.
+      if (order.inventoryState === 'reserved') {
+        if (orderItem.inventoryVariantId) {
+          const variant = await StockVariant.findOneAndUpdate(
+            { _id: orderItem.inventoryVariantId, reservedQuantity: { $gte: missing }, onHandQuantity: { $gte: missing } },
+            { $inc: { reservedQuantity: -missing, onHandQuantity: -missing } },
+            { new: true, session }
+          );
+          if (!variant) fail('Reserved size stock is inconsistent for this item');
+          await Product.updateMany({ _id: { $in: variant.productIds } }, { $inc: { reservedStock: -missing } }, { session });
+        } else {
+          const updated = await Product.updateOne(
+            { _id: product._id, reservedStock: { $gte: missing } },
+            { $inc: { reservedStock: -missing } },
+            { session }
+          );
+          if (updated.modifiedCount !== 1) fail('Reserved stock is inconsistent for this item');
+        }
+        await InventoryMovement.create([{
+          productId: product._id,
+          orderId: order._id,
+          actorId: req.user.id,
+          type: 'remove',
+          quantity: -missing,
+          stockBefore: product.stock,
+          stockAfter: product.stock,
+          notes: `Size ${orderItem.size || '-'}: ${missing} reserved unit(s) not found on the shelf for order ${order.orderNumber || order._id}; sent to ${method} printing${reason ? ` (${reason})` : ''}`
+        }], { session });
+      }
+
+      const now = new Date();
+      orderItem.stockQuantity = Number(orderItem.stockQuantity || 0) - missing;
+      orderItem.printQuantity = Number(orderItem.printQuantity || 0) + missing;
+      orderItem.productionMethod = method;
+      orderItem.fulfillmentStatus = 'production';
+
+      // Add to this item's print task if it has not started yet, otherwise open one.
+      printCase = await WorkflowCase.findOne({
+        orderId: order._id,
+        orderItemId: orderItem._id,
+        requestType: 'print_required',
+        status: 'ready_to_print',
+        startedAt: null,
+        archivedAt: null
+      }).session(session);
+      const note = `${missing} unit(s) not found in stock${reason ? `: ${reason}` : ''}`;
+      if (printCase) {
+        printCase.quantity += missing;
+        printCase.history.push({ actorId: req.user.id, action: 'stock_missing_added', fromStatus: 'ready_to_print', toStatus: 'ready_to_print', note });
+      } else {
+        const team = teamForStatus('ready_to_print', method);
+        const assignee = await findTeamAssignee(team, session);
+        printCase = new WorkflowCase({
+          orderId: order._id,
+          orderItemId: orderItem._id,
+          customerId: order.userId,
+          productId: product._id,
+          requestType: 'print_required',
+          requestedName: product.name,
+          quantity: missing,
+          status: 'ready_to_print',
+          assignedTeam: team,
+          assignedTo: assignee?._id || null,
+          assignedAt: assignee ? now : null,
+          stageQueuedAt: now,
+          taskKind: 'order',
+          priority: workflowCase.priority,
+          targetMinutes: targetMinutesForTeam(team),
+          requirements: `Print ${missing} unit(s), size ${orderItem.size || '-'}, that were not found in stock.`,
+          productionMethod: method,
+          customerApproval: 'not_required',
+          createdBy: req.user.id,
+          history: [{ actorId: req.user.id, action: 'created_from_missing_stock', toStatus: 'ready_to_print', note }]
+        });
+        order.workflowCaseIds.addToSet(printCase._id);
+      }
+      await printCase.save({ session });
+
+      const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
+      const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
+      if (missing === workflowCase.quantity) {
+        workflowCase.status = 'completed';
+        workflowCase.completedAt = now;
+        if (!workflowCase.startedAt) workflowCase.startedAt = now;
+        workflowCase.history.push({ actorId: req.user.id, action: 'stock_missing', fromStatus: 'stock_picking', toStatus: 'completed', note: `${note}. Sent to ${method} printing.`, queueMinutes, workMinutes });
+      } else {
+        workflowCase.quantity -= missing;
+        workflowCase.requirements = `Collect ${workflowCase.quantity} reserved unit(s), size ${orderItem.size || '-'}, from stock for this order. ${orderItem.printQuantity} unit(s) are being printed.`;
+        workflowCase.history.push({ actorId: req.user.id, action: 'stock_missing', fromStatus: 'stock_picking', toStatus: 'stock_picking', note: `${note}. Sent to ${method} printing; ${workflowCase.quantity} unit(s) still to collect.` });
+      }
+      workflowCase.productionMethod = method;
+      await workflowCase.save({ session });
+      order.fulfillmentState = 'in_progress';
+      await order.save({ session });
+      stockCaseId = workflowCase._id;
+    });
+
+    await safelyNotify(() => notifyCaseAssignment(req.app, printCase));
+    await refreshOrderFulfillment(printCase.orderId, req.user.id, req.app);
+    res.json({
+      stockCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(stockCaseId))),
+      printCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(printCase._id)))
+    });
+  } catch (error) {
+    console.error('Error sending missing stock to printing:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to send missing stock to printing' });
+  } finally {
+    if (session) await session.endSession();
   }
 });
 

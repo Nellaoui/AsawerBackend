@@ -186,7 +186,15 @@ router.post('/invite', adminAuth, [
 
 // Get current user
 router.get('/me', auth, async (req, res) => {
+  // Sliding session: every time the app opens it gets a fresh token, so people
+  // who use the app regularly are never asked to sign in again. Test and
+  // impersonation tokens are left as they are.
+  const renewable = req.auth?.userId && !req.auth.isTestToken && !req.auth.isImpersonated;
+  const token = renewable
+    ? jwt.sign({ userId: req.auth.userId }, process.env.JWT_SECRET, { expiresIn: TOKEN_EXPIRES_IN })
+    : undefined;
   res.json({
+    ...(token ? { token } : {}),
     user: {
       id: req.user._id,
       email: req.user.email,

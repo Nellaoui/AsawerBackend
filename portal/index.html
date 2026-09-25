@@ -202,7 +202,7 @@
       </div>
       <div class="two">
         <label>Price (optional)<input id="productPrice" type="number" min="0" step="0.01" placeholder="Leave empty if not priced"></label>
-        <label>Production method<select id="productPrintMethod" required><option value="">Choose method</option><option value="wax">Wax</option><option value="resin">Resin</option><option value="none">Stock only (no printing)</option></select></label>
+        <label>Printing route (optional)<select id="productPrintMethod"><option value="">Customer Service chooses per order</option><option value="wax">Wax</option><option value="resin">Resin</option><option value="none">Stock only (never print)</option></select><span class="muted" style="font-size:.8rem">Customer Service picks Wax or Resin when it confirms each order. Set it here only for starting stock.</span></label>
       </div>
       <div>
         <div class="size-heading"><span class="field-label">Sizes for this product</span><button id="addProductSize" class="button secondary small" type="button">+ Add size</button></div>
@@ -450,7 +450,7 @@ Cancel = hidden (private)`);
       setTypeValue(prefill.type);
       $('productCatalog').value=prefill.catalogId||'';
       renderProductSizeRows(prefill.sizes||[]);
-      $('productPrintMethod').value=prefill.printMethod||'';
+      $('productPrintMethod').value=prefill.fulfillmentPolicy==='stock_only'?'none':(['wax','resin'].includes(prefill.printMethod)?prefill.printMethod:'');
       updateProductMethod();
       $('productPrice').value=Number(prefill.price)>0?Number(prefill.price):'';
       $('productNote').value=prefill.note||'';
@@ -543,21 +543,21 @@ Cancel = hidden (private)`);
       const catalogId=$('productCatalog').value;
       if(!catalogId)return show('productError','Choose the catalogue customers will find this product in.');
       const method=$('productPrintMethod').value;
-      if(!['wax','resin','none'].includes(method))return show('productError','Choose Wax or Resin, or select stock only.');
+      if(!['','wax','resin','none'].includes(method))return show('productError','Choose a valid printing route.');
       const sizeRows=[...$('productSizeRows').querySelectorAll('.size-entry')].map(row=>({size:row.querySelector('[data-product-size]').value.trim(),quantity:Number(row.querySelector('[data-product-quantity]').value)}));
       const chosenSizes=sizeRows.filter(row=>row.size);
       if(!chosenSizes.length)return show('productError','Add at least one size. Use “One size” if the product has no numbered size.');
       if(chosenSizes.length>50)return show('productError','Add no more than 50 sizes.');
       if(new Set(chosenSizes.map(row=>row.size.toLowerCase().replace(/\s+/g,' '))).size!==chosenSizes.length)return show('productError','Each size should appear only once.');
       if(sizeRows.some(row=>!Number.isSafeInteger(row.quantity)||row.quantity<0||(!row.size&&row.quantity>0)))return show('productError','Each size needs a valid whole-number quantity.');
-      if(method==='none'&&state.canManageStock&&state.productMode==='create'&&chosenSizes.some(row=>row.quantity>0))return show('productError','Choose Wax or Resin to add starting stock by size.');
+      if(!['wax','resin'].includes(method)&&state.canManageStock&&state.productMode==='create'&&chosenSizes.some(row=>row.quantity>0))return show('productError','Starting stock is counted as Wax or Resin. Choose which one, or leave the quantities at 0.');
       if(state.pendingOrphanId&&state.canManageStock&&chosenSizes.some(row=>row.quantity>0))return show('productError','This reference already has counted worksheet stock. Create the product first, then reconcile its size stock without entering it twice.');
       const sizes=chosenSizes.map(row=>row.size);
       const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
       $('productSave').disabled=true;
       try{
         if(state.productMode==='fix'){
-          const body={name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method,fulfillmentPolicy};
+          const body={name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method||'none',fulfillmentPolicy};
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
           $('productDialog').close();
@@ -567,7 +567,7 @@ Cancel = hidden (private)`);
           if(!serialNumber)return show('productError','Reference and name are required.');
           let data;
           try{
-            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method,fulfillmentPolicy,initialStockBySize:state.canManageStock&&method!=='none'&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method||'none',fulfillmentPolicy,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
           }catch(error){
             // 409: the reference is already in the catalogue, however it was
             // spelled. Switch to fixing that product rather than making a second.

@@ -262,9 +262,9 @@ const validateOrderData = (req, res, next) => {
   next();
 };
 
-const createFulfillmentCases = async (order, productById, actorId, session) => {
+const createFulfillmentCases = async (order, productById, actorId, session, items = order.items) => {
   const createdCases = [];
-  for (const orderItem of order.items) {
+  for (const orderItem of items) {
     const product = productById.get(String(orderItem.productId));
     if (!product) {
       const error = new Error(`Product for ${orderItem.name} no longer exists`);
@@ -293,7 +293,9 @@ const createFulfillmentCases = async (order, productById, actorId, session) => {
         priority: 'normal',
         targetMinutes: targetMinutesForTeam('stock'),
         requirements: stockPlan.requirements,
-        productionMethod: 'undecided',
+        // Carry Customer Service's route so the Wax/Resin filters include stock
+        // work, and so a unit missing from the shelf is printed on that route.
+        productionMethod: ['wax', 'resin'].includes(orderItem.productionMethod) ? orderItem.productionMethod : 'undecided',
         customerApproval: 'not_required',
         createdBy: actorId,
         history: [{ actorId, action: 'created_after_validation', toStatus: 'stock_picking', note: `Customer Service approved order ${order.orderNumber || order._id}` }]
@@ -929,7 +931,7 @@ router.post('/:id/confirm-legacy-workflow', operationsAuth, async (req, res) => 
           taskKind: 'order',
           targetMinutes: targetMinutesForTeam('stock'),
           requirements: stockPlan.requirements,
-          productionMethod: 'undecided',
+          productionMethod: ['wax', 'resin'].includes(item.productionMethod) ? item.productionMethod : 'undecided',
           customerApproval: 'not_required',
           createdBy: req.user.id,
           history: [{ actorId: req.user.id, action: 'legacy_stock_check_created', toStatus: 'stock_picking', note: 'Existing order confirmed without changing stock quantities' }]
@@ -1021,7 +1023,19 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
       const submittedRoutes = new Map((Array.isArray(req.body.items) ? req.body.items : [])
         .map(item => [String(item.itemId || ''), String(item.productionMethod || '')]));
 
-      for (const item of order.items) {
+      // Customer Service may confirm references one at a time. Only items still
+      // waiting are confirmed; `itemIds` narrows that to the ones sent.
+      const waitingItems = order.items.filter(item => item.fulfillmentStatus === 'awaiting_validation');
+      const pendingItems = waitingItems.length ? waitingItems : order.items;
+      const requestedIds = Array.isArray(req.body.itemIds) ? new Set(req.body.itemIds.map(String)) : null;
+      const confirmItems = requestedIds ? pendingItems.filter(item => requestedIds.has(String(item._id))) : pendingItems;
+      if (!confirmItems.length) {
+        const error = new Error('These items are already confirmed');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      for (const item of confirmItems) {
         const product = productById.get(String(item.productId));
         if (!product || !String(product.serialNumber || '').trim()) {
           const error = new Error(`${item.name} needs a valid product reference before approval`);
@@ -1044,15 +1058,38 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
             throw error;
           }
           item.productionMethod = chosenMethod;
+        } else {
+          // Stock-only lines: the route is optional and only used if the stock
+          // team cannot find the units and sends them to printing.
+          const forcedMethod = ['wax', 'resin'].includes(customer.forcedProductionMethod)
+            ? customer.forcedProductionMethod
+            : null;
+          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id));
+          if (['wax', 'resin'].includes(chosenMethod)) item.productionMethod = chosenMethod;
         }
         item.fulfillmentStatus = item.printQuantity > 0 ? 'production' : 'stock_reserved';
       }
 
-      fulfillmentCases = await createFulfillmentCases(order, productById, req.user.id, session);
+      fulfillmentCases = await createFulfillmentCases(order, productById, req.user.id, session, confirmItems);
       const now = new Date();
-      // Reviewing and confirming is one Customer Service action. Record a zero-minute
-      // work interval when the employee confirms without pressing Start first.
       if (!validationCase.startedAt) validationCase.startedAt = now;
+      const stillWaiting = order.items.filter(item => item.fulfillmentStatus === 'awaiting_validation');
+      if (stillWaiting.length) {
+        // Part of the order is confirmed: its items move on now, the rest stay
+        // with Customer Service on the same validation task.
+        validationCase.history.push({
+          actorId: req.user.id,
+          action: 'items_validated',
+          fromStatus: 'awaiting_validation',
+          toStatus: 'awaiting_validation',
+          note: `Confirmed ${confirmItems.map(item => `${productById.get(String(item.productId))?.serialNumber || item.name} size ${item.size || '-'}`).join(', ')}. ${stillWaiting.length} item(s) still to confirm.`
+        });
+        await validationCase.save({ session });
+        order.fulfillmentState = 'in_progress';
+        await order.save({ session });
+        approvedOrder = order;
+        return;
+      }
       validationCase.status = 'completed';
       validationCase.completedAt = now;
       validationCase.history.push({
@@ -1078,7 +1115,7 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
     await Promise.all(fulfillmentCases
       .filter(workflowCase => workflowCase.assignedTo)
       .map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
-    await sendPushToUser(
+    if (approvedOrder.validationStatus === 'approved') await sendPushToUser(
       User,
       approvedOrder.userId,
       '✅ Order confirmed',
