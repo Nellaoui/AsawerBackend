@@ -9,6 +9,7 @@
     "migrate:inventory": "node scripts/migrateInventory.js",
     "backup": "node scripts/backupDatabase.js",
     "restore": "node scripts/restoreBackup.js",
+    "stock:reset": "node scripts/resetAllStock.js",
     "machines:connector": "node scripts/machineConnector.js"
   },
   "dependencies": {
