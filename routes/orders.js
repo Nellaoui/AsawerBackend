@@ -18,6 +18,7 @@ const { planPrintTask, planStockTask } = require('../utils/orderWorkflowRoute');
 const { notifyCaseAssignment, notifyTaskRemoved } = require('../utils/workflowNotifications');
 const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalogMembership');
 const { normalizeStockSize } = require('../utils/stockReference');
+const productOptions = require('../utils/productOptions');
 
 const safelyNotify = async (operation) => {
   try {
@@ -436,7 +437,9 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           }
 
           const productVariants = variantsByProduct.get(productId) || [];
-          const sizeKey = normalizeStockSize(item.size);
+          // Boucle and pendantif have no size; their stock lives under "One size".
+          const sizeKey = normalizeStockSize(item.size)
+            || (productOptions.typeHasSizes(product.type) ? '' : normalizeStockSize(productOptions.ONE_SIZE));
           if (productVariants.length && !sizeKey) {
             const error = new Error(`Choose a size for ${product.name} so its exact stock can be checked`);
             error.statusCode = 400;

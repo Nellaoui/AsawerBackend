@@ -7,12 +7,26 @@ const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
 const StockVariant = require('../models/StockVariant');
 const StockOrphan = require('../models/StockOrphan');
+const SizePreset = require('../models/SizePreset');
 const User = require('../models/User');
 const { operationsAuth } = require('../middlewares/auth');
 const { normalizeProductReference, canonicalProductReference, canonicalStockReference, normalizeStockSize } = require('../utils/stockReference');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { notifyCaseAssignment } = require('../utils/workflowNotifications');
+const productOptions = require('../utils/productOptions');
+
+// Size presets keyed by type, for the same size rules the app applies.
+// A failed read falls back to the sizes the portal sent.
+const loadSizePresets = async () => {
+  try {
+    const presets = await SizePreset.find().lean();
+    return Object.fromEntries((presets || []).map((preset) => [preset.type, preset]));
+  } catch (error) {
+    console.error('❌ Could not load size presets:', error.message);
+    return {};
+  }
+};
 
 const router = express.Router();
 
@@ -376,7 +390,7 @@ router.post('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
 router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) => {
   try {
     const products = await Product.find({})
-      .select('name serialNumber type imageUrl price isActive stockSyncState fulfillmentPolicy printMethod catalogId availableSizes setupIssue stock')
+      .select('name serialNumber type imageUrl price isActive stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)
       .lean();
@@ -433,10 +447,10 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     const parts = serialNumber.match(/^([A-Za-z]+)\s*([0-9]+)/);
     const candidates = parts
       ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i') })
-        .select('_id name serialNumber type imageUrl price isActive availableSizes fulfillmentPolicy printMethod setupIssue')
+        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue')
         .limit(50)
         .lean()
-      : await Product.find({ serialNumber }).select('_id name serialNumber type imageUrl price isActive availableSizes fulfillmentPolicy printMethod setupIssue').limit(50).lean();
+      : await Product.find({ serialNumber }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue').limit(50).lean();
     const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
 
     if (duplicate) {
@@ -474,6 +488,11 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       seenSizes.add(sizeKey);
       stockSizes.push({ size, sizeKey, quantity });
     }
+    // Boucle and pendantif have no size; their stock is counted as "One size".
+    const oneSizeKey = normalizeStockSize(productOptions.ONE_SIZE);
+    if (!productOptions.typeHasSizes(type) && stockSizes.some(row => row.sizeKey !== oneSizeKey)) {
+      return res.status(400).json({ message: `${type} has no size. Enter its starting stock as "${productOptions.ONE_SIZE}".` });
+    }
     const startingTotal = stockSizes.reduce((total, row) => total + row.quantity, 0);
     if (!Number.isSafeInteger(startingTotal)) return res.status(400).json({ message: 'Starting stock total is too large' });
 
@@ -481,6 +500,11 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       ? req.body.availableSizes.map((size) => String(size).trim()).filter(Boolean)
       : [];
     for (const row of stockSizes) if (!sizes.some(size => normalizeStockSize(size) === row.sizeKey)) sizes.push(row.size);
+    const options = productOptions.productOptionsFor(type, {
+      availableSizes: sizes,
+      availableHeights: req.body?.availableHeights,
+      availableClasps: req.body?.availableClasps
+    }, await loadSizePresets());
 
     const imageUrl = cleanImageUrl(req.body?.imageUrl);
     const rawPrice = Number(req.body?.price);
@@ -504,7 +528,9 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       price,
       stock: startingTotal,
       reservedStock: 0,
-      availableSizes: sizes,
+      availableSizes: options.availableSizes,
+      availableHeights: options.availableHeights,
+      availableClasps: options.availableClasps,
       catalogId: catalog?._id,
       createdBy: req.user.id,
       isActive: ready,
@@ -660,10 +686,16 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
       product.printMethod = req.body.printMethod;
     }
 
-    if (Array.isArray(req.body?.availableSizes)) {
-      product.availableSizes = req.body.availableSizes
-        .map((size) => String(size).trim())
-        .filter(Boolean);
+    // Sizes, heights and clasps follow the product type (see utils/productOptions).
+    const optionFields = ['availableSizes', 'availableHeights', 'availableClasps'];
+    if (req.body?.type !== undefined || optionFields.some((field) => Array.isArray(req.body?.[field]))) {
+      const pick = (field) => (Array.isArray(req.body?.[field]) ? req.body[field] : product[field]);
+      const options = productOptions.productOptionsFor(product.type, {
+        availableSizes: pick('availableSizes'),
+        availableHeights: pick('availableHeights'),
+        availableClasps: pick('availableClasps')
+      }, await loadSizePresets());
+      for (const field of optionFields) product[field] = options[field];
     }
 
     if (req.body?.description !== undefined) {
@@ -718,6 +750,8 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         fulfillmentPolicy: product.fulfillmentPolicy,
         printMethod: product.printMethod,
         availableSizes: product.availableSizes,
+        availableHeights: product.availableHeights,
+        availableClasps: product.availableClasps,
         catalogId: product.catalogId,
         stockSyncState: product.stockSyncState,
         setupIssue: product.setupIssue

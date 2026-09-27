@@ -7,7 +7,8 @@ const sizePresetSchema = new mongoose.Schema({
     unique: true,
     trim: true,
     lowercase: true,
-    enum: ['bracelet', 'bague', 'gourmette'],
+    // Boucle and pendantif never have a size, so they have no preset.
+    enum: ['bracelet', 'bague', 'collier', 'gourmette'],
   },
   availableSizes: [{
     type: String,
@@ -17,6 +18,12 @@ const sizePresetSchema = new mongoose.Schema({
     type: String,
     trim: true,
   }],
+  // When true every product of this type offers availableSizes, ignoring its
+  // own list. Always true for bague and bracelet.
+  applyToAll: {
+    type: Boolean,
+    default: false,
+  },
   updatedAt: {
     type: Date,
     default: Date.now,

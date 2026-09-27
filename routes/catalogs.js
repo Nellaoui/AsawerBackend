@@ -453,7 +453,8 @@ router.post('/:id/products', auth, async (req, res) => {
       height,
       relatedProducts,
       availableSizes,
-      availableHeights
+      availableHeights,
+      availableClasps
     } = req.body;
 
     if (!name || !serialNumber) {
@@ -477,6 +478,7 @@ router.post('/:id/products', auth, async (req, res) => {
       size: size || null,
       availableSizes: availableSizes || [],
       availableHeights: availableHeights || [],
+      availableClasps: Array.isArray(availableClasps) ? availableClasps : [],
       clasp: clasp || null,
       relatedProducts: relatedProducts || [],
       catalogId: catalog._id,

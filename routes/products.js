@@ -106,7 +106,8 @@ router.put('/:id', adminAuth, async (req, res) => {
   try {
     const { 
       name, description, price, image, imageUrl, category, accessibleTo, isActive,
-      weight, showWeight, height, type, size, clasp, serialNumber, relatedProducts, availableSizes, availableHeights 
+      weight, showWeight, height, type, size, clasp, serialNumber, relatedProducts, availableSizes, availableHeights,
+      availableClasps
     } = req.body;
 
     const product = await Product.findById(req.params.id);
@@ -132,6 +133,7 @@ router.put('/:id', adminAuth, async (req, res) => {
     if (relatedProducts !== undefined) product.relatedProducts = relatedProducts;
     if (availableSizes !== undefined) product.availableSizes = availableSizes;
     if (availableHeights !== undefined) product.availableHeights = availableHeights;
+    if (availableClasps !== undefined) product.availableClasps = availableClasps;
 
     await product.save();
     res.json(product);

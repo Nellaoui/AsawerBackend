@@ -15,6 +15,11 @@ function servePortal(page) {
   };
 }
 
+// Product size/height/clasp rules, shared with the backend routes.
+router.get('/product-options.js', (req, res) => {
+  res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'productOptions.js'));
+});
 router.get('/workflow', servePortal('workflow.html'));
 router.get('/inventory-embed', (req, res, next) => {
   if (req.query.embedded !== '1') return res.redirect(302, '/admin/workflow');

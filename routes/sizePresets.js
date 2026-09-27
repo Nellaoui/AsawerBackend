@@ -3,16 +3,22 @@ const router = express.Router();
 const SizePreset = require('../models/SizePreset');
 const { auth, adminAuth } = require('../middlewares/auth');
 
+// Boucle and pendantif never have a size, so they have no preset.
+const PRESET_TYPES = ['bracelet', 'bague', 'collier', 'gourmette'];
+// Every bague and bracelet always offers the whole preset list.
+const ALWAYS_APPLY_TO_ALL = ['bracelet', 'bague'];
+
 // GET /api/size-presets — get all presets (admin + used by create/edit forms)
 router.get('/', auth, async (req, res) => {
   try {
     const presets = await SizePreset.find().sort({ type: 1 });
-    // Return as a map { bracelet: { sizes: [...], heights: [...] }, ... }
+    // Return as a map { bracelet: { availableSizes, availableHeights, applyToAll }, ... }
     const map = {};
     for (const p of presets) {
       map[p.type] = {
         availableSizes: p.availableSizes || [],
         availableHeights: p.availableHeights || [],
+        applyToAll: ALWAYS_APPLY_TO_ALL.includes(p.type) || !!p.applyToAll,
       };
     }
     res.json(map);
@@ -26,12 +32,11 @@ router.get('/', auth, async (req, res) => {
 router.put('/:type', adminAuth, async (req, res) => {
   try {
     const type = req.params.type.toLowerCase();
-    const allowed = ['bracelet', 'bague', 'gourmette'];
-    if (!allowed.includes(type)) {
-      return res.status(400).json({ message: `Invalid type. Must be one of: ${allowed.join(', ')}` });
+    if (!PRESET_TYPES.includes(type)) {
+      return res.status(400).json({ message: `Invalid type. Must be one of: ${PRESET_TYPES.join(', ')}` });
     }
 
-    const { availableSizes, availableHeights } = req.body;
+    const { availableSizes, availableHeights, applyToAll } = req.body;
 
     const preset = await SizePreset.findOneAndUpdate(
       { type },
@@ -39,6 +44,7 @@ router.put('/:type', adminAuth, async (req, res) => {
         type,
         availableSizes: Array.isArray(availableSizes) ? availableSizes : [],
         availableHeights: Array.isArray(availableHeights) ? availableHeights : [],
+        applyToAll: ALWAYS_APPLY_TO_ALL.includes(type) || applyToAll === true,
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );

@@ -71,6 +71,9 @@
     body.setup-only [data-create-stock],body.setup-only [data-create-catalog],#productDialog.fixing [data-create-stock],#productDialog.stock-only [data-create-stock]{display:none!important}
     .size-list{display:grid;gap:9px;margin-top:8px}.size-entry{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;align-items:end;gap:8px}.size-entry .button{white-space:nowrap}.size-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.size-heading .button{flex:none}
     @media(max-width:620px){.size-entry{grid-template-columns:1fr 1fr}.size-entry .button{grid-column:1/-1}}
+    .size-entry.locked{grid-template-columns:minmax(110px,1fr) minmax(110px,1fr)}.size-entry.locked input[data-product-size]{opacity:.75}
+    .chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;font-weight:600;cursor:pointer;white-space:nowrap}.chip input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0;padding:0;flex:none;accent-color:var(--gold)}.chip:has(input:checked){border-color:var(--gold);color:var(--gold)}
+    .size-note{margin:8px 0 0;color:var(--gold)}
     /* Photo picker and the clickable "fix this product" rows. */
     .field-label{display:block;font-size:.85rem;margin-bottom:6px}
     .photo-row{display:flex;gap:12px;align-items:flex-start}
@@ -185,6 +188,7 @@
           <option value="Gourmette">Gourmette</option>
           <option value="Collier">Collier</option>
           <option value="Boucle">Boucle</option>
+          <option value="Pendantif">Pendantif</option>
           <option value="Other">Other</option>
         </select>
       </label>
@@ -206,9 +210,21 @@
       </div>
       <div>
         <div class="size-heading"><span class="field-label">Sizes for this product</span><button id="addProductSize" class="button secondary small" type="button">+ Add size</button></div>
+        <p id="productSizeNote" class="size-note" hidden></p>
         <div id="productSizeRows" class="size-list"></div>
         <datalist id="commonProductSizes"><option value="48"><option value="50"><option value="52"><option value="54"><option value="56"><option value="58"><option value="60"><option value="62"><option value="64"><option value="66"><option value="68"><option value="70"><option value="One size"></datalist>
-        <p class="muted" style="margin:8px 0 0">Add each size separately. Stock staff can enter the starting quantity for each size.</p>
+        <p id="productSizeHelp" class="muted" style="margin:8px 0 0">Add each size separately. Stock staff can enter the starting quantity for each size.</p>
+      </div>
+      <div id="productHeightsBlock" hidden>
+        <span class="field-label">Heights this product comes in</span>
+        <p class="muted" style="margin:0">Tick each height it is made in. If none is ticked, customers can pick any height from Size Presets.</p>
+        <div id="productHeights" class="chip-row"></div>
+      </div>
+      <div id="productClaspsBlock" hidden>
+        <span class="field-label">Clasps this product can have</span>
+        <p class="muted" style="margin:0">Tick each clasp it can be ordered with. If none is ticked, customers can pick any clasp.</p>
+        <p id="productPreviousClasp" class="size-note" hidden></p>
+        <div id="productClasps" class="chip-row"></div>
       </div>
       <label id="productNoteField">Note<input id="productNote" placeholder="What is still missing?"></label>
       </div>
@@ -274,6 +290,7 @@
     </form>
   </dialog>
 
+  <script src="product-options.js"></script>
   <script>
     const embedded = new URLSearchParams(location.search).get('embedded') === '1';
     if (embedded) document.body.classList.add('embedded');
@@ -314,7 +331,7 @@
       if (!canSetupProducts) return signOut('Product management is limited to operations staff.');
       document.body.classList.toggle('setup-only',!canManageStock);
       $('userName').textContent=`${state.user.name || state.user.email} · ${state.user.isAdmin ? 'Admin' : 'Employee'}`;
-      setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();loadCatalogChoices();
+      setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();loadCatalogChoices();loadSizePresets();
     }
     let inventoryRequestId=0;
     let inventorySearchTimer;
@@ -419,17 +436,72 @@ Cancel = hidden (private)`);
       if(state.photoUrl){image.src=state.photoUrl;image.hidden=false;empty.hidden=true}
       else{image.removeAttribute('src');image.hidden=true;empty.hidden=false}
     }
-    function addProductSizeRow(size='',quantity=0){
+    function addProductSizeRow(size='',quantity=0,locked=false){
       const row=document.createElement('div');
-      row.className='size-entry';
-      row.innerHTML='<label>Size<input data-product-size list="commonProductSizes" maxlength="80" placeholder="54 or One size" value="'+escapeHtml(size)+'"></label><label data-create-stock>Starting quantity<input data-product-quantity type="number" min="0" step="1" value="'+escapeHtml(quantity)+'"></label><button class="button secondary small" type="button" data-remove-size aria-label="Remove size">Remove</button>';
+      row.className='size-entry'+(locked?' locked':'');
+      row.innerHTML='<label>Size<input data-product-size list="commonProductSizes" maxlength="80" placeholder="54" value="'+escapeHtml(size)+'"'+(locked?' readonly':'')+'></label><label data-create-stock>Starting quantity<input data-product-quantity type="number" min="0" step="1" value="'+escapeHtml(quantity)+'"></label>'+(locked?'':'<button class="button secondary small" type="button" data-remove-size aria-label="Remove size">Remove</button>');
       $('productSizeRows').append(row);
     }
-    function renderProductSizeRows(sizes=[]){
+    function renderProductSizeRows(sizes=[],locked=false){
       $('productSizeRows').replaceChildren();
-      for(const size of sizes)addProductSizeRow(size,0);
+      for(const size of sizes)addProductSizeRow(size,0,locked);
       if(!sizes.length)addProductSizeRow();
     }
+    // ---- Sizes, heights and clasps follow the product type ------------------
+    // The rules live in product-options.js, shared with the backend routes.
+    const Options=window.ProductOptions;
+    state.sizePresets={};
+    async function loadSizePresets(){
+      try{state.sizePresets=await api('/size-presets')||{}}catch(error){state.sizePresets={}}
+    }
+    function selectedType(){return $('productType').value}
+    // 'none': boucle/pendantif. 'preset': every product offers the Size Presets list. 'custom': sizes per product.
+    function sizeMode(type){
+      if(!Options.typeHasSizes(type))return 'none';
+      if(Options.usesPresetSizes(type,state.sizePresets)&&Options.presetSizes(type,state.sizePresets).length)return 'preset';
+      return 'custom';
+    }
+    function typedSizes(){return [...$('productSizeRows').querySelectorAll('[data-product-size]')].map(input=>input.value.trim()).filter(Boolean)}
+    function renderSizeSection(){
+      const type=selectedType(),mode=sizeMode(type),note=$('productSizeNote');
+      state.sizeMode=mode;
+      $('addProductSize').hidden=mode!=='custom';
+      $('productSizeHelp').hidden=mode!=='custom';
+      if(mode==='none'){
+        renderProductSizeRows([Options.ONE_SIZE],true);
+        note.textContent=type+' has no size. Its starting stock is counted as “'+Options.ONE_SIZE+'”.';
+      }else if(mode==='preset'){
+        const sizes=Options.presetSizes(type,state.sizePresets);
+        renderProductSizeRows(sizes,true);
+        note.textContent='Every '+type+' offers all the sizes from Size Presets. Change them in the app under Size Presets.';
+      }else{
+        renderProductSizeRows(state.customSizes||[]);
+        note.textContent='';
+      }
+      note.hidden=!note.textContent;
+    }
+    function chip(name,value,label,checked){
+      return '<label class="chip"><input type="checkbox" data-'+name+' value="'+escapeHtml(value)+'"'+(checked?' checked':'')+'>'+escapeHtml(label)+'</label>';
+    }
+    function renderHeights(selected=[]){
+      const show=Options.typeHasHeights(selectedType());
+      $('productHeightsBlock').hidden=!show;
+      if(!show)return;
+      const preset=Options.presetHeights(selectedType(),state.sizePresets);
+      const options=Options.cleanList([...(preset.length?preset:['3','4','5','6']),...selected]);
+      $('productHeights').innerHTML=options.map(h=>chip('height',h,h+' mm',selected.includes(h))).join('');
+    }
+    function renderClasps(selected=[],previous=''){
+      const show=Options.typeHasClasps(selectedType());
+      $('productClaspsBlock').hidden=!show;
+      if(!show)return;
+      const chosen=Options.cleanClasps(selected);
+      $('productClasps').innerHTML=Options.CLASP_TYPES.map(c=>chip('clasp',c,Options.CLASP_LABELS[c]||c,chosen.includes(c))).join('');
+      const [old]=Options.cleanClasps([previous]);
+      $('productPreviousClasp').textContent=old?'Clasp saved before: '+(Options.CLASP_LABELS[old]||old):'';
+      $('productPreviousClasp').hidden=!old;
+    }
+    function checkedValues(container,name){return [...$(container).querySelectorAll('[data-'+name+']:checked')].map(input=>input.value)}
     function updateProductMethod(){
       $('productDialog').classList.toggle('stock-only',$('productPrintMethod').value==='none');
     }
@@ -449,7 +521,11 @@ Cancel = hidden (private)`);
       $('productName').value=prefill.name||prefill.serialNumber||'';
       setTypeValue(prefill.type);
       $('productCatalog').value=prefill.catalogId||'';
-      renderProductSizeRows(prefill.sizes||[]);
+      state.customSizes=prefill.sizes||[];
+      state.previousClasp=prefill.clasp||'';
+      renderSizeSection();
+      renderHeights(prefill.heights||[]);
+      renderClasps(prefill.clasps||[],state.previousClasp);
       $('productPrintMethod').value=prefill.fulfillmentPolicy==='stock_only'?'none':(['wax','resin'].includes(prefill.printMethod)?prefill.printMethod:'');
       updateProductMethod();
       $('productPrice').value=Number(prefill.price)>0?Number(prefill.price):'';
@@ -466,7 +542,8 @@ Cancel = hidden (private)`);
       state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
-        sizes:product.availableSizes||[],price:product.price,printMethod:product.printMethod,
+        sizes:product.availableSizes||[],heights:product.availableHeights||[],clasps:product.availableClasps||[],clasp:product.clasp,
+        price:product.price,printMethod:product.printMethod,
         fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
         note:product.setupIssue&&product.setupIssue.note
       },'fix');
@@ -526,6 +603,14 @@ Cancel = hidden (private)`);
     $('addProductSize').addEventListener('click',()=>{addProductSizeRow();$('productSizeRows').lastElementChild.querySelector('[data-product-size]').focus()});
     $('productSizeRows').addEventListener('click',event=>{if(event.target.closest('[data-remove-size]'))event.target.closest('.size-entry').remove()});
     $('productPrintMethod').addEventListener('change',updateProductMethod);
+    $('productType').addEventListener('change',()=>{
+      // Keep what was typed for a per-product type so switching back restores it.
+      if(state.sizeMode==='custom')state.customSizes=typedSizes();
+      const heights=checkedValues('productHeights','height'),clasps=checkedValues('productClasps','clasp');
+      renderSizeSection();
+      renderHeights(heights);
+      renderClasps(clasps,state.previousClasp);
+    });
     $('productForm').addEventListener('submit',event=>{event.preventDefault();$('productSave').click()});
     $('productCancel').addEventListener('click',()=>$('productDialog').close());
     $('newCatalog').addEventListener('click',createCatalogFromForm);
@@ -546,18 +631,22 @@ Cancel = hidden (private)`);
       if(!['','wax','resin','none'].includes(method))return show('productError','Choose a valid printing route.');
       const sizeRows=[...$('productSizeRows').querySelectorAll('.size-entry')].map(row=>({size:row.querySelector('[data-product-size]').value.trim(),quantity:Number(row.querySelector('[data-product-quantity]').value)}));
       const chosenSizes=sizeRows.filter(row=>row.size);
-      if(!chosenSizes.length)return show('productError','Add at least one size. Use “One size” if the product has no numbered size.');
+      const type=selectedType(),mode=sizeMode(type);
+      if(mode==='custom'&&Options.normalizeType(type)==='gourmette'&&!chosenSizes.length)return show('productError','Add at least one size for a gourmette.');
       if(chosenSizes.length>50)return show('productError','Add no more than 50 sizes.');
       if(new Set(chosenSizes.map(row=>row.size.toLowerCase().replace(/\s+/g,' '))).size!==chosenSizes.length)return show('productError','Each size should appear only once.');
       if(sizeRows.some(row=>!Number.isSafeInteger(row.quantity)||row.quantity<0||(!row.size&&row.quantity>0)))return show('productError','Each size needs a valid whole-number quantity.');
       if(!['wax','resin'].includes(method)&&state.canManageStock&&state.productMode==='create'&&chosenSizes.some(row=>row.quantity>0))return show('productError','Starting stock is counted as Wax or Resin. Choose which one, or leave the quantities at 0.');
       if(state.pendingOrphanId&&state.canManageStock&&chosenSizes.some(row=>row.quantity>0))return show('productError','This reference already has counted worksheet stock. Create the product first, then reconcile its size stock without entering it twice.');
-      const sizes=chosenSizes.map(row=>row.size);
+      // Boucle/pendantif store no size (their stock row is "One size"); preset types store the preset list.
+      const sizes=mode==='none'?[]:chosenSizes.map(row=>row.size);
+      const availableHeights=Options.typeHasHeights(type)?checkedValues('productHeights','height'):[];
+      const availableClasps=Options.typeHasClasps(type)?checkedValues('productClasps','clasp'):[];
       const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
       $('productSave').disabled=true;
       try{
         if(state.productMode==='fix'){
-          const body={name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method||'none',fulfillmentPolicy};
+          const body={name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy};
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
           $('productDialog').close();
@@ -567,7 +656,7 @@ Cancel = hidden (private)`);
           if(!serialNumber)return show('productError','Reference and name are required.');
           let data;
           try{
-            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type:$('productType').value,catalogId,availableSizes:sizes,price,printMethod:method||'none',fulfillmentPolicy,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
           }catch(error){
             // 409: the reference is already in the catalogue, however it was
             // spelled. Switch to fixing that product rather than making a second.

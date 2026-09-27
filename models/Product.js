@@ -137,6 +137,12 @@ const productSchema = new mongoose.Schema({
     trim: true,
     default: null
   },
+  // Clasps a customer may choose for a gourmette or collier. Empty means
+  // every clasp type is offered.
+  availableClasps: [{
+    type: String,
+    trim: true
+  }],
   relatedProducts: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product'

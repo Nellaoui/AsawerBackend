@@ -16,6 +16,7 @@ jest.mock('express', () => ({ Router: () => ({
   },
 }) }), { virtual: true });
 jest.mock('../models/Product', () => ({ create: jest.fn(), findOne: jest.fn(), findById: jest.fn(), find: jest.fn() }));
+jest.mock('../models/SizePreset', () => ({ find: () => ({ lean: async () => [] }) }));
 jest.mock('../models/InventoryMovement', () => ({ create: jest.fn() }));
 jest.mock('../models/Order', () => ({}));
 jest.mock('../models/WorkflowCase', () => ({}));
@@ -166,6 +167,26 @@ describe('completing a flagged product from the portal', () => {
     expect(product.availableSizes).toEqual(['54', '56']);
   });
 
+  test('a gourmette keeps its chosen heights and clasps, including FR', async () => {
+    product.type = 'Gourmette';
+    await setupHandler(request({
+      availableSizes: ['19', '18'], availableHeights: ['5', '4'], availableClasps: ['SIMPLE', 'FR', 'NOPE'],
+    }), response);
+
+    expect(product.availableSizes).toEqual(['18', '19']);
+    expect(product.availableHeights).toEqual(['4', '5']);
+    expect(product.availableClasps).toEqual(['FR', 'SIMPLE']);
+  });
+
+  test('changing the type to boucle clears sizes, heights and clasps', async () => {
+    Object.assign(product, { availableSizes: ['18'], availableHeights: ['4'], availableClasps: ['FR'] });
+    await setupHandler(request({ type: 'Boucle' }), response);
+
+    expect(product.availableSizes).toEqual([]);
+    expect(product.availableHeights).toEqual([]);
+    expect(product.availableClasps).toEqual([]);
+  });
+
   test('an empty name is rejected instead of wiping the product name', async () => {
     await setupHandler(request({ name: '   ' }), response);
 
@@ -209,6 +230,28 @@ describe('creating a product from the portal', () => {
 
   const body = (extra: any = {}) => ({
     name: 'Bague 150 5mm', serialNumber: 'BA 150 5mm', type: 'Bague', ...extra,
+  });
+
+  test('a gourmette is created with its heights and clasps', async () => {
+    await createHandler({ user: { id: 'employee-id' }, body: body({
+      type: 'Gourmette', serialNumber: 'GOU 12', availableSizes: ['18'], availableHeights: ['4'], availableClasps: ['FR'],
+    }) }, response);
+
+    const created = Product.create.mock.calls[0][0];
+    expect(created.availableSizes).toEqual(['18']);
+    expect(created.availableHeights).toEqual(['4']);
+    expect(created.availableClasps).toEqual(['FR']);
+  });
+
+  test('a boucle is created with no size, and its stock must be entered as One size', async () => {
+    await createHandler({ user: { id: 'employee-id' }, body: body({ type: 'Boucle', serialNumber: 'BO 7', availableSizes: ['3'] }) }, response);
+    expect(Product.create.mock.calls[0][0].availableSizes).toEqual([]);
+
+    const rejected = makeResponse();
+    await createHandler({ user: { id: 'employee-id', role: 'admin', isAdmin: true }, body: body({
+      type: 'Boucle', serialNumber: 'BO 8', printMethod: 'wax', initialStockBySize: [{ size: '3', quantity: 2 }],
+    }) }, rejected);
+    expect(rejected.status).toHaveBeenCalledWith(400);
   });
 
   test('a product created with a photo is live immediately', async () => {

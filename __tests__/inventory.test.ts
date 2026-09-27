@@ -11,6 +11,7 @@ jest.mock('express', () => ({ Router: () => ({
   },
 }) }), { virtual: true });
 jest.mock('../models/Product', () => ({ updateOne: jest.fn(), findById: jest.fn() }));
+jest.mock('../models/SizePreset', () => ({ find: () => ({ lean: async () => [] }) }));
 jest.mock('../models/InventoryMovement', () => ({ create: jest.fn() }));
 jest.mock('../middlewares/auth', () => ({ operationsAuth: jest.fn() }));
 
