@@ -1144,6 +1144,7 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
         fromStatus: 'awaiting_validation',
         toStatus: 'completed',
         note: String(req.body.note || 'Customer, references, sizes, quantities and production routes confirmed').slice(0, 1000),
+        queueMinutes: Math.max(Math.round(((validationCase.startedAt || now) - (validationCase.stageQueuedAt || validationCase.createdAt)) / 60000), 0),
         workMinutes: validationCase.startedAt ? Math.max(Math.round((now - validationCase.startedAt) / 60000), 0) : null
       });
       await validationCase.save({ session });

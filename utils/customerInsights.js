@@ -1,3 +1,5 @@
+const { effectiveDeadline } = require('./stepTimes');
+
 const terminalOrderStatuses = new Set(['delivered', 'cancelled']);
 const closedTaskStatuses = new Set(['completed', 'cancelled', 'rejected']);
 
@@ -74,10 +76,7 @@ function buildCustomerInsights(orders = [], workflowCases = [], now = new Date()
     if (!closedTaskStatuses.has(item.status)) {
       stageCounts[item.status] = (stageCounts[item.status] || 0) + 1;
       if (item.isBlocked) blockedTasks += 1;
-      const start = item.deadlineAt || item.assignedAt || item.stageQueuedAt || item.createdAt;
-      const deadline = item.deadlineAt
-        ? new Date(item.deadlineAt)
-        : start ? new Date(new Date(start).getTime() + Number(item.targetMinutes || 120) * 60000) : null;
+      const deadline = effectiveDeadline(item);
       if (deadline && deadline < now) lateTasks += 1;
     }
     for (const event of item.history || []) {

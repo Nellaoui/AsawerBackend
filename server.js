@@ -16,6 +16,7 @@ if (process.env.NODE_ENV === 'production' && process.env.JWT_SECRET.length < 32)
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications');
+const { startStepTimeTracker } = require('./utils/stepTimes');
 const { startBackupScheduler } = require('./utils/backupService');
 const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
 const { ensureDefaultMachines } = require('./utils/machineRegistry');
@@ -71,6 +72,7 @@ db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
   ensureDefaultMachines().catch(error => console.error('Failed to register default printers:', error));
+  startStepTimeTracker();
   startWorkflowDeadlineNotifier(app);
   startBackupScheduler();
 });

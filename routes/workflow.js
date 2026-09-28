@@ -34,6 +34,7 @@ const {
   targetMinutesForTeam,
   validateTransition
 } = require('../utils/workflowRules');
+const { effectiveDeadline, stepTimesSnapshot, MIN_SAMPLES } = require('../utils/stepTimes');
 
 const router = express.Router();
 
@@ -131,13 +132,6 @@ const taskSort = { priority: -1, taskKind: -1, deadlineAt: 1, 'quote.dueDate': 1
 const minutesBetween = (start, end = new Date()) => {
   if (!start) return null;
   return Math.max(Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000), 0);
-};
-
-const effectiveDeadline = (workflowCase) => {
-  if (workflowCase.deadlineAt) return new Date(workflowCase.deadlineAt);
-  const timerStartedAt = workflowCase.assignedAt || workflowCase.stageQueuedAt || workflowCase.createdAt;
-  if (!timerStartedAt) return null;
-  return new Date(new Date(timerStartedAt).getTime() + Number(workflowCase.targetMinutes || 120) * 60000);
 };
 
 const isLateCase = (workflowCase, now = new Date()) => {
@@ -298,6 +292,11 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
   }
 };
 
+// Expected minutes per step, averaged from finished steps. The portal uses it for "Late by".
+router.get('/step-times', operationsAuth, (req, res) => {
+  res.json({ minSamples: MIN_SAMPLES, steps: stepTimesSnapshot() });
+});
+
 router.get('/summary', operationsAuth, async (req, res) => {
   try {
     const mineFilter = { ...visibleUnarchivedFilter(), ...scopedCaseFilter(req.user, 'mine'), status: ACTIVE_STATUSES };
@@ -315,7 +314,7 @@ router.get('/summary', operationsAuth, async (req, res) => {
       WorkflowCase.countDocuments({ ...visibleUnarchivedFilter(), status: 'completed' }),
       WorkflowCase.countDocuments({ ...visibleUnarchivedFilter(), assignedTeam: 'stock', status: ACTIVE_STATUSES }),
       WorkflowCase.countDocuments({ ...visibleUnarchivedFilter(), assignedTeam: 'packing', status: ACTIVE_STATUSES }),
-      WorkflowCase.find(mineFilter).select('priority taskKind deadlineAt targetMinutes stageQueuedAt startedAt status createdAt').lean(),
+      WorkflowCase.find(mineFilter).select('priority taskKind deadlineAt targetMinutes stageQueuedAt assignedAt startedAt status createdAt assignedTeam productionMethod').lean(),
       WorkflowCase.countDocuments(availableFilter)
     ]);
     const mine = mineCases.length;
@@ -645,7 +644,7 @@ router.get('/analytics', operationsAuth, async (req, res) => {
     const [employees, activeCases, timedCases, recentOrders, completedOrders, failureCases, allProducts] = await Promise.all([
       User.find({ role: 'employee', isActive: { $ne: false } }).select('name email workRole').lean(),
       WorkflowCase.find({ ...visibleUnarchivedFilter(), status: ACTIVE_STATUSES })
-        .select('requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt startedAt createdAt orderId productId priority taskKind isBlocked blockedReason blockedAt')
+        .select('requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt startedAt createdAt orderId productId productionMethod priority taskKind isBlocked blockedReason blockedAt')
         .populate('assignedTo', 'name email workRole')
         .populate('orderId', 'createdAt status fulfillmentState')
         .populate('productId', 'name serialNumber imageUrl')

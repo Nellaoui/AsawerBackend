@@ -5,6 +5,7 @@ const WorkflowCase = require('../models/WorkflowCase');
 const { sendPushToUser } = require('./pushNotification');
 const { canNotifyUser } = require('./notificationPolicy');
 const { visibleTaskFilter, isVisibleWorkflowCase } = require('./workflowVisibility');
+const { effectiveDeadline } = require('./stepTimes');
 
 const closedStatuses = ['completed', 'cancelled', 'rejected'];
 
@@ -143,12 +144,6 @@ const notifyFailedPrint = async (app, workflowCase, note = '') => {
   });
 };
 
-const effectiveDeadline = workflowCase => {
-  if (workflowCase.deadlineAt) return new Date(workflowCase.deadlineAt);
-  const start = workflowCase.assignedAt || workflowCase.stageQueuedAt || workflowCase.createdAt;
-  return start ? new Date(new Date(start).getTime() + Number(workflowCase.targetMinutes || 120) * 60000) : null;
-};
-
 let deadlineInterval = null;
 const checkWorkflowDeadlines = async app => {
   const now = new Date();
@@ -156,7 +151,7 @@ const checkWorkflowDeadlines = async app => {
     ...visibleTaskFilter(),
     assignedTo: { $ne: null },
     status: { $nin: closedStatuses }
-  }).select('orderId requestedName assignedTeam assignedTo status deadlineAt targetMinutes stageQueuedAt assignedAt createdAt').lean();
+  }).select('orderId requestedName assignedTeam assignedTo status productionMethod deadlineAt targetMinutes stageQueuedAt assignedAt createdAt').lean();
 
   for (const workflowCase of cases) {
     const deadline = effectiveDeadline(workflowCase);
