@@ -54,6 +54,12 @@ const orderItemSchema = new mongoose.Schema({
     ref: 'StockVariant',
     default: null
   },
+  // Reserved units the stock team already took off the shelf (on-hand count).
+  stockPickedQuantity: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
   printQuantity: {
     type: Number,
     min: 0,

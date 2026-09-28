@@ -16,6 +16,7 @@ const { buildCustomerInsights, recommendProducts } = require('../utils/customerI
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { visibleTaskFilter } = require('../utils/workflowVisibility');
 const { assignMachineToCase, findMachine, releaseMachineFromCase } = require('../utils/machineRegistry');
+const { takePickedStockOffShelf } = require('../utils/stockPicking');
 const {
   notifyCaseAssignment,
   notifyFailedPrint,
@@ -1720,6 +1721,14 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       queueMinutes,
       workMinutes
     });
+    if (previousStatus === 'stock_picking' && nextStatus === 'completed') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(() => takePickedStockOffShelf({ workflowCase, actorId: req.user.id, session }));
+      } finally {
+        await session.endSession();
+      }
+    }
     await workflowCase.save();
     if (nextStatus === 'printing' && selectedMachine) {
       await assignMachineToCase({ machine: selectedMachine, workflowCase, actorId: req.user.id });
