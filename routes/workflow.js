@@ -368,7 +368,24 @@ router.patch('/team/:id', operationsAuth, async (req, res) => {
   }
 });
 
+// Open order tasks per customer, matched the same way the customer filter on /cases matches them.
+const openTaskCountsByCustomer = async () => {
+  const cases = await WorkflowCase.find({ ...visibleUnarchivedFilter(), status: ACTIVE_STATUSES, taskKind: 'order' })
+    .select('customerId orderId')
+    .lean();
+  const orderIds = [...new Set(cases.filter(item => !item.customerId).map(item => String(item.orderId || '')).filter(mongoose.Types.ObjectId.isValid))];
+  const orders = orderIds.length ? await Order.find({ _id: { $in: orderIds } }).select('userId').lean() : [];
+  const ownerByOrder = new Map(orders.map(order => [String(order._id), String(order.userId || '')]));
+  const counts = new Map();
+  cases.forEach(item => {
+    const customerId = String(item.customerId || ownerByOrder.get(String(item.orderId || '')) || '');
+    if (mongoose.Types.ObjectId.isValid(customerId)) counts.set(customerId, (counts.get(customerId) || 0) + 1);
+  });
+  return counts;
+};
+
 // The boss can force a customer's future printable items to Wax or Resin.
+// Customer Service also uses this list to pick a customer, so customers with open tasks come first.
 router.get('/customers', operationsAuth, async (req, res) => {
   try {
     if (!canViewCustomers(req.user)) return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can view customers' });
@@ -378,14 +395,22 @@ router.get('/customers', operationsAuth, async (req, res) => {
       const pattern = new RegExp(escapeRegExp(search), 'i');
       filter.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }];
     }
-    const customers = await User.find(filter)
-      .select('name email phone forcedProductionMethod isActive createdAt')
+    const counts = await openTaskCountsByCustomer();
+    const fields = 'name email phone forcedProductionMethod isActive createdAt';
+    const busy = counts.size
+      ? await User.find({ ...filter, _id: { $in: [...counts.keys()] } }).select(fields).lean()
+      : [];
+    const others = await User.find({ ...filter, _id: { $nin: busy.map(customer => customer._id) } })
+      .select(fields)
       .sort({ name: 1, email: 1 })
-      .limit(100)
+      .limit(Math.max(100 - busy.length, 20))
       .lean();
-    res.json(customers.map(customer => ({
+    const byName = (a, b) => String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''));
+    busy.sort((a, b) => (counts.get(String(b._id)) - counts.get(String(a._id))) || byName(a, b));
+    res.json([...busy, ...others].map(customer => ({
       ...customer,
       id: String(customer._id),
+      activeTasks: counts.get(String(customer._id)) || 0,
       forcedProductionMethod: customer.forcedProductionMethod || 'automatic'
     })));
   } catch (error) {
