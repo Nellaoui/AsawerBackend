@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { notifyOrderChange } = require('../utils/liveUpdates');
 
 const mixedUserIds = value => {
   const text = String(value || '');
@@ -279,5 +280,23 @@ orderSchema.statics.findWithFilters = function(filters = {}, options = {}) {
 
   return populatedQuery;
 };
+
+// Tell the order's owner (and staff) that it changed, so open app screens
+// refresh themselves. See utils/liveUpdates.js.
+orderSchema.post('save', function(doc) {
+  notifyOrderChange(doc.userId && (doc.userId._id || doc.userId));
+});
+
+orderSchema.post(['updateOne', 'findOneAndUpdate'], async function(result) {
+  try {
+    const filter = this.getFilter() || {};
+    if (result && result.userId) return notifyOrderChange(result.userId._id || result.userId);
+    if (!filter._id) return notifyOrderChange(null);
+    const order = await this.model.findOne({ _id: filter._id }).select('userId').lean();
+    notifyOrderChange(order && order.userId);
+  } catch (error) {
+    console.error('Order live update failed:', error.message);
+  }
+});
 
 module.exports = mongoose.model('Order', orderSchema);

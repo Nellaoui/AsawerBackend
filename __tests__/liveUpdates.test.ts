@@ -70,3 +70,45 @@ describe('employee notification policy', () => {
     expect(canNotifyUser({ role: 'admin' }, 'order_blocked')).toBe(true);
   });
 });
+
+describe('live app updates', () => {
+  const { setLiveIo, notifyOrderChange, broadcastCatalogChange, userRoom, APP_ROOM } = require('../utils/liveUpdates');
+  const emit = jest.fn();
+  const to = jest.fn((room: string) => ({ emit }));
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    emit.mockClear();
+    to.mockClear();
+    setLiveIo({ to });
+  });
+
+  afterEach(() => {
+    setLiveIo(null);
+    jest.useRealTimers();
+  });
+
+  test('tells the order owner and staff once per burst, without order data', () => {
+    notifyOrderChange('user-1');
+    notifyOrderChange('user-1');
+    expect(emit).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(500);
+    expect(to.mock.calls.map((call: any[]) => call[0]).sort()).toEqual([STAFF_ROOM, userRoom('user-1')].sort());
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenCalledWith('orders:changed', { at: expect.any(Number) });
+  });
+
+  test('tells every signed-in app when catalogs change', () => {
+    broadcastCatalogChange();
+    jest.advanceTimersByTime(500);
+    expect(to).toHaveBeenCalledWith(APP_ROOM);
+    expect(emit).toHaveBeenCalledWith('catalogs:changed', { at: expect.any(Number) });
+  });
+
+  test('does nothing before the socket server is attached', () => {
+    setLiveIo(null);
+    notifyOrderChange('user-1');
+    jest.advanceTimersByTime(500);
+    expect(to).not.toHaveBeenCalled();
+  });
+});

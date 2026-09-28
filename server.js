@@ -20,7 +20,7 @@ const { startStepTimeTracker } = require('./utils/stepTimes');
 const { startBackupScheduler } = require('./utils/backupService');
 const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
 const { ensureDefaultMachines } = require('./utils/machineRegistry');
-const { STAFF_ROOM, isStaffUser, broadcastOnWrite } = require('./utils/liveUpdates');
+const { STAFF_ROOM, APP_ROOM, userRoom, isStaffUser, broadcastOnWrite, setLiveIo, broadcastCatalogsOnWrite } = require('./utils/liveUpdates');
 
 // Use Google DNS for SRV record resolution (fixes local DNS issues)
 dns.setServers(['8.8.8.8', '8.8.4.4']);
@@ -143,6 +143,9 @@ io.on('connection', (socket) => {
     console.log(`Socket ${socket.id} auto-identified as user ${uid} via handshake auth`);
     // Staff screens get live "workflow changed" events (see utils/liveUpdates.js)
     if (socket.data.isStaff) socket.join(STAFF_ROOM);
+    // Signed-in app screens refresh on catalog and own-order changes
+    socket.join(APP_ROOM);
+    socket.join(userRoom(uid));
   }
 
   socket.on('identify', (userId) => {
@@ -170,6 +173,7 @@ io.on('connection', (socket) => {
 
 // Make io and sockets map available to routes via app.get('io') / app.get('socketsByUser')
 app.set('io', io);
+setLiveIo(io);
 app.set('socketsByUser', socketsByUser);
 
 // Health check — no DB query, responds immediately.
@@ -180,8 +184,8 @@ app.get('/api/health', (req, res) => {
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/products', require('./routes/products'));
-app.use('/api/catalogs', require('./routes/catalogs'));
+app.use('/api/products', broadcastCatalogsOnWrite, require('./routes/products'));
+app.use('/api/catalogs', broadcastCatalogsOnWrite, require('./routes/catalogs'));
 app.use('/api/orders', broadcastOnWrite('orders'), require('./routes/orders'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/workflow', broadcastOnWrite('workflow'), require('./routes/workflow'));
@@ -191,7 +195,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/clasp-images', require('./routes/claspImages'));
+app.use('/api/clasp-images', broadcastCatalogsOnWrite, require('./routes/claspImages'));
 app.use('/api/size-presets', require('./routes/sizePresets'));
 
 // The operations portal is served on the same HTTPS origin as its API.
