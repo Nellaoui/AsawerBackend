@@ -52,124 +52,55 @@ router.get('/debug-all', async (req, res) => {
   }
 });
 
+// Fields the catalog list screen needs to draw its cards and search products.
+// Screens that show or edit a whole product load the catalog through GET /:id.
+const LIST_PRODUCT_FIELDS = 'name description type serialNumber imageUrl price weight showWeight isActive';
+
+const withProductIds = products => (products || []).map(product => {
+  if (!product) return null;
+  if (typeof product === 'object' && product._id) {
+    return { ...product, productId: product._id.toString() };
+  }
+  return { productId: String(product), _id: String(product) };
+}).filter(Boolean);
+
 // GET / - List user-accessible catalogs
+//   ?view=names  catalogs only, with a product count (portal pickers)
+//   ?view=list   products trimmed to LIST_PRODUCT_FIELDS (catalog list screen)
+//   no view      every product in full, as older app versions expect
 router.get('/', auth, async (req, res) => {
   try {
-    console.log('Fetching catalogs for user:', req.user.id, 'role:', req.user.role, 'email:', req.user.email);
+    const view = ['names', 'list'].includes(req.query.view) ? req.query.view : 'full';
+    const isAdmin = req.user.role === 'admin';
 
-    // Debug: Check all catalogs first
-    const allCatalogs = await Catalog.find({});
-    console.log('Total catalogs in database:', allCatalogs.length);
-    allCatalogs.forEach(cat => {
-      console.log(`Catalog: ${cat.name}, isPublic: ${cat.isPublic}, owner: ${cat.ownerId}`);
-    });
-
-    // Get catalogs based on user permissions
-    let catalogs;
-    if (req.user.role === 'admin') {
-      // Admins can see all catalogs
-      catalogs = await Catalog.find({})
-        .populate('products')
-        .sort({ createdAt: -1 });
-      console.log('Admin user - showing all catalogs:', catalogs.length);
-    } else {
-      // Regular users can see:
-      // 1. Public catalogs (isPublic: true)
-      // 2. Private catalogs they have permission for (allowedUserIds includes their ID)
-      // 3. Their own catalogs (ownerId equals their ID)
-      const userId = req.user.id;
-      const userIdStr = userId.toString();
-      
-      console.log('🔍 Fetching catalogs for user:', {
-        userId,
-        userIdStr,
-        userRole: req.user.role,
-        userEmail: req.user.email
-      });
-      
-      // Get all catalogs and filter in memory for more reliable ID comparison
-      // Drafts (inactive products) stay hidden from customers until they are fixed.
-      const allCatalogs = await Catalog.find({})
-        .populate({ path: 'products', match: { isActive: { $ne: false } } })
-        .sort({ createdAt: -1 });
-      
-      console.log(`📊 Total catalogs in database: ${allCatalogs.length}`);
-      
-      // Helper function to compare IDs safely
-      const idsMatch = (id1, id2) => {
-        if (!id1 || !id2) return false;
-        const str1 = id1.toString ? id1.toString() : String(id1);
-        const str2 = id2.toString ? id2.toString() : String(id2);
-        return str1 === str2;
-      };
-      
-      // Filter catalogs based on permissions
-      catalogs = allCatalogs.filter(catalog => {
-        const catalogId = catalog._id.toString();
-        const isPublic = catalog.isPublic === true;
-        const isOwner = catalog.ownerId && idsMatch(catalog.ownerId, userId);
-        
-        // Check if catalog is public
-        if (isPublic) {
-          console.log(`✅ [${catalogId}] Visible: Public catalog`);
-          return true;
-        }
-        
-        // Check if user is the owner
-        if (isOwner) {
-          console.log(`✅ [${catalogId}] Visible: User is owner`);
-          return true;
-        }
-        
-        // Check if user is in allowedUserIds
-        if (catalog.allowedUserIds && catalog.allowedUserIds.length > 0) {
-          const hasAccess = catalog.allowedUserIds.some(id => idsMatch(id, userId));
-          
-          console.log(`🔍 [${catalogId}] Checking allowedUserIds:`, {
-            allowedUserIds: catalog.allowedUserIds.map(id => id.toString()),
-            userHasAccess: hasAccess,
-            userId: userIdStr
-          });
-          
-          if (hasAccess) {
-            console.log(`✅ [${catalogId}] Visible: User has explicit access`);
-            return true;
-          }
-        } else {
-          console.log(`🔍 [${catalogId}] No allowedUserIds set`);
-        }
-        
-        console.log(`❌ [${catalogId}] Not visible to user`);
-        return false;
-      });
-
-      console.log(`📊 Filtered ${catalogs.length} out of ${allCatalogs.length} catalogs for user ${userId}`);
+    // Admins see every catalog. Everyone else sees public catalogs, their own,
+    // and private ones that list them. Filter before populating so hidden
+    // catalogs never load their products.
+    let catalogs = await Catalog.find({}).sort({ createdAt: -1 });
+    if (!isAdmin) {
+      catalogs = catalogs.filter(catalog => catalog.hasUserAccess(req.user.id));
     }
 
+    if (view !== 'names') {
+      await Catalog.populate(catalogs, {
+        path: 'products',
+        // Drafts (inactive products) stay hidden from customers until they are fixed.
+        ...(isAdmin ? {} : { match: { isActive: { $ne: false } } }),
+        ...(view === 'list' ? { select: LIST_PRODUCT_FIELDS } : {})
+      });
+    }
 
-
-  
-
-    // Transform catalogs to include catalogId field for frontend compatibility
+    // Transform catalogs to include catalogId/productId fields for frontend compatibility
     const transformedCatalogs = catalogs.map(catalog => {
       const catalogObj = catalog.toObject();
+      if (view === 'names') {
+        const { products, ...rest } = catalogObj;
+        return { ...rest, catalogId: catalog._id.toString(), productCount: (products || []).length };
+      }
       return {
         ...catalogObj,
         catalogId: catalog._id.toString(),
-        // Transform products to include productId field safely
-        products: catalogObj.products?.map(product => {
-          if (!product) return null;
-          if (typeof product === 'object' && product._id) {
-            return {
-              ...product,
-              productId: product._id.toString()
-            };
-          }
-          return {
-            productId: String(product),
-            _id: String(product)
-          };
-        }).filter(Boolean) || []
+        products: withProductIds(catalogObj.products)
       };
     });
 
