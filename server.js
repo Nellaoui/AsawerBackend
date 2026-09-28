@@ -18,6 +18,7 @@ const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications
 const { startBackupScheduler } = require('./utils/backupService');
 const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
 const { ensureDefaultMachines } = require('./utils/machineRegistry');
+const { STAFF_ROOM, isStaffUser, broadcastOnWrite } = require('./utils/liveUpdates');
 
 // Use Google DNS for SRV record resolution (fixes local DNS issues)
 dns.setServers(['8.8.8.8', '8.8.4.4']);
@@ -105,6 +106,7 @@ io.use(async (socket, next) => {
       const user = await User.findOne({ email });
       if (user) {
         socket.data.userId = user._id.toString();
+        socket.data.isStaff = isStaffUser(user);
       }
       return next();
     }
@@ -112,7 +114,10 @@ io.use(async (socket, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     if (decoded && decoded.userId) {
       const user = await User.findById(decoded.userId).select('-password');
-      if (user) socket.data.userId = user._id.toString();
+      if (user) {
+        socket.data.userId = user._id.toString();
+        socket.data.isStaff = isStaffUser(user);
+      }
     }
     return next();
   } catch (err) {
@@ -131,6 +136,8 @@ io.on('connection', (socket) => {
     if (!socketsByUser.has(uid)) socketsByUser.set(uid, new Set());
     socketsByUser.get(uid).add(socket.id);
     console.log(`Socket ${socket.id} auto-identified as user ${uid} via handshake auth`);
+    // Staff screens get live "workflow changed" events (see utils/liveUpdates.js)
+    if (socket.data.isStaff) socket.join(STAFF_ROOM);
   }
 
   socket.on('identify', (userId) => {
@@ -170,9 +177,9 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/catalogs', require('./routes/catalogs'));
-app.use('/api/orders', require('./routes/orders'));
+app.use('/api/orders', broadcastOnWrite('orders'), require('./routes/orders'));
 app.use('/api/inventory', require('./routes/inventory'));
-app.use('/api/workflow', require('./routes/workflow'));
+app.use('/api/workflow', broadcastOnWrite('workflow'), require('./routes/workflow'));
 app.use('/api/machines', require('./routes/machines'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/admin', require('./routes/admin'));

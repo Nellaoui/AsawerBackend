@@ -1,11 +1,8 @@
+// Employees are only told when a task arrives for them. Deadlines, blocks,
+// failed prints and removals stay visible in the portal itself.
 const EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES = [
   'new_task',
-  'deadline_soon',
-  'task_overdue',
-  'reassigned',
-  'task_removed',
-  'order_blocked',
-  'print_failed'
+  'reassigned'
 ];
 
 const employeeActionableTypes = new Set(EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES);

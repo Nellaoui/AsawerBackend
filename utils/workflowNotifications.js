@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const WorkflowCase = require('../models/WorkflowCase');
@@ -50,11 +51,13 @@ const notifyUser = async (app, { userId, title, body, type = 'general', data = {
   }
 
   emitNotification(app, notification);
-  await sendPushToUser(User, user._id, notification.title, notification.body, {
+  // Phone push goes through Expo's servers; don't make the employee's
+  // request wait on it.
+  Promise.resolve(sendPushToUser(User, user._id, notification.title, notification.body, {
     ...data,
     notificationId: String(notification._id),
     notificationType: type
-  });
+  })).catch(error => console.error('❌ Workflow push failed:', error));
   return notification;
 };
 
@@ -80,10 +83,21 @@ const taskData = workflowCase => ({
   requestedName: workflowCase.requestedName
 });
 
+// Name of the employee whose action last moved this task, for "from X".
+const lastActorName = async (workflowCase, assigneeId) => {
+  const history = Array.isArray(workflowCase.history) ? workflowCase.history : [];
+  const actorId = history.length ? history[history.length - 1]?.actorId : null;
+  const id = String(actorId?._id || actorId || '');
+  if (!mongoose.Types.ObjectId.isValid(id) || id === String(assigneeId)) return '';
+  const actor = await User.findById(id).select('name email').lean();
+  return actor?.name || actor?.email || '';
+};
+
 const notifyCaseAssignment = async (app, workflowCase, event = 'new_task') => {
   if (!isVisibleWorkflowCase(workflowCase) || !workflowCase.assignedTo || closedStatuses.includes(workflowCase.status)) return null;
   const assigneeId = workflowCase.assignedTo?._id || workflowCase.assignedTo;
-  const title = event === 'reassigned' ? 'Task reassigned to you' : 'New task assigned';
+  const from = await lastActorName(workflowCase, assigneeId).catch(() => '');
+  const title = from ? `New task from ${from}` : 'New task for you';
   const body = `${workflowCase.requestedName} · ${String(workflowCase.assignedTeam || '').replaceAll('_', ' ')}`;
   return notifyUser(app, {
     userId: assigneeId,
