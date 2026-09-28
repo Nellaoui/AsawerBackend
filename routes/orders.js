@@ -403,7 +403,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       await existingOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
       return res.status(200).json(existingOrder);
     }
-    const orderNumber = `ASW-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
+    const orderNumber = `ASW-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Casablanca' }).format(new Date()).replaceAll('-', '')}-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
     const orderingUser = await User.findById(req.user.id).select('forcedProductionMethod').lean();
     const forcedProductionMethod = ['wax', 'resin'].includes(orderingUser?.forcedProductionMethod)
       ? orderingUser.forcedProductionMethod
