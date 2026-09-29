@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { auth, adminAuth } = require('../middlewares/auth');
+const { isTabletAccount } = require('../utils/customerTablet');
 const sendInviteEmail = require('../utils/emailInvite');
 
 const router = express.Router();
@@ -124,6 +125,11 @@ const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
       return res.status(403).json({ message: 'Employee accounts can only sign in to the operations portal' });
     }
 
+    const tablet = isTabletAccount(user);
+    if (operationsOnly && tablet) {
+      return res.status(403).json({ message: 'The shop tablet account cannot use the operations portal' });
+    }
+
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET,
@@ -138,9 +144,11 @@ const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
         email: user.email,
         name: user.name,
         phone: user.phone,
-        isAdmin: user.isAdmin,
-        role,
-        workRole: user.workRole || 'general'
+        // The shop tablet account never acts as an admin in the app.
+        isAdmin: tablet ? false : user.isAdmin,
+        role: tablet ? 'user' : role,
+        workRole: user.workRole || 'general',
+        isTabletAccount: tablet
       }
     });
   } catch (error) {
@@ -202,7 +210,8 @@ router.get('/me', auth, async (req, res) => {
       phone: req.user.phone,
       isAdmin: req.user.isAdmin,
       role: req.user.isAdmin ? 'admin' : (req.user.role || 'user'),
-      workRole: req.user.workRole || 'general'
+      workRole: req.user.workRole || 'general',
+      isTabletAccount: req.user.isTabletAccount === true
     }
   });
 });

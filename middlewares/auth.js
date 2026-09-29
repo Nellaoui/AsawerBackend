@@ -1,5 +1,15 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { isTabletAccount } = require('../utils/customerTablet');
+
+// A shop tablet account keeps no admin rights: everywhere it counts as a plain
+// user, and only the customer-tablet routes (tabletAuth) accept it.
+const applyTabletAccount = (req, dbUser) => {
+  if (!isTabletAccount(dbUser)) return;
+  req.user.isAdmin = false;
+  req.user.role = 'user';
+  req.user.isTabletAccount = true;
+};
 
 const auth = async (req, res, next) => {
   try {
@@ -61,6 +71,7 @@ const auth = async (req, res, next) => {
           role: user.role || (user.isAdmin ? 'admin' : 'user'),
           workRole: user.workRole || 'general'
         };
+        applyTabletAccount(req, user);
 
         console.log(`✅ Auth middleware - Test user authenticated:`, {
           email: req.user.email,
@@ -119,6 +130,7 @@ const auth = async (req, res, next) => {
       id: user._id.toString(), // Ensure id field is available
       role: user.isAdmin ? 'admin' : (user.role || 'user')
     };
+    applyTabletAccount(req, user);
 
     console.log('Auth middleware - user details:', {
       id: req.user.id,
@@ -168,4 +180,11 @@ const operationsAuth = (req, res, next) => auth(req, res, () => {
   return next();
 });
 
-module.exports = { auth, adminAuth, operationsAuth };
+const tabletAuth = (req, res, next) => auth(req, res, () => {
+  if (!req.user?.isTabletAccount || req.auth?.isImpersonated) {
+    return res.status(403).json({ message: 'Only the shop tablet account can open customer accounts.' });
+  }
+  return next();
+});
+
+module.exports = { auth, adminAuth, operationsAuth, tabletAuth };

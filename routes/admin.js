@@ -7,8 +7,7 @@ const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Notification = require('../models/Notification');
 const AuditLog = require('../models/AuditLog');
-const { adminAuth } = require('../middlewares/auth');
-const { canUseCustomerTablet, customerTabletAuth } = require('../utils/customerTablet');
+const { auth, adminAuth, tabletAuth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
 
 const router = express.Router();
@@ -236,24 +235,32 @@ router.post('/notify-all', adminAuth, async (req, res) => {
   }
 });
 
-// Customer tablet: lets one trusted admin open a customer's account on the
-// shop tablet when the customer came without their phone.
+// Customer accounts: the shop tablet account opens a customer's account when
+// the customer came without their phone. Admins choose who appears there.
 const TABLET_OPEN_ACTION = 'customer_account_opened';
 
-// GET /api/admin/tablet/access
-router.get('/tablet/access', adminAuth, (req, res) => {
-  res.json({ allowed: canUseCustomerTablet(req.user) });
+// The tablet account and admins may list customers; anyone else may not.
+const tabletOrAdmin = (req, res, next) => auth(req, res, () => {
+  if (req.auth?.isImpersonated || (!req.user?.isTabletAccount && !req.user?.isAdmin)) {
+    return res.status(403).json({ message: 'Access denied.' });
+  }
+  return next();
 });
 
 // GET /api/admin/tablet/customers
-router.get('/tablet/customers', adminAuth, customerTabletAuth, async (req, res) => {
+// The tablet gets only the customers it may open; admins also get the hidden
+// ones and the recent connections.
+router.get('/tablet/customers', tabletOrAdmin, async (req, res) => {
   try {
+    const forTablet = req.user.isTabletAccount === true;
+    const filter = { isAdmin: { $ne: true }, role: { $nin: ['admin', 'employee'] }, isActive: { $ne: false } };
+    if (forTablet) filter.hiddenFromTablet = { $ne: true };
     const [customers, recent] = await Promise.all([
-      User.find({ isAdmin: { $ne: true }, role: { $nin: ['admin', 'employee'] }, isActive: { $ne: false } })
+      User.find(filter)
         .select('name email phone hiddenFromTablet')
         .sort({ name: 1 })
         .lean(),
-      AuditLog.find({ category: 'access', action: TABLET_OPEN_ACTION })
+      forTablet ? [] : AuditLog.find({ category: 'access', action: TABLET_OPEN_ACTION })
         .sort({ createdAt: -1 })
         .limit(20)
         .lean()
@@ -282,7 +289,7 @@ router.get('/tablet/customers', adminAuth, customerTabletAuth, async (req, res) 
 });
 
 // PATCH /api/admin/tablet/customers/:userId  { hidden: boolean }
-router.patch('/tablet/customers/:userId', adminAuth, customerTabletAuth, async (req, res) => {
+router.patch('/tablet/customers/:userId', adminAuth, async (req, res) => {
   try {
     const { userId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -305,9 +312,9 @@ router.patch('/tablet/customers/:userId', adminAuth, customerTabletAuth, async (
   }
 });
 
-// Impersonate a user (tablet admin only)
+// Open a customer's account (shop tablet account only)
 // POST /api/admin/impersonate/:userId
-router.post('/impersonate/:userId', adminAuth, customerTabletAuth, async (req, res) => {
+router.post('/impersonate/:userId', tabletAuth, async (req, res) => {
   try {
     const { userId } = req.params;
 
