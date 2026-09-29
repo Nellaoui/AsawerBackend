@@ -6,7 +6,9 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Notification = require('../models/Notification');
+const AuditLog = require('../models/AuditLog');
 const { adminAuth } = require('../middlewares/auth');
+const { canUseCustomerTablet, customerTabletAuth } = require('../utils/customerTablet');
 const { sendPushToUser } = require('../utils/pushNotification');
 
 const router = express.Router();
@@ -234,9 +236,78 @@ router.post('/notify-all', adminAuth, async (req, res) => {
   }
 });
 
-// Impersonate a user (Admin only)
+// Customer tablet: lets one trusted admin open a customer's account on the
+// shop tablet when the customer came without their phone.
+const TABLET_OPEN_ACTION = 'customer_account_opened';
+
+// GET /api/admin/tablet/access
+router.get('/tablet/access', adminAuth, (req, res) => {
+  res.json({ allowed: canUseCustomerTablet(req.user) });
+});
+
+// GET /api/admin/tablet/customers
+router.get('/tablet/customers', adminAuth, customerTabletAuth, async (req, res) => {
+  try {
+    const [customers, recent] = await Promise.all([
+      User.find({ isAdmin: { $ne: true }, role: { $nin: ['admin', 'employee'] }, isActive: { $ne: false } })
+        .select('name email phone hiddenFromTablet')
+        .sort({ name: 1 })
+        .lean(),
+      AuditLog.find({ category: 'access', action: TABLET_OPEN_ACTION })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .lean()
+    ]);
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      customers: customers.map(customer => ({
+        id: customer._id.toString(),
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone || '',
+        hidden: customer.hiddenFromTablet === true
+      })),
+      recent: recent.map(entry => ({
+        customerName: entry.details?.customerName || '',
+        customerEmail: entry.details?.customerEmail || '',
+        adminName: entry.details?.adminName || '',
+        openedAt: entry.createdAt
+      }))
+    });
+  } catch (error) {
+    console.error('❌ Customer tablet list error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// PATCH /api/admin/tablet/customers/:userId  { hidden: boolean }
+router.patch('/tablet/customers/:userId', adminAuth, customerTabletAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid customer ID' });
+    }
+    if (typeof req.body?.hidden !== 'boolean') {
+      return res.status(400).json({ message: 'hidden must be true or false' });
+    }
+
+    const customer = await User.findById(userId).select('isAdmin role');
+    if (!customer || customer.isAdmin || (customer.role && customer.role !== 'user')) {
+      return res.status(404).json({ message: 'Customer not found' });
+    }
+
+    await User.updateOne({ _id: userId }, { $set: { hiddenFromTablet: req.body.hidden } });
+    res.json({ id: userId, hidden: req.body.hidden });
+  } catch (error) {
+    console.error('❌ Customer tablet hide error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Impersonate a user (tablet admin only)
 // POST /api/admin/impersonate/:userId
-router.post('/impersonate/:userId', adminAuth, async (req, res) => {
+router.post('/impersonate/:userId', adminAuth, customerTabletAuth, async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -257,6 +328,26 @@ router.post('/impersonate/:userId', adminAuth, async (req, res) => {
     if (targetUser.isActive === false) {
       return res.status(403).json({ message: 'Inactive customer accounts cannot be opened' });
     }
+
+    if (targetUser.hiddenFromTablet === true) {
+      return res.status(403).json({ message: 'This customer is hidden from the customer tablet' });
+    }
+
+    // Record the connection before handing out the session, so every opened
+    // account leaves a trace.
+    await AuditLog.create({
+      category: 'access',
+      action: TABLET_OPEN_ACTION,
+      actorId: req.user._id,
+      entityType: 'user',
+      entityId: targetUser._id.toString(),
+      details: {
+        customerName: targetUser.name,
+        customerEmail: targetUser.email,
+        adminName: req.user.name,
+        adminEmail: req.user.email
+      }
+    });
 
     const IMPERSONATION_TOKEN_EXPIRES_IN = process.env.IMPERSONATION_TOKEN_EXPIRES_IN || '2h';
     const token = jwt.sign(

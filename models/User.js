@@ -54,6 +54,12 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  // Trusted customers the tablet admin chose to keep out of the customer tablet
+  // picker; their account cannot be opened from the shop tablet.
+  hiddenFromTablet: {
+    type: Boolean,
+    default: false
+  },
   expoPushTokens: [{
     type: String,
     trim: true

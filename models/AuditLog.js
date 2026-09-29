@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const auditLogSchema = new mongoose.Schema({
-  category: { type: String, enum: ['inventory', 'workflow', 'machine', 'backup', 'system'], required: true, index: true },
+  category: { type: String, enum: ['inventory', 'workflow', 'machine', 'backup', 'system', 'access'], required: true, index: true },
   action: { type: String, required: true, trim: true, maxlength: 120, index: true },
   actorId: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null, index: true },
   entityType: { type: String, required: true, trim: true, maxlength: 80 },
