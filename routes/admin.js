@@ -7,7 +7,7 @@ const Order = require('../models/Order');
 const Catalog = require('../models/Catalog');
 const Notification = require('../models/Notification');
 const AuditLog = require('../models/AuditLog');
-const { auth, adminAuth, tabletAuth } = require('../middlewares/auth');
+const { auth, adminAuth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
 
 const router = express.Router();
@@ -312,9 +312,9 @@ router.patch('/tablet/customers/:userId', adminAuth, async (req, res) => {
   }
 });
 
-// Open a customer's account (shop tablet account only)
+// Open a customer's account (shop tablet account or an admin)
 // POST /api/admin/impersonate/:userId
-router.post('/impersonate/:userId', tabletAuth, async (req, res) => {
+router.post('/impersonate/:userId', tabletOrAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -336,7 +336,8 @@ router.post('/impersonate/:userId', tabletAuth, async (req, res) => {
       return res.status(403).json({ message: 'Inactive customer accounts cannot be opened' });
     }
 
-    if (targetUser.hiddenFromTablet === true) {
+    // Hiding only applies to the shared tablet; admins see every customer.
+    if (req.user.isTabletAccount === true && targetUser.hiddenFromTablet === true) {
       return res.status(403).json({ message: 'This customer is hidden from the customer tablet' });
     }
 

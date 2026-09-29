@@ -64,10 +64,28 @@ describe('customer accounts on the shop tablet', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  test('an ordinary admin cannot open a customer account', async () => {
-    const res = await run('post', '/impersonate/:userId', owner, { params: { userId: customerId }, target: customer() });
+  test('an admin can open a customer account, hidden ones included, and it is recorded', async () => {
+    const res = await run('post', '/impersonate/:userId', owner, { params: { userId: customerId }, target: customer({ hiddenFromTablet: true }) });
+    expect(AuditLog.create).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'admin-1', entityId: customerId }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, token: 'signed-token' }));
+  });
+
+  test('a customer cannot open another customer account', async () => {
+    const shopper = account({ _id: 'user-9', name: 'Sara', email: 'sara@test.com', isAdmin: false, role: 'user', isActive: true });
+    const res = await run('post', '/impersonate/:userId', shopper, { params: { userId: customerId }, target: customer() });
     expect(res.status).toHaveBeenCalledWith(403);
     expect(AuditLog.create).not.toHaveBeenCalled();
+  });
+
+  test('an admin inside a customer session cannot open another account', async () => {
+    jwt.verify.mockReturnValue({ userId: owner._id, isImpersonated: true });
+    User.findById.mockReturnValue({ select: jest.fn(async () => owner) });
+    const layer = router.stack.find((l: any) => l.route?.path === '/impersonate/:userId');
+    const res: any = { status: jest.fn().mockReturnThis(), json: jest.fn(), set: jest.fn() };
+    const next = jest.fn();
+    await layer.route.stack[0].handle({ header: () => 'Bearer token', params: { userId: customerId }, body: {} }, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 
   test('an open customer session cannot open another account', async () => {
