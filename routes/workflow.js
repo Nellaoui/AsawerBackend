@@ -637,6 +637,122 @@ router.get('/cases', operationsAuth, async (req, res) => {
   }
 });
 
+// Customer Service finds a task anywhere in the pipeline by order number, product reference or customer.
+const FIND_STAGE_LABELS = {
+  awaiting_validation: 'Validation',
+  task_ready: 'To do',
+  stock_picking: 'Stock check',
+  needs_customer_info: 'Order received',
+  boss_review: 'Order received',
+  waiting_customer_approval: 'Order received',
+  modeling: 'Order received',
+  file_validation: 'Order received',
+  ready_to_print: 'Printing',
+  printing: 'Printing',
+  quality_check: 'Quality',
+  packing: 'Packing',
+  completed: 'Ready / completed',
+  rejected: 'Rejected',
+  cancelled: 'Cancelled'
+};
+const TEAM_LABELS = {
+  stock: 'Stock',
+  customer_service: 'Customer Service',
+  boss: 'Boss',
+  wax_print: 'Wax printing',
+  resin_print: 'Resin printing',
+  quality: 'Quality',
+  packing: 'Packing',
+  none: 'No team'
+};
+const FIND_LIMIT = 30;
+const FINISHED_STATUSES = ['completed', 'cancelled', 'rejected'];
+
+const shortOrderCode = (id) => String(id || '').slice(-6).toUpperCase();
+
+router.get('/find', operationsAuth, async (req, res) => {
+  try {
+    if (!canViewCustomers(req.user)) return res.status(403).json({ message: 'Only Customer Service, the boss, or an administrator can search all tasks' });
+    const q = cleanText(req.query.q, 80).replace(/^#/, '').trim();
+    if (q.length < 2) return res.json({ query: q, results: [] });
+    const pattern = new RegExp(escapeRegExp(q), 'i');
+
+    // The portal shows orders without a number as "#" + the last 6 characters of their id.
+    const idTail = /^[0-9a-f]{4,24}$/i.test(q) ? q.toLowerCase() : null;
+    const [numberedOrders, codedOrders, products, customers] = await Promise.all([
+      Order.find({ orderNumber: pattern }).select('_id').limit(100).lean(),
+      idTail
+        ? Order.find({ $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: `${idTail}$` } } }).select('_id').limit(100).lean()
+        : [],
+      Product.find({ $or: [{ serialNumber: pattern }, { name: pattern }] }).select('_id').limit(200).lean(),
+      User.find({ role: 'user', $or: [{ name: pattern }, { email: pattern }, { phone: pattern }] }).select('_id').limit(50).lean()
+    ]);
+    const orderIds = [...numberedOrders, ...codedOrders].map(order => order._id);
+    const productIds = products.map(product => product._id);
+    const customerIds = customers.flatMap(customer => mixedIdValues(customer._id));
+    const [productOrderIds, customerOrderIds] = await Promise.all([
+      productIds.length ? Order.find({ 'items.productId': { $in: productIds } }).distinct('_id') : [],
+      customerIds.length ? Order.find({ userId: { $in: customerIds } }).distinct('_id') : []
+    ]);
+
+    const matches = [{ requestedName: pattern }];
+    if (idTail && idTail.length === 24) matches.push({ _id: idTail });
+    if (orderIds.length) matches.push({ orderId: { $in: orderIds } });
+    if (productIds.length) matches.push({ productId: { $in: productIds } });
+    // Validation tasks cover the whole order and have no product of their own.
+    if (productOrderIds.length) matches.push({ productId: null, orderId: { $in: productOrderIds } });
+    matches.push({ 'customer.name': pattern }, { 'customer.email': pattern }, { 'customer.phone': pattern });
+    if (customerIds.length) matches.push({ customerId: { $in: customerIds } });
+    if (customerOrderIds.length) matches.push({ orderId: { $in: customerOrderIds } });
+
+    const found = await WorkflowCase.find({ ...visibleTaskFilter(), $or: matches })
+      .select('orderId productId customerId customer requestedName quantity status assignedTeam assignedTo isBlocked blockedReason archivedAt priority deadlineAt targetMinutes assignedAt stageQueuedAt productionMethod print.machineId createdAt updatedAt')
+      .populate('orderId', 'orderNumber userId')
+      .populate('productId', 'name serialNumber imageUrl stockLocation')
+      .populate('assignedTo', 'name email')
+      .sort({ updatedAt: -1 })
+      .limit(200)
+      .lean();
+    const cases = await hydrateCaseCustomers(found);
+    // Work still in progress first, then finished and archived work, newest first.
+    const rank = item => (item.archivedAt ? 2 : FINISHED_STATUSES.includes(item.status) ? 1 : 0);
+    cases.sort((a, b) => (rank(a) - rank(b)) || (new Date(b.updatedAt) - new Date(a.updatedAt)));
+
+    const results = cases.slice(0, FIND_LIMIT).map(item => {
+      const order = item.orderId && typeof item.orderId === 'object' ? item.orderId : null;
+      const product = item.productId && typeof item.productId === 'object' ? item.productId : null;
+      const customer = [item.customerId, order?.userId, item.customer]
+        .find(value => value && typeof value === 'object' && (value.name || value.email)) || null;
+      return {
+        _id: String(item._id),
+        requestedName: item.requestedName,
+        quantity: item.quantity,
+        order: order ? { _id: String(order._id), orderNumber: order.orderNumber || `#${shortOrderCode(order._id)}` } : null,
+        product: product ? { name: product.name, serialNumber: product.serialNumber || '', imageUrl: product.imageUrl || '', stockLocation: product.stockLocation || '' } : null,
+        customer: customer ? { name: customer.name || '', email: customer.email || '' } : null,
+        status: item.status,
+        stage: FIND_STAGE_LABELS[item.status] || item.status,
+        team: item.assignedTeam,
+        teamLabel: TEAM_LABELS[item.assignedTeam] || item.assignedTeam,
+        assignedTo: item.assignedTo && typeof item.assignedTo === 'object' ? { name: item.assignedTo.name || item.assignedTo.email || '' } : null,
+        machineId: item.print?.machineId || '',
+        productionMethod: item.productionMethod,
+        priority: item.priority,
+        isBlocked: Boolean(item.isBlocked),
+        blockedReason: item.isBlocked ? item.blockedReason || '' : '',
+        isLate: isLateCase(item),
+        archived: Boolean(item.archivedAt),
+        canOpen: canSeeCase(req.user, item),
+        updatedAt: item.updatedAt
+      };
+    });
+    res.json({ query: q, results, more: cases.length > FIND_LIMIT });
+  } catch (error) {
+    console.error('❌ Error finding workflow tasks:', error);
+    res.status(500).json({ message: 'Failed to search tasks' });
+  }
+});
+
 router.get('/analytics', operationsAuth, async (req, res) => {
   try {
     if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can view employee timing' });
