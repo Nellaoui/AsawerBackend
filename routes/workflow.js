@@ -17,6 +17,7 @@ const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { visibleTaskFilter } = require('../utils/workflowVisibility');
 const { assignMachineToCase, findMachine, releaseMachineFromCase } = require('../utils/machineRegistry');
 const { takePickedStockOffShelf } = require('../utils/stockPicking');
+const { putPickedStockBack, releaseStockTaskUnits, setShelfCount } = require('../utils/stockCount');
 const {
   notifyCaseAssignment,
   notifyFailedPrint,
@@ -236,7 +237,8 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     : (openCases.length ? 'in_progress' : 'ready');
 
     if (!openCases.length) {
-    const existingPackingTask = await WorkflowCase.findOne({ orderId, requestType: 'pack_order' }).select('_id status');
+    // A packing task the boss cancelled because it opened too early does not count.
+    const existingPackingTask = await WorkflowCase.findOne({ orderId, requestType: 'pack_order', status: { $ne: 'cancelled' } }).select('_id status');
     if (!existingPackingTask) {
       const order = await Order.findById(orderId).select('items workflowCaseIds');
       if (order) {
@@ -1614,6 +1616,99 @@ router.post('/cases/:id/reroute-print', operationsAuth, async (req, res) => {
 // The stock team could not find some reserved units on the shelf. Those units
 // are written off the stock count (they are not there) and sent to printing on
 // the route Customer Service chose, so the order keeps moving.
+const failWith = (message, statusCode = 409) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  throw error;
+};
+
+const printMethodForItem = (orderItem, workflowCase, product) => (
+  ['wax', 'resin'].includes(orderItem.productionMethod) ? orderItem.productionMethod
+    : ['wax', 'resin'].includes(workflowCase.productionMethod) ? workflowCase.productionMethod
+      : ['wax', 'resin'].includes(product.printMethod) ? product.printMethod : null
+);
+
+// Reserved units that are not on the shelf leave both the reserved and the on-hand count.
+const removeMissingReservedUnits = async ({ order, orderItem, product, missing, actorId, notes, session }) => {
+  if (orderItem.inventoryVariantId) {
+    const variant = await StockVariant.findOneAndUpdate(
+      { _id: orderItem.inventoryVariantId, reservedQuantity: { $gte: missing }, onHandQuantity: { $gte: missing } },
+      { $inc: { reservedQuantity: -missing, onHandQuantity: -missing } },
+      { new: true, session }
+    );
+    if (!variant) failWith('Reserved size stock is inconsistent for this item');
+    await Product.updateMany({ _id: { $in: variant.productIds } }, { $inc: { reservedStock: -missing } }, { session });
+  } else {
+    const updated = await Product.updateOne(
+      { _id: product._id, reservedStock: { $gte: missing } },
+      { $inc: { reservedStock: -missing } },
+      { session }
+    );
+    if (updated.modifiedCount !== 1) failWith('Reserved stock is inconsistent for this item');
+  }
+  await InventoryMovement.create([{
+    productId: product._id,
+    orderId: order._id,
+    actorId,
+    type: 'remove',
+    quantity: -missing,
+    stockBefore: product.stock,
+    stockAfter: product.stock,
+    notes
+  }], { session });
+};
+
+// Units the stock side cannot supply move to printing: they join the item's
+// print task if it has not started yet, otherwise a new print task opens.
+const moveStockUnitsToPrint = async ({ workflowCase, order, orderItem, product, missing, method, actorId, note, session }) => {
+  const now = new Date();
+  orderItem.stockQuantity = Number(orderItem.stockQuantity || 0) - missing;
+  orderItem.printQuantity = Number(orderItem.printQuantity || 0) + missing;
+  orderItem.productionMethod = method;
+  orderItem.fulfillmentStatus = 'production';
+
+  let printCase = await WorkflowCase.findOne({
+    orderId: order._id,
+    orderItemId: orderItem._id,
+    requestType: 'print_required',
+    status: 'ready_to_print',
+    startedAt: null,
+    archivedAt: null
+  }).session(session);
+  if (printCase) {
+    printCase.quantity += missing;
+    printCase.history.push({ actorId, action: 'stock_missing_added', fromStatus: 'ready_to_print', toStatus: 'ready_to_print', note });
+  } else {
+    const team = teamForStatus('ready_to_print', method);
+    const assignee = await findTeamAssignee(team, session);
+    printCase = new WorkflowCase({
+      orderId: order._id,
+      orderItemId: orderItem._id,
+      customerId: order.userId,
+      productId: product._id,
+      requestType: 'print_required',
+      requestedName: product.name,
+      quantity: missing,
+      status: 'ready_to_print',
+      assignedTeam: team,
+      assignedTo: assignee?._id || null,
+      assignedAt: assignee ? now : null,
+      stageQueuedAt: now,
+      taskKind: 'order',
+      priority: workflowCase.priority,
+      targetMinutes: targetMinutesForTeam(team),
+      requirements: `Print ${missing} unit(s), size ${orderItem.size || '-'}, that were not found in stock.`,
+      productionMethod: method,
+      customerApproval: 'not_required',
+      createdBy: actorId,
+      history: [{ actorId, action: 'created_from_missing_stock', toStatus: 'ready_to_print', note }]
+    });
+    order.workflowCaseIds.addToSet(printCase._id);
+  }
+  await printCase.save({ session });
+  return printCase;
+};
+
 router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
   let session;
   try {
@@ -1641,89 +1736,18 @@ router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
       if (!order || !orderItem) fail('This stock task is not linked to an order item');
       const product = await Product.findById(orderItem.productId).session(session);
       if (!product) fail('The product for this order item no longer exists');
-      const method = ['wax', 'resin'].includes(orderItem.productionMethod) ? orderItem.productionMethod
-        : ['wax', 'resin'].includes(workflowCase.productionMethod) ? workflowCase.productionMethod
-          : ['wax', 'resin'].includes(product.printMethod) ? product.printMethod : null;
+      const method = printMethodForItem(orderItem, workflowCase, product);
       if (!method) fail('Customer Service must choose Wax or Resin for this item before it can be printed');
       if (Number(orderItem.stockQuantity || 0) < missing) fail('The order has fewer reserved units than that');
 
       // The reserved units are not on the shelf: take them off the count.
       if (order.inventoryState === 'reserved') {
-        if (orderItem.inventoryVariantId) {
-          const variant = await StockVariant.findOneAndUpdate(
-            { _id: orderItem.inventoryVariantId, reservedQuantity: { $gte: missing }, onHandQuantity: { $gte: missing } },
-            { $inc: { reservedQuantity: -missing, onHandQuantity: -missing } },
-            { new: true, session }
-          );
-          if (!variant) fail('Reserved size stock is inconsistent for this item');
-          await Product.updateMany({ _id: { $in: variant.productIds } }, { $inc: { reservedStock: -missing } }, { session });
-        } else {
-          const updated = await Product.updateOne(
-            { _id: product._id, reservedStock: { $gte: missing } },
-            { $inc: { reservedStock: -missing } },
-            { session }
-          );
-          if (updated.modifiedCount !== 1) fail('Reserved stock is inconsistent for this item');
-        }
-        await InventoryMovement.create([{
-          productId: product._id,
-          orderId: order._id,
-          actorId: req.user.id,
-          type: 'remove',
-          quantity: -missing,
-          stockBefore: product.stock,
-          stockAfter: product.stock,
-          notes: `Size ${orderItem.size || '-'}: ${missing} reserved unit(s) not found on the shelf for order ${order.orderNumber || order._id}; sent to ${method} printing${reason ? ` (${reason})` : ''}`
-        }], { session });
+        await removeMissingReservedUnits({ order, orderItem, product, missing, actorId: req.user.id, notes: `Size ${orderItem.size || '-'}: ${missing} reserved unit(s) not found on the shelf for order ${order.orderNumber || order._id}; sent to ${method} printing${reason ? ` (${reason})` : ''}`, session });
       }
 
       const now = new Date();
-      orderItem.stockQuantity = Number(orderItem.stockQuantity || 0) - missing;
-      orderItem.printQuantity = Number(orderItem.printQuantity || 0) + missing;
-      orderItem.productionMethod = method;
-      orderItem.fulfillmentStatus = 'production';
-
-      // Add to this item's print task if it has not started yet, otherwise open one.
-      printCase = await WorkflowCase.findOne({
-        orderId: order._id,
-        orderItemId: orderItem._id,
-        requestType: 'print_required',
-        status: 'ready_to_print',
-        startedAt: null,
-        archivedAt: null
-      }).session(session);
       const note = `${missing} unit(s) not found in stock${reason ? `: ${reason}` : ''}`;
-      if (printCase) {
-        printCase.quantity += missing;
-        printCase.history.push({ actorId: req.user.id, action: 'stock_missing_added', fromStatus: 'ready_to_print', toStatus: 'ready_to_print', note });
-      } else {
-        const team = teamForStatus('ready_to_print', method);
-        const assignee = await findTeamAssignee(team, session);
-        printCase = new WorkflowCase({
-          orderId: order._id,
-          orderItemId: orderItem._id,
-          customerId: order.userId,
-          productId: product._id,
-          requestType: 'print_required',
-          requestedName: product.name,
-          quantity: missing,
-          status: 'ready_to_print',
-          assignedTeam: team,
-          assignedTo: assignee?._id || null,
-          assignedAt: assignee ? now : null,
-          stageQueuedAt: now,
-          taskKind: 'order',
-          priority: workflowCase.priority,
-          targetMinutes: targetMinutesForTeam(team),
-          requirements: `Print ${missing} unit(s), size ${orderItem.size || '-'}, that were not found in stock.`,
-          productionMethod: method,
-          customerApproval: 'not_required',
-          createdBy: req.user.id,
-          history: [{ actorId: req.user.id, action: 'created_from_missing_stock', toStatus: 'ready_to_print', note }]
-        });
-        order.workflowCaseIds.addToSet(printCase._id);
-      }
-      await printCase.save({ session });
+      printCase = await moveStockUnitsToPrint({ workflowCase, order, orderItem, product, missing, method, actorId: req.user.id, note, session });
 
       const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
       const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
@@ -1753,6 +1777,317 @@ router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
   } catch (error) {
     console.error('Error sending missing stock to printing:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to send missing stock to printing' });
+  } finally {
+    if (session) await session.endSession();
+  }
+});
+
+// Boss corrections: when an employee got a task wrong, the boss (or an admin)
+// puts it on the right stage of the pipeline and the stock, printing and
+// packing follow. Every correction lands in the task history and the audit
+// log with who made it, the reason and any stock count change.
+const CLOSED_STATUSES = ['cancelled', 'rejected'];
+const STAGE_LABELS = {
+  order_received: 'Order received',
+  stock_check: 'Stock check',
+  printing: 'Printing',
+  quality: 'Quality',
+  packing: 'Packing',
+  ready: 'Ready'
+};
+
+// The stages a task can be put on, and the status each one means for it.
+const stageStatusesFor = (workflowCase) => {
+  if (workflowCase.requestType === 'order_validation') return {};
+  if (workflowCase.requestType === 'stock_pick') {
+    return workflowCase.orderId && workflowCase.orderItemId
+      ? { stock_check: 'stock_picking', printing: 'ready_to_print', ready: 'completed' }
+      : {};
+  }
+  if (workflowCase.requestType === 'pack_order') return { packing: 'packing', ready: 'completed' };
+  if (workflowCase.status === 'task_ready') return { ready: 'completed' };
+  return { order_received: 'boss_review', printing: 'ready_to_print', quality: 'quality_check', ready: 'completed' };
+};
+
+const correctionOptions = async (workflowCase) => {
+  let stock = null;
+  if (workflowCase.requestType === 'stock_pick' && workflowCase.orderId && workflowCase.orderItemId) {
+    const order = await Order.findById(workflowCase.orderId).select('items').lean();
+    const orderItem = (order?.items || []).find(item => String(item._id) === String(workflowCase.orderItemId));
+    if (orderItem?.inventoryVariantId) {
+      const variant = await StockVariant.findById(orderItem.inventoryVariantId).lean();
+      if (variant) {
+        stock = {
+          size: variant.size,
+          printMethod: variant.printMethod,
+          onHand: Number(variant.onHandQuantity || 0),
+          reserved: Number(variant.reservedQuantity || 0),
+          pickedForThisTask: workflowCase.status === 'completed' ? Math.min(Number(orderItem.stockPickedQuantity || 0), workflowCase.quantity) : 0
+        };
+      }
+    }
+  }
+  const closed = CLOSED_STATUSES.includes(workflowCase.status) || Boolean(workflowCase.archivedAt);
+  return {
+    status: workflowCase.status,
+    quantity: workflowCase.quantity,
+    canDelete: !closed && !['order_validation', 'pack_order'].includes(workflowCase.requestType),
+    stages: closed ? [] : Object.entries(stageStatusesFor(workflowCase)).map(([stage, status]) => ({
+      stage, status, label: STAGE_LABELS[stage], current: status === workflowCase.status
+    })),
+    stock
+  };
+};
+
+const cancelEarlyPackingTask = async ({ orderId, actorId, note, session }) => {
+  if (!orderId) return null;
+  const packingTask = await WorkflowCase.findOne({ orderId, requestType: 'pack_order', status: 'packing' }).session(session);
+  if (!packingTask) return null;
+  const previousAssignee = packingTask.assignedTo;
+  packingTask.status = 'cancelled';
+  packingTask.completedAt = new Date();
+  packingTask.history.push({ actorId, action: 'boss_correction', fromStatus: 'packing', toStatus: 'cancelled', note: `Packing started too early: ${note}`.slice(0, 1000) });
+  await packingTask.save({ session });
+  return { packingTask, previousAssignee };
+};
+
+router.get('/cases/:id/correction', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss can move tasks between stages' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const workflowCase = await WorkflowCase.findById(req.params.id);
+    if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
+    res.json(await correctionOptions(workflowCase));
+  } catch (error) {
+    console.error('Error loading task correction options:', error);
+    res.status(500).json({ message: 'Failed to load correction options' });
+  }
+});
+
+router.post('/cases/:id/correction', operationsAuth, async (req, res) => {
+  let session;
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss can move tasks between stages' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const stage = cleanText(req.body.stage, 40);
+    const reason = cleanText(req.body.reason, 500);
+    if (!reason) return res.status(400).json({ message: 'Explain what went wrong' });
+    const hasCount = req.body.shelfCount !== undefined && req.body.shelfCount !== null && req.body.shelfCount !== '';
+    const shelfCount = hasCount ? Number(req.body.shelfCount) : null;
+    if (hasCount && (!Number.isSafeInteger(shelfCount) || shelfCount < 0)) return res.status(400).json({ message: 'The shelf count must be a whole number, 0 or more' });
+    if (!stage && !hasCount) return res.status(400).json({ message: 'Choose a stage or enter the real shelf count' });
+
+    session = await mongoose.startSession();
+    let result;
+    await session.withTransaction(async () => {
+      const workflowCase = await WorkflowCase.findById(req.params.id).session(session);
+      if (!workflowCase) failWith('Workflow case not found', 404);
+      if (workflowCase.archivedAt) failWith('Resume this order before correcting its tasks');
+      if (CLOSED_STATUSES.includes(workflowCase.status)) failWith('A cancelled or rejected task cannot be moved here');
+      const stages = stageStatusesFor(workflowCase);
+      if (stage && !stages[stage]) {
+        const allowed = Object.keys(stages).map(key => STAGE_LABELS[key]);
+        failWith(allowed.length ? `This task can only be put on: ${allowed.join(', ')}` : 'This task cannot be moved between stages', 400);
+      }
+      const target = stage ? stages[stage] : null;
+      const isStockTask = workflowCase.requestType === 'stock_pick';
+
+      let order = null;
+      let orderItem = null;
+      if (workflowCase.orderId) {
+        order = await Order.findById(workflowCase.orderId).session(session);
+        if (order && ['shipped', 'delivered', 'cancelled'].includes(order.status)) failWith(`This order is already ${order.status}`);
+        orderItem = order?.items.id(workflowCase.orderItemId) || null;
+      }
+      if (hasCount && !orderItem?.inventoryVariantId) failWith('This task has no size stock to count');
+
+      const now = new Date();
+      const fromStatus = workflowCase.status;
+      const previousTeam = workflowCase.assignedTeam;
+      const previousAssignee = workflowCase.assignedTo;
+      const previousMachineCode = workflowCase.print?.machineId || '';
+      const notes = [];
+      let printCase = null;
+
+      if (isStockTask && target === 'ready_to_print') {
+        // The units were not on the shelf: they go to printing instead.
+        if (!orderItem) failWith('This stock task is not linked to an order item');
+        const missing = req.body.quantity === undefined || req.body.quantity === '' ? workflowCase.quantity : Number(req.body.quantity);
+        if (!Number.isSafeInteger(missing) || missing < 1 || missing > workflowCase.quantity) {
+          failWith(`Enter how many units were not in stock, from 1 to ${workflowCase.quantity}`, 400);
+        }
+        if (Number(orderItem.stockQuantity || 0) < missing) failWith('The order has fewer stock units than that');
+        const product = await Product.findById(orderItem.productId).session(session);
+        if (!product) failWith('The product for this order item no longer exists');
+        const method = printMethodForItem(orderItem, workflowCase, product);
+        if (!method) failWith('Choose Wax or Resin for this item before it can be printed');
+
+        const picked = Number(orderItem.stockPickedQuantity || 0);
+        if (fromStatus === 'completed' && picked > 0) {
+          // The stock check already took these units off the count; they were
+          // never there, so only the order's record of what was picked changes.
+          orderItem.stockPickedQuantity = Math.max(picked - missing, 0);
+        } else if (order.inventoryState === 'reserved') {
+          await removeMissingReservedUnits({
+            order, orderItem, product, missing, actorId: req.user.id, session,
+            notes: `Size ${orderItem.size || '-'}: ${missing} reserved unit(s) not found on the shelf for order ${order.orderNumber || order._id}; boss sent them to ${method} printing (${reason})`.slice(0, 500)
+          });
+        }
+        const note = `Boss correction: ${missing} unit(s) were not in stock: ${reason}`;
+        printCase = await moveStockUnitsToPrint({ workflowCase, order, orderItem, product, missing, method, actorId: req.user.id, note, session });
+        if (missing === workflowCase.quantity) {
+          if (fromStatus !== 'completed') {
+            workflowCase.status = 'completed';
+            workflowCase.completedAt = now;
+            if (!workflowCase.startedAt) workflowCase.startedAt = now;
+          }
+        } else {
+          workflowCase.quantity -= missing;
+          workflowCase.requirements = `Collect ${workflowCase.quantity} reserved unit(s), size ${orderItem.size || '-'}, from stock for this order. ${orderItem.printQuantity} unit(s) are being printed.`;
+        }
+        workflowCase.productionMethod = method;
+        notes.push(`${missing} unit(s) sent to ${method} printing`);
+      } else if (target === 'completed') {
+        if (fromStatus === 'completed') failWith('This task is already done');
+        if (isStockTask && fromStatus === 'stock_picking') {
+          await takePickedStockOffShelf({ workflowCase, actorId: req.user.id, session });
+        }
+        workflowCase.status = 'completed';
+        workflowCase.completedAt = now;
+        if (!workflowCase.startedAt) workflowCase.startedAt = now;
+        if (fromStatus === 'printing') workflowCase.print.completedAt = now;
+        notes.push('Marked done');
+      } else if (target) {
+        if (target === 'ready_to_print' && !['wax', 'resin'].includes(workflowCase.productionMethod)) {
+          failWith('Choose Wax or Resin for this task before sending it to printing');
+        }
+        if (fromStatus === 'completed' && isStockTask) {
+          const putBack = await putPickedStockBack({ workflowCase, actorId: req.user.id, session });
+          if (putBack) notes.push(`${putBack} unit(s) put back as reserved for this order`);
+        }
+        const team = teamForStatus(target, workflowCase.productionMethod);
+        workflowCase.status = target;
+        workflowCase.assignedTeam = team;
+        workflowCase.completedAt = null;
+        workflowCase.startedAt = null;
+        workflowCase.stageQueuedAt = now;
+        workflowCase.targetMinutes = targetMinutesForTeam(team);
+        if (team !== previousTeam) {
+          const assignee = await findTeamAssignee(team, session);
+          workflowCase.assignedTo = assignee?._id || null;
+          workflowCase.assignedAt = assignee ? now : null;
+        } else if (workflowCase.assignedTo) {
+          workflowCase.assignedAt = now;
+        }
+        if (fromStatus === 'printing') {
+          workflowCase.print = { machineId: '', sentAt: workflowCase.print?.sentAt || null, startedAt: null, completedAt: null };
+        }
+        notes.unshift(target === fromStatus ? `Restarted at ${STAGE_LABELS[stage]}` : `Moved to ${STAGE_LABELS[stage]}`);
+      }
+
+      if (hasCount) {
+        const count = await setShelfCount({ variantId: orderItem.inventoryVariantId, count: shelfCount, actorId: req.user.id, orderId: order._id, note: reason, session });
+        notes.push(count.before === count.after ? `Shelf count for size ${count.size} confirmed at ${count.after}` : `Shelf count for size ${count.size} changed from ${count.before} to ${count.after}`);
+      }
+
+      workflowCase.history.push({
+        actorId: req.user.id,
+        action: 'boss_correction',
+        fromStatus,
+        toStatus: workflowCase.status,
+        note: `${notes.join('. ')}. Reason: ${reason}`.slice(0, 1000)
+      });
+      await workflowCase.save({ session });
+      if (printCase) await order.save({ session });
+
+      // Work that goes back into the pipeline means the order is not ready to pack yet.
+      const reopened = printCase || (target && target !== 'completed');
+      const packing = reopened && workflowCase.requestType !== 'pack_order'
+        ? await cancelEarlyPackingTask({ orderId: workflowCase.orderId, actorId: req.user.id, note: reason, session })
+        : null;
+      result = { workflowCase, printCase, packing, previousAssignee, previousMachineCode, fromStatus };
+    });
+
+    const { workflowCase, printCase, packing, previousAssignee, previousMachineCode, fromStatus } = result;
+    if (fromStatus === 'printing' && workflowCase.status !== 'printing' && previousMachineCode) {
+      await releaseMachineFromCase({ machineCode: previousMachineCode, workflowCase, actorId: req.user.id, outcome: workflowCase.status === 'completed' ? 'completed' : 'cancelled', reason: 'Boss correction' });
+    }
+    if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
+      if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+      if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
+    }
+    if (printCase) await safelyNotify(() => notifyCaseAssignment(req.app, printCase));
+    if (packing?.previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, packing.previousAssignee, packing.packingTask));
+    await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+    res.json({
+      workflowCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(workflowCase._id))),
+      printCase: printCase ? await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(printCase._id))) : null
+    });
+  } catch (error) {
+    console.error('Error correcting workflow case:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to correct the task' });
+  } finally {
+    if (session) await session.endSession();
+  }
+});
+
+// The boss deletes a task an employee should never have had. It leaves every
+// list but stays in the history and audit log; stock tasks give their units back.
+router.post('/cases/:id/delete', operationsAuth, async (req, res) => {
+  let session;
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss can delete tasks' });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    const reason = cleanText(req.body.reason, 500);
+    if (!reason) return res.status(400).json({ message: 'Explain why this task is deleted' });
+    session = await mongoose.startSession();
+    let result;
+    await session.withTransaction(async () => {
+      const workflowCase = await WorkflowCase.findById(req.params.id).session(session);
+      if (!workflowCase) failWith('Workflow case not found', 404);
+      if (CLOSED_STATUSES.includes(workflowCase.status)) failWith('This task is already deleted');
+      if (workflowCase.requestType === 'order_validation') failWith('An order confirmation cannot be deleted. Cancel the order instead.');
+      if (workflowCase.requestType === 'pack_order') failWith('A packing task cannot be deleted. Mark it Ready or move the other tasks back instead.');
+      const notes = [];
+      if (workflowCase.requestType === 'stock_pick') {
+        const released = await releaseStockTaskUnits({ workflowCase, actorId: req.user.id, session });
+        if (released) notes.push(`${released} unit(s) given back to stock`);
+      } else if (workflowCase.orderId && workflowCase.orderItemId && workflowCase.requestType === 'print_required') {
+        const order = await Order.findById(workflowCase.orderId).session(session);
+        const orderItem = order?.items.id(workflowCase.orderItemId);
+        if (orderItem) {
+          await Order.updateOne(
+            { _id: order._id, 'items._id': orderItem._id },
+            { $set: { 'items.$.printQuantity': Math.max(Number(orderItem.printQuantity || 0) - Number(workflowCase.quantity || 0), 0) } },
+            { session }
+          );
+        }
+      }
+      const fromStatus = workflowCase.status;
+      const previousAssignee = workflowCase.assignedTo;
+      const previousMachineCode = workflowCase.print?.machineId || '';
+      workflowCase.status = 'cancelled';
+      workflowCase.completedAt = new Date();
+      workflowCase.history.push({
+        actorId: req.user.id,
+        action: 'boss_deleted',
+        fromStatus,
+        toStatus: 'cancelled',
+        note: `${notes.length ? `${notes.join('. ')}. ` : ''}Reason: ${reason}`.slice(0, 1000)
+      });
+      await workflowCase.save({ session });
+      result = { workflowCase, fromStatus, previousAssignee, previousMachineCode };
+    });
+    const { workflowCase, fromStatus, previousAssignee, previousMachineCode } = result;
+    if (fromStatus === 'printing' && previousMachineCode) {
+      await releaseMachineFromCase({ machineCode: previousMachineCode, workflowCase, actorId: req.user.id, outcome: 'cancelled', reason: 'Task deleted by the boss' });
+    }
+    if (previousAssignee && fromStatus !== 'completed') await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+    await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+    res.json({ deleted: true, workflowCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(workflowCase._id))) });
+  } catch (error) {
+    console.error('Error deleting workflow case:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to delete the task' });
   } finally {
     if (session) await session.endSession();
   }

@@ -15,6 +15,7 @@ const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { notifyCaseAssignment } = require('../utils/workflowNotifications');
 const productOptions = require('../utils/productOptions');
+const { recomputeProductStock } = require('../utils/stockCount');
 
 // Size presets keyed by type, for the same size rules the app applies.
 // A failed read falls back to the sizes the portal sent.
@@ -113,24 +114,6 @@ const serializeProduct = (product, stockVariants = []) => {
       lastSyncedAt: variant.lastSyncedAt
     }))
   };
-};
-
-// Product.stock is the sum of its size stock; keep it in step after any size change.
-const recomputeProductStock = async (productIds, session = null) => {
-  const ids = productIds.map(id => new mongoose.Types.ObjectId(String(id)));
-  const totals = await StockVariant.aggregate([
-    { $match: { productIds: { $in: ids } } },
-    { $unwind: '$productIds' },
-    { $match: { productIds: { $in: ids } } },
-    { $group: { _id: '$productIds', onHand: { $sum: '$onHandQuantity' }, reserved: { $sum: '$reservedQuantity' } } }
-  ]).session(session);
-  if (!totals.length) return;
-  await Product.bulkWrite(totals.map(total => ({
-    updateOne: {
-      filter: { _id: total._id },
-      update: { $set: { stock: Math.max(total.onHand - total.reserved, 0), reservedStock: total.reserved } }
-    }
-  })), { session });
 };
 
 const serializeVariant = (variant) => ({
