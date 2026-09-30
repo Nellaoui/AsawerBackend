@@ -64,3 +64,32 @@ describe('catalog list', () => {
     expect(options).toEqual({ path: 'products' });
   });
 });
+
+describe('catalog names view with twins', () => {
+  test('lists a repeated name once', async () => {
+    const docs = [
+      catalogDoc('one', { name: 'Bagues', isPublic: true, ownerId: 'admin', products: ['p1'] }),
+      catalogDoc('two', { name: 'Bagues', isPublic: true, ownerId: 'admin', products: ['p2', 'p3'] }),
+    ];
+    Catalog.find.mockReturnValue({ sort: () => Promise.resolve(docs) });
+    let body: any;
+    const res = { json: (data: any) => { body = data; }, status: () => res };
+    await listHandler({ query: { view: 'names' }, user: { id: 'admin', role: 'admin' } }, res);
+    expect(body).toHaveLength(1);
+    expect(body[0]).toMatchObject({ catalogId: 'two', productCount: 2, sameNameIds: ['one'] });
+  });
+});
+
+describe('creating a catalog', () => {
+  const createHandler = router.stack
+    .find((layer: any) => layer.route?.path === '/' && layer.route.methods.post)
+    .route.stack.slice(-1)[0].handle;
+
+  test('refuses a name that is already taken', async () => {
+    Catalog.find.mockReturnValue({ select: () => ({ lean: async () => [{ _id: 'b1', name: 'Bagues' }] }) });
+    const res: any = { status: jest.fn(() => res), json: jest.fn() };
+    await createHandler({ body: { name: ' bagues ' }, user: { id: 'admin', role: 'admin' } }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].message).toMatch(/already exists/);
+  });
+});

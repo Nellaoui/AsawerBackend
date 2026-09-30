@@ -74,6 +74,10 @@
     .size-entry.locked{grid-template-columns:minmax(110px,1fr) minmax(110px,1fr)}.size-entry.locked input[data-product-size]{opacity:.75}
     .chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;font-weight:600;cursor:pointer;white-space:nowrap}.chip input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0;padding:0;flex:none;accent-color:var(--gold)}.chip:has(input:checked){border-color:var(--gold);color:var(--gold)}
     .size-note{margin:8px 0 0;color:var(--gold)}
+    .tabs{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}.tab-list{display:flex;gap:6px;padding:5px;border:1px solid #ffffff10;border-radius:13px;background:#0c1118;flex-wrap:wrap}
+    .tab{min-height:44px;padding:0 16px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font:inherit;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:8px}.tab:hover{color:#fff}.tab[aria-selected="true"]{background:#1b2330;border-color:#49566a;color:#fff}
+    .tab:focus-visible{outline:3px solid var(--gold);outline-offset:2px}.tab-count{font-size:.78rem;padding:1px 8px;border-radius:999px;background:#ffffff14;color:inherit}.tab-count:empty{display:none}.tab-count.issue{background:var(--gold);color:#111}
+    @media(max-width:620px){.tab-list{width:100%}.tab{flex:1;justify-content:center;padding:0 10px}.tabs>.button{width:100%}}
     /* Photo picker and the clickable "fix this product" rows. */
     .field-label{display:block;font-size:.85rem;margin-bottom:6px}
     .photo-row{display:flex;gap:12px;align-items:flex-start}
@@ -137,25 +141,34 @@
           <div class="card stat"><span class="muted">No product yet</span><strong id="statOrphans" style="color:var(--gold)">0</strong></div>
         </div>
         <form id="searchForm" class="toolbar">
-          <input id="search" type="search" aria-label="Search products by name, serial number, type or location" placeholder="Search product, serial number, type, or location">
+          <input id="search" type="search" aria-label="Search products by name, reference, type, catalogue or location" placeholder="Search product, reference, type, catalogue or location">
           <label class="check"><input id="lowStock" type="checkbox"> Low stock only</label>
           <button id="refresh" class="button secondary" type="button">Refresh</button>
         </form>
+        <!-- One list at a time: the stock list and the problem list used to sit
+             one above the other, and it was hard to tell which was which. -->
+        <div class="tabs">
+          <div role="tablist" aria-label="Product lists" class="tab-list">
+            <button id="tabProducts" class="tab" type="button" role="tab" aria-selected="true" aria-controls="productsView" data-tab="products">Products <span id="tabProductsCount" class="tab-count"></span></button>
+            <button id="tabIssues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="issuesView" data-tab="issues" tabindex="-1">Products with an issue <span id="tabIssuesCount" class="tab-count issue"></span></button>
+          </div>
+          <button id="addProduct" class="button small" type="button">+ Add product</button>
+        </div>
+        <div id="productsView" role="tabpanel" aria-labelledby="tabProducts">
         <section class="panel">
           <div class="panel-head"><div><h2>Existing products</h2><p class="subtitle">Select a product to add or adjust stock. No duplicate products are created.</p></div></div>
           <div class="table-wrap"><table><thead><tr><th>Product</th><th>Available</th><th>Reserved</th><th>Catalog</th><th>Location</th><th>Supply</th><th>Action</th></tr></thead><tbody id="products"></tbody></table></div>
           <div class="footer"><span id="pageLabel" class="muted"></span><div><button id="previous" class="button secondary small">Previous</button> <button id="next" class="button secondary small">Next</button></div></div>
         </section>
-        <section class="panel" id="setupPanel" hidden>
+        </div>
+        <div id="issuesView" role="tabpanel" aria-labelledby="tabIssues" hidden>
+        <section class="panel" id="setupPanel">
           <div class="panel-head">
             <div>
               <h2>Products with an issue</h2>
               <p class="subtitle">Missing a photo, or reported as wrong. Fix these before they can be sold.</p>
             </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <span id="setupTotal" class="muted"></span>
-              <button id="addProduct" class="button small" type="button">+ Add product</button>
-            </div>
+            <span id="setupTotal" class="muted"></span>
           </div>
           <div class="table-wrap"><table><thead><tr><th>Product</th><th>Reference</th><th>What is missing</th><th>Action</th></tr></thead><tbody id="needsSetup"></tbody></table></div>
         </section>
@@ -169,6 +182,7 @@
           </div>
           <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Kind</th><th>Sizes</th><th>Units</th><th>Sheet</th><th>Action</th></tr></thead><tbody id="orphans"></tbody></table></div>
         </section>
+        </div>
         <section class="panel"><div class="panel-head"><div><h2>Recent stock history</h2><p class="subtitle">Manual changes, order reservations, and releases.</p></div></div><ul id="history" class="history"></ul></section>
       </section>
     </main>
@@ -331,6 +345,9 @@
       if (!canSetupProducts) return signOut('Product management is limited to operations staff.');
       document.body.classList.toggle('setup-only',!canManageStock);
       $('userName').textContent=`${state.user.name || state.user.email} · ${state.user.isAdmin ? 'Admin' : 'Employee'}`;
+      // Customer service only fixes products, so they land on the problem list.
+      let savedTab=''; try{savedTab=localStorage.getItem('portalProductTab')||''}catch{}
+      showTab(savedTab||(canManageStock?'products':'issues'));
       setAuthenticated(true); loadInventory();loadOrphans();loadNeedsSetup();loadCatalogChoices();loadSizePresets();
     }
     let inventoryRequestId=0;
@@ -347,13 +364,14 @@
       try {
         const [inventory,movements]=await Promise.all([api(`/inventory?${params}`),live?Promise.resolve(null):api('/inventory/movements?limit=30')]);
         if(requestId!==inventoryRequestId)return;
-        state.products=inventory.products; state.pages=inventory.pagination.pages; state.total=inventory.pagination.total;
+        state.products=inventory.products; state.pages=inventory.pagination.pages; state.total=inventory.pagination.total; $('tabProductsCount').textContent=String(state.total);
         renderSummary(inventory.summary); renderProducts(); if(movements)renderHistory(movements);
         $('inventorySync').textContent='Updated '+new Date().toLocaleTimeString('en-GB',{timeZone:'Africa/Casablanca',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
       } catch(error) { if(requestId!==inventoryRequestId)return; if(/token|authorization|sign in/i.test(error.message)) return signOut(error.message); show('workspaceError',error.message); $('inventorySync').textContent='Sync paused'; }
       finally { if(requestId===inventoryRequestId)$('refresh').disabled=false; }
     }
-    function queueInventorySearch(){clearTimeout(inventorySearchTimer);++inventoryRequestId;inventorySearchTimer=setTimeout(()=>{state.page=1;loadInventory({live:true})},300)}
+    // One search box serves both tabs, so it refreshes both lists.
+    function queueInventorySearch(){clearTimeout(inventorySearchTimer);++inventoryRequestId;++needsSetupRequestId;inventorySearchTimer=setTimeout(()=>{state.page=1;loadInventory({live:true});loadNeedsSetup();if(state.orphans)renderOrphans(state.danglingVariants||[])},300)}
     function renderSummary(s) { $('statProducts').textContent=s.products; $('statAvailable').textContent=s.availableUnits; $('statReserved').textContent=s.reservedUnits; $('statLow').textContent=s.lowStockProducts; $('statOut').textContent=s.outOfStockProducts; }
     // ---- Products that are not ready to sell ---------------------------
     async function loadCatalogChoices(){
@@ -361,6 +379,13 @@
         state.catalogs=await api('/inventory/catalogs');
         $('productCatalog').innerHTML='<option value="">Choose a catalogue</option>'+state.catalogs.map(c=>`<option value="${escapeHtml(c._id)}">${escapeHtml(c.name)}${c.isPublic?'':' (private)'}</option>`).join('');
       }catch(error){console.error('Could not load catalogues:',error)}
+    }
+    // The list shows each name once; a product filed in a same-name twin
+    // selects the listed catalogue, and saving moves it there.
+    function catalogChoiceFor(id){
+      if(!id)return '';
+      const choice=(state.catalogs||[]).find(c=>String(c._id)===String(id)||(c.sameNameIds||[]).includes(String(id)));
+      return choice?String(choice._id):'';
     }
     async function createCatalogFromForm(){
       const name=(prompt('Name of the new catalogue')||'').trim();
@@ -379,15 +404,37 @@ Cancel = hidden (private)`);
         show('productError',error.message);
       }
     }
+    let needsSetupRequestId=0;
     async function loadNeedsSetup(){
+      const requestId=++needsSetupRequestId;
+      const search=$('search').value.trim();
       try{
-        const data=await api('/inventory/needs-setup');
+        const data=await api('/inventory/needs-setup'+(search?'?search='+encodeURIComponent(search):''));
+        if(requestId!==needsSetupRequestId)return;
         state.needsSetup=data.products||[];
-        $('setupPanel').hidden=false;
-        $('setupTotal').textContent=data.total?`${data.total} product(s)${data.reported?` · ${data.reported} reported`:''}`:'All products are ready';
-        renderNeedsSetup(data.canPublish);
+        $('setupTotal').textContent=data.total?`${data.total} product(s)${data.reported?` · ${data.reported} reported`:''}`:(search?'':'All products are ready');
+        $('tabIssuesCount').textContent=data.total?String(data.total):'';
+        renderNeedsSetup(data.canPublish,search);
       }catch(error){console.error('Could not load products needing setup:',error)}
     }
+    // ---- Products / Products with an issue tabs -------------------------
+    function showTab(tab,focus=false){
+      state.tab=tab==='issues'?'issues':'products';
+      const issues=state.tab==='issues';
+      $('productsView').hidden=issues; $('issuesView').hidden=!issues;
+      for(const button of document.querySelectorAll('[data-tab]')){
+        const selected=button.dataset.tab===state.tab;
+        button.setAttribute('aria-selected',String(selected)); button.tabIndex=selected?0:-1;
+        if(selected&&focus)button.focus();
+      }
+      // Low stock is a stock filter; it means nothing on the problem list.
+      $('lowStock').closest('label').hidden=issues;
+      try{localStorage.setItem('portalProductTab',state.tab)}catch{}
+    }
+    document.querySelectorAll('[data-tab]').forEach(button=>{
+      button.addEventListener('click',()=>showTab(button.dataset.tab));
+      button.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='ArrowLeft'){event.preventDefault();showTab(state.tab==='issues'?'products':'issues',true)}});
+    });
     function missingLabels(p){
       const out=[];
       if(p.needsImage)out.push('photo');
@@ -395,7 +442,7 @@ Cancel = hidden (private)`);
       if(p.needsDetails)out.push('details');
       return out;
     }
-    function renderNeedsSetup(canPublish){
+    function renderNeedsSetup(canPublish,search=''){
       $('needsSetup').innerHTML=state.needsSetup.length?state.needsSetup.map(p=>{
         const missing=missingLabels(p);
         const reported=p.setupIssue&&p.setupIssue.open;
@@ -406,7 +453,7 @@ Cancel = hidden (private)`);
         const label=escapeHtml(p.name||p.serialNumber||'this product');
         // The whole row opens the fix form - the buttons beside it stop the click.
         return `<tr class="fix-row" data-fix="${id}" tabindex="0" role="button" aria-label="Fix ${label}"><td><strong>${escapeHtml(p.name||'—')}</strong><br><span class="muted">${escapeHtml(p.type||'')}${p.catalogName?' · '+escapeHtml(p.catalogName):''}</span></td><td>${escapeHtml(p.serialNumber||'')}</td><td>${badges||'<span class="muted">—</span>'}${note}</td><td><div class="actions"><button class="button small" data-fix="${id}">Fix now</button>${reported?(canPublish?`<button class="button secondary small" data-issue="${id}" data-open="false">Mark fixed</button>`:''):`<button class="button secondary small" data-issue="${id}" data-open="true">Report issue</button>`}</div></td></tr>`;
-      }).join(''):'<tr><td colspan="4" class="muted">Every product is ready to sell.</td></tr>';
+      }).join(''):`<tr><td colspan="4" class="muted">${search?'No product with an issue matches this search.':'Every product is ready to sell.'}</td></tr>`;
     }
     document.addEventListener('click', async event=>{
       const button=event.target.closest('[data-issue]');
@@ -520,7 +567,7 @@ Cancel = hidden (private)`);
       $('productSerial').readOnly=mode==='fix';
       $('productName').value=prefill.name||prefill.serialNumber||'';
       setTypeValue(prefill.type);
-      $('productCatalog').value=prefill.catalogId||'';
+      $('productCatalog').value=catalogChoiceFor(prefill.catalogId);
       state.customSizes=prefill.sizes||[];
       state.previousClasp=prefill.clasp||'';
       renderSizeSection();
@@ -700,15 +747,17 @@ Cancel = hidden (private)`);
         $('statOrphans').textContent=pending.units||0;
         $('orphanPanel').hidden=state.orphans.length===0 && (data.danglingVariants||[]).length===0;
         $('orphanTotal').textContent=state.orphans.length?`${state.orphans.length} references · ${pending.units} units waiting`:'';
-        renderOrphans(data.danglingVariants||[]);
+        state.danglingVariants=data.danglingVariants||[]; renderOrphans(state.danglingVariants);
       }catch(error){console.error('Could not load counted stock:',error)}
     }
     function renderOrphans(dangling){
-      const rows=state.orphans.map(o=>`<tr><td><strong>${escapeHtml(o.reference)}</strong>${o.variant?'<br><span class="muted">'+escapeHtml(o.variant)+'</span>':''}</td><td>${escapeHtml(o.bucket||'—')}</td><td><span class="muted">${escapeHtml((o.sizes||[]).join(', '))}</span></td><td><strong>${o.units}</strong></td><td><span class="muted">${escapeHtml(o.sourceSheet||'')}</span></td><td><div class="actions"><button class="button small" data-orphan-create="${escapeHtml(o._id)}">Create product</button><button class="button secondary small" data-orphan="${escapeHtml(o._id)}" data-status="ignored">Ignore</button></div></td></tr>`);
-      for(const d of dangling){
+      const search=$('search').value.trim().toLowerCase();
+      const matches=text=>!search||String(text||'').toLowerCase().includes(search);
+      const rows=state.orphans.filter(o=>matches(o.reference)||matches(o.variant)).map(o=>`<tr><td><strong>${escapeHtml(o.reference)}</strong>${o.variant?'<br><span class="muted">'+escapeHtml(o.variant)+'</span>':''}</td><td>${escapeHtml(o.bucket||'—')}</td><td><span class="muted">${escapeHtml((o.sizes||[]).join(', '))}</span></td><td><strong>${o.units}</strong></td><td><span class="muted">${escapeHtml(o.sourceSheet||'')}</span></td><td><div class="actions"><button class="button small" data-orphan-create="${escapeHtml(o._id)}">Create product</button><button class="button secondary small" data-orphan="${escapeHtml(o._id)}" data-status="ignored">Ignore</button></div></td></tr>`);
+      for(const d of dangling.filter(d=>matches(d.displayReference))){
         rows.push(`<tr><td><strong>${escapeHtml(d.displayReference||'—')}</strong><br><span class="muted">stock row, product deleted</span></td><td>—</td><td><span class="muted">${escapeHtml(d.size||'')}</span></td><td><strong>${d.onHandQuantity||0}</strong></td><td><span class="muted">database</span></td><td><span class="muted">Needs a product</span></td></tr>`);
       }
-      $('orphans').innerHTML=rows.join('')||'<tr><td colspan="6" class="muted">Every counted reference has a product.</td></tr>';
+      $('orphans').innerHTML=rows.join('')||`<tr><td colspan="6" class="muted">${search?'No counted reference matches this search.':'Every counted reference has a product.'}</td></tr>`;
     }
     document.addEventListener('click', async event=>{
       const button=event.target.closest('[data-orphan]');

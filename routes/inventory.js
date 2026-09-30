@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const Catalog = require('../models/Catalog');
+const { catalogNameKey, pickCatalogChoices } = require('../utils/catalogChoices');
 const InventoryMovement = require('../models/InventoryMovement');
 const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
@@ -138,8 +139,7 @@ router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
     const filter = {};
 
     if (search) {
-      const pattern = new RegExp(escapeRegExp(search), 'i');
-      filter.$or = [{ name: pattern }, { serialNumber: pattern }, { type: pattern }, { stockLocation: pattern }];
+      filter.$or = await productSearchConditions(search, [{ stockLocation: new RegExp(escapeRegExp(search), 'i') }]);
     }
 
     if (lowStockOnly) {
@@ -323,6 +323,15 @@ router.patch('/orphans/:id', operationsAuth, productSetupAuth, async (req, res) 
   }
 });
 
+// Search by name, reference, type or catalogue name. Both portal lists share
+// one search box, so they share these rules.
+const productSearchConditions = async (search, extra = []) => {
+  const pattern = new RegExp(escapeRegExp(search), 'i');
+  const catalogIds = await Catalog.find({ name: pattern }).distinct('_id');
+  return [{ name: pattern }, { serialNumber: pattern }, { type: pattern }, ...extra,
+    ...(catalogIds.length ? [{ catalogId: { $in: catalogIds } }] : [])];
+};
+
 // GET /api/inventory/needs-setup - Products that are not ready to sell.
 // Same rules the boss dashboard uses, but reachable by anyone doing setup.
 // The app lists a catalogue's products from Catalog.products, so a product's
@@ -338,8 +347,10 @@ const syncCatalogMembership = async (productId, catalogId) => {
 // GET /api/inventory/catalogs - Catalogue choices for the product form.
 router.get('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
   try {
-    const catalogs = await Catalog.find({}).select('name isPublic').sort({ name: 1 }).lean();
-    res.json(catalogs.map(catalog => ({ _id: catalog._id, name: catalog.name, isPublic: catalog.isPublic !== false })));
+    const catalogs = await Catalog.find({}).select('name isPublic products').lean();
+    res.json(pickCatalogChoices(catalogs.map(catalog => ({
+      _id: catalog._id, name: catalog.name, isPublic: catalog.isPublic !== false, productCount: (catalog.products || []).length
+    }))));
   } catch (error) {
     console.error('Error fetching catalogues:', error);
     res.status(500).json({ message: 'Failed to fetch catalogues' });
@@ -353,7 +364,8 @@ router.post('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
   const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
   if (!name || name.length > 80) return res.status(400).json({ message: 'Give the catalogue a name (80 characters at most)' });
   try {
-    const existing = await Catalog.findOne({ name: new RegExp(`^${escapeRegExp(name)}$`, 'i') }).select('_id name isPublic').lean();
+    const existing = (await Catalog.find({}).select('_id name isPublic').lean())
+      .find(catalog => catalogNameKey(catalog.name) === catalogNameKey(name));
     if (existing) return res.status(409).json({ message: `A catalogue called "${existing.name}" already exists`, catalog: existing });
     const catalog = await Catalog.create({
       name,
@@ -372,7 +384,9 @@ router.post('/catalogs', operationsAuth, productSetupAuth, async (req, res) => {
 
 router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) => {
   try {
-    const products = await Product.find({})
+    const search = String(req.query.search || '').trim();
+    const filter = search ? { $or: await productSearchConditions(search) } : {};
+    const products = await Product.find(filter)
       .select('name serialNumber type imageUrl price isActive stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)

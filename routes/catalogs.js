@@ -7,6 +7,7 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
+const { catalogNameKey, pickCatalogChoices } = require('../utils/catalogChoices');
 
 // TEMPORARY: Update existing catalogs to be public (GET for easy testing)
 router.get('/migrate-public', async (req, res) => {
@@ -104,7 +105,8 @@ router.get('/', auth, async (req, res) => {
       };
     });
 
-    res.json(transformedCatalogs);
+    // Pickers list each catalogue name once, even where twins exist.
+    res.json(view === 'names' ? pickCatalogChoices(transformedCatalogs) : transformedCatalogs);
   } catch (error) {
     console.error('Error fetching catalogs:', error);
     res.status(500).json({ message: 'Server error fetching catalogs' });
@@ -177,6 +179,14 @@ router.post('/', auth, async (req, res) => {
 
     if (!name) {
       return res.status(400).json({ message: 'Catalog name is required' });
+    }
+
+    // One catalogue per name: a second "Bagues" shows up twice in every picker.
+    const nameKey = catalogNameKey(name);
+    const existing = (await Catalog.find({}).select('name').lean())
+      .find(catalog => catalogNameKey(catalog.name) === nameKey);
+    if (existing) {
+      return res.status(409).json({ message: `A catalogue called "${existing.name}" already exists`, catalog: existing });
     }
 
     const catalog = new Catalog({
