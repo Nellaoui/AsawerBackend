@@ -5,12 +5,28 @@ const User = require('../models/User');
 const { auth, adminAuth } = require('../middlewares/auth');
 const { isTabletAccount } = require('../utils/customerTablet');
 const sendInviteEmail = require('../utils/emailInvite');
+const { MESSAGES, decidePhoneSignIn, deviceFromBody, canApprovePhoneChanges } = require('../utils/customerPhones');
+const { getRequireApp, recordPhoneRequest } = require('../utils/customerPhoneService');
 
 const router = express.Router();
 
 // Token expiry policy: 30d in development, 7d in production.
 // Can be overridden via environment variable JWT_EXPIRES_IN.
 const TOKEN_EXPIRES_IN = process.env.JWT_EXPIRES_IN || (process.env.NODE_ENV === 'production' ? '7d' : '30d');
+
+// A customer's token names the phone it was issued to, so it stops working on
+// that phone once the account is moved to another one.
+const signToken = (userId, deviceId) => jwt.sign(
+  { userId, ...(deviceId ? { did: deviceId } : {}) },
+  process.env.JWT_SECRET,
+  { expiresIn: TOKEN_EXPIRES_IN }
+);
+
+const refusedSignIns = {
+  new_phone: { code: 'PHONE_NOT_ALLOWED', message: MESSAGES.newPhone },
+  needs_app: { code: 'APP_UPDATE_REQUIRED', message: MESSAGES.needsApp },
+  web: { code: 'PHONE_APP_REQUIRED', message: MESSAGES.webBlocked }
+};
 
 // TEMPORARY: Migration endpoint to add phone field to existing users
 router.get('/migrate-phone', async (req, res) => {
@@ -53,22 +69,30 @@ router.post('/register', [
       return res.status(400).json({ message: 'User already exists' });
     }
 
+    // A new customer account belongs to the phone it was created on.
+    const device = deviceFromBody(req.body);
+    const phoneCheck = decidePhoneSignIn({ user: { role: 'user' }, device, requireApp: await getRequireApp() });
+    if (refusedSignIns[phoneCheck]) {
+      return res.status(403).json(refusedSignIns[phoneCheck]);
+    }
+
     // Create new user
     user = new User({
       email,
       password,
       name,
-      phone: phone || ''
+      phone: phone || '',
+      ...(phoneCheck === 'link' ? {
+        boundDeviceId: device.deviceId,
+        boundDeviceName: device.deviceName,
+        boundDeviceAt: new Date()
+      } : {})
     });
 
     await user.save();
 
     // Generate JWT token
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: TOKEN_EXPIRES_IN }
-    );
+    const token = signToken(user._id, phoneCheck === 'link' ? device.deviceId : undefined);
 
     console.log('User registered successfully:', user.email);
     res.json({
@@ -109,7 +133,7 @@ const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
     }
 
     if (user.isActive === false) {
-      return res.status(400).json({ message: 'Account is inactive' });
+      return res.status(400).json({ message: 'This account is paused. Please contact the shop.' });
     }
 
     const isMatch = await user.comparePassword(password);
@@ -130,11 +154,29 @@ const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
       return res.status(403).json({ message: 'The shop tablet account cannot use the operations portal' });
     }
 
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: TOKEN_EXPIRES_IN }
-    );
+    // Customers in the app are tied to one phone. The portal never is.
+    let tokenDevice;
+    if (!operationsOnly) {
+      const device = deviceFromBody(req.body);
+      const phoneCheck = decidePhoneSignIn({ user, device, requireApp: await getRequireApp() });
+      if (phoneCheck === 'new_phone') {
+        await recordPhoneRequest(req.app, user, device)
+          .catch(error => console.error('❌ Could not record phone change request:', error));
+      }
+      if (refusedSignIns[phoneCheck]) {
+        console.log(`📱 Customer sign-in refused (${phoneCheck}):`, user.email);
+        return res.status(403).json(refusedSignIns[phoneCheck]);
+      }
+      if (phoneCheck === 'link') {
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { boundDeviceId: device.deviceId, boundDeviceName: device.deviceName, boundDeviceAt: new Date() } }
+        );
+      }
+      if (phoneCheck === 'link' || phoneCheck === 'same') tokenDevice = device.deviceId;
+    }
+
+    const token = signToken(user._id, tokenDevice);
 
     console.log(operationsOnly ? 'Operations login successful:' : 'User login successful:', user.email);
     res.json({
@@ -148,7 +190,8 @@ const loginHandler = ({ operationsOnly = false } = {}) => async (req, res) => {
         isAdmin: tablet ? false : user.isAdmin,
         role: tablet ? 'user' : role,
         workRole: user.workRole || 'general',
-        isTabletAccount: tablet
+        isTabletAccount: tablet,
+        canApprovePhoneChanges: canApprovePhoneChanges(user)
       }
     });
   } catch (error) {
@@ -198,9 +241,27 @@ router.get('/me', auth, async (req, res) => {
   // who use the app regularly are never asked to sign in again. Test and
   // impersonation tokens are left as they are.
   const renewable = req.auth?.userId && !req.auth.isTestToken && !req.auth.isImpersonated;
-  const token = renewable
-    ? jwt.sign({ userId: req.auth.userId }, process.env.JWT_SECRET, { expiresIn: TOKEN_EXPIRES_IN })
-    : undefined;
+
+  // Customers who signed in before phones were remembered: the updated app
+  // names its phone here, so their session is tied to it without a new sign-in.
+  let did = req.auth?.did;
+  if (renewable && !did) {
+    const device = deviceFromBody({ deviceId: req.header('X-Device-Id'), deviceName: req.header('X-Device-Name'), platform: req.header('X-Device-Platform') });
+    const phoneCheck = device.deviceId ? decidePhoneSignIn({ user: req.user, device }) : 'allow';
+    if (phoneCheck === 'new_phone') {
+      await recordPhoneRequest(req.app, req.user, device)
+        .catch(error => console.error('❌ Could not record phone change request:', error));
+      return res.status(401).json(refusedSignIns.new_phone);
+    }
+    if (phoneCheck === 'link') {
+      await User.updateOne(
+        { _id: req.user._id },
+        { $set: { boundDeviceId: device.deviceId, boundDeviceName: device.deviceName, boundDeviceAt: new Date() } }
+      );
+    }
+    if (phoneCheck === 'link' || phoneCheck === 'same') did = device.deviceId;
+  }
+  const token = renewable ? signToken(req.auth.userId, did) : undefined;
   res.json({
     ...(token ? { token } : {}),
     user: {
@@ -211,7 +272,8 @@ router.get('/me', auth, async (req, res) => {
       isAdmin: req.user.isAdmin,
       role: req.user.isAdmin ? 'admin' : (req.user.role || 'user'),
       workRole: req.user.workRole || 'general',
-      isTabletAccount: req.user.isTabletAccount === true
+      isTabletAccount: req.user.isTabletAccount === true,
+      canApprovePhoneChanges: canApprovePhoneChanges(req.user)
     }
   });
 });

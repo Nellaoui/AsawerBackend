@@ -16,6 +16,7 @@ if (process.env.NODE_ENV === 'production' && process.env.JWT_SECRET.length < 32)
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications');
+const { startInactivityNotifier } = require('./utils/customerPhoneService');
 const { startStepTimeTracker } = require('./utils/stepTimes');
 const { startBackupScheduler } = require('./utils/backupService');
 const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
@@ -33,7 +34,7 @@ installErrorMonitoring();
 const corsOptions = {
   origin: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Test-Mode', 'Idempotency-Key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Test-Mode', 'Idempotency-Key', 'X-Device-Id', 'X-Device-Name', 'X-Device-Platform'],
   credentials: true
 };
 app.use(cors(corsOptions));
@@ -44,7 +45,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,X-Test-Mode,Idempotency-Key');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,X-Test-Mode,Idempotency-Key,X-Device-Id,X-Device-Name,X-Device-Platform');
   next();
 });
 // Gzip JSON and HTML responses; catalog lists shrink several times over.
@@ -74,6 +75,7 @@ db.once('open', () => {
   ensureDefaultMachines().catch(error => console.error('Failed to register default printers:', error));
   startStepTimeTracker();
   startWorkflowDeadlineNotifier(app);
+  startInactivityNotifier(app);
   startBackupScheduler();
 });
 
@@ -197,6 +199,7 @@ app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/clasp-images', broadcastCatalogsOnWrite, require('./routes/claspImages'));
 app.use('/api/size-presets', require('./routes/sizePresets'));
+app.use('/api/customer-phones', require('./routes/customerPhones'));
 
 // The operations portal is served on the same HTTPS origin as its API.
 app.use('/admin', require('./portalRoutes'));

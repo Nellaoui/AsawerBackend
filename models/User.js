@@ -64,6 +64,19 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true
   }],
+  // One phone per customer account. The first phone that signs in is kept
+  // here; another phone needs an approved phone change request.
+  boundDeviceId: { type: String, trim: true, default: '' },
+  boundDeviceName: { type: String, trim: true, default: '' },
+  boundDeviceAt: { type: Date },
+  // Staff accounts the owner allowed to approve customers' phone changes.
+  canApprovePhoneChanges: { type: Boolean, default: false },
+  // Customer activity: last time the app was used and how many visits.
+  lastSeenAt: { type: Date },
+  visitCount: { type: Number, default: 0 },
+  // The start of the quiet period (last order, or sign-up) already reported
+  // to the owner, so each customer is reported once per quiet period.
+  inactivityReportedFor: { type: Date },
   isActive: {
     type: Boolean,
     default: true

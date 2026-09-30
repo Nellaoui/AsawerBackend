@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { isTabletAccount } = require('../utils/customerTablet');
+const { MESSAGES, isPhoneLockedAccount, visitUpdate } = require('../utils/customerPhones');
+const { getRequireApp } = require('../utils/customerPhoneService');
 
 // A shop tablet account keeps no admin rights: everywhere it counts as a plain
 // user, and only the customer-tablet routes (tabletAuth) accept it.
@@ -122,6 +124,27 @@ const auth = async (req, res, next) => {
 
     if (user.isActive === false) {
       return res.status(403).json({ message: 'Account is inactive' });
+    }
+
+    const customer = !decoded.isImpersonated && isPhoneLockedAccount(user);
+    // The account was moved to another phone: this phone's session ends.
+    if (customer && decoded.did && user.boundDeviceId && decoded.did !== user.boundDeviceId) {
+      return res.status(401).json({ code: 'PHONE_CHANGED', message: MESSAGES.phoneMoved });
+    }
+    // Once the owner turns the phone lock on, sessions that never named a phone
+    // (old app versions, the website) have to sign in again.
+    if (customer && !decoded.did && await getRequireApp()) {
+      return res.status(401).json({ code: 'APP_UPDATE_REQUIRED', message: MESSAGES.needsApp });
+    }
+
+    // Remember when customers use the app (not when the shop opens their account).
+    if (customer) {
+      const update = visitUpdate(user.lastSeenAt);
+      if (update) {
+        Promise.resolve()
+          .then(() => User.updateOne({ _id: user._id }, update))
+          .catch(error => console.error('❌ Could not record customer visit:', error));
+      }
     }
 
     // Set role field for consistency with Catalog model expectations
