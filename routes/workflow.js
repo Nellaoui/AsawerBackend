@@ -2095,25 +2095,56 @@ router.post('/cases/:id/delete', operationsAuth, async (req, res) => {
 
 router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
   try {
+    const adminMove = req.body.adminMove === true;
+    if (adminMove && !isAdminUser(req.user)) return res.status(403).json({ message: 'Only an administrator can move a task to another stage' });
+    if (adminMove && !cleanText(req.body.note, 1000)) return res.status(400).json({ message: 'Explain the problem and why this stage is needed' });
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
     const ownershipError = requireOwnedCase(req.user, workflowCase);
     if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
-    if (workflowCase.isBlocked) return res.status(409).json({ message: 'Resume this blocked task before completing it' });
+    if (workflowCase.archivedAt) return res.status(409).json({ message: 'Resume this archived order before moving its tasks' });
+    if (!adminMove && workflowCase.isBlocked) return res.status(409).json({ message: 'Resume this blocked task before completing it' });
     const nextStatus = String(req.body.status || '');
+    if (adminMove) {
+      if (!CASE_STATUSES.includes(nextStatus)) return res.status(400).json({ message: 'Unknown workflow status' });
+      if (nextStatus === workflowCase.status) return res.status(409).json({ message: 'Choose a different stage' });
+      if (['ready_to_print', 'printing'].includes(nextStatus)) {
+        const method = req.body.productionMethod || workflowCase.productionMethod;
+        if (!['wax', 'resin'].includes(method)) return res.status(400).json({ message: 'Choose Wax or Resin for the destination printing team' });
+        workflowCase.productionMethod = method;
+      }
+      // The order validation endpoint creates per-item fulfillment work. Keep
+      // that gate intact when an administrator routes its task for corrections.
+      if (nextStatus === 'awaiting_validation' && workflowCase.requestType !== 'order_validation') {
+        return res.status(409).json({ message: 'Use Customer information for item review, or open the order validation task to return the order to validation' });
+      }
+      if (workflowCase.requestType === 'order_validation' && workflowCase.orderId) {
+        const order = await Order.findById(workflowCase.orderId).select('validationStatus');
+        if (order?.validationStatus === 'pending' && ['completed', 'cancelled', 'rejected'].includes(nextStatus)) {
+          return res.status(409).json({ message: 'Return to Awaiting validation and confirm the order items before closing the validation task' });
+        }
+        if (order?.validationStatus !== 'pending' && nextStatus === 'awaiting_validation') {
+          return res.status(409).json({ message: 'This order is already validated. Use Customer information to review it without duplicating production tasks' });
+        }
+      }
+    }
+    if (!adminMove && workflowCase.requestType === 'order_validation' && workflowCase.orderId && ['completed', 'cancelled', 'rejected'].includes(nextStatus)) {
+      const order = await Order.findById(workflowCase.orderId).select('validationStatus');
+      if (order?.validationStatus === 'pending') return res.status(409).json({ message: 'Return to Awaiting validation and confirm the order items before closing the validation task' });
+    }
     const targetTeam = nextStatus === 'completed'
       ? workflowCase.assignedTeam
       : teamForStatus(nextStatus, workflowCase.productionMethod);
     if (!canUseTeam(req.user, workflowCase.assignedTeam) && !canUseTeam(req.user, targetTeam)) {
       return res.status(403).json({ message: 'This transition belongs to another team' });
     }
-    if (nextStatus === 'waiting_customer_approval' && !Number.isFinite(workflowCase.quote?.amount)) {
+    if (!adminMove && nextStatus === 'waiting_customer_approval' && !Number.isFinite(workflowCase.quote?.amount)) {
       return res.status(409).json({ message: 'Record the proposed cost before requesting customer approval' });
     }
-    const transitionError = validateTransition(workflowCase, nextStatus);
+    const transitionError = adminMove ? null : validateTransition(workflowCase, nextStatus);
     if (transitionError) return res.status(409).json({ message: transitionError });
-    const qualityReprint = workflowCase.status === 'quality_check' && nextStatus === 'ready_to_print';
+    const qualityReprint = !adminMove && workflowCase.status === 'quality_check' && nextStatus === 'ready_to_print';
     let reprintParts = null;
     let reprintReason = '';
     if (qualityReprint) {
@@ -2156,6 +2187,17 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
     const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
     workflowCase.status = nextStatus;
+    if (adminMove) {
+      workflowCase.isBlocked = false;
+      workflowCase.blockedReason = '';
+      workflowCase.blockedAt = null;
+      workflowCase.blockedBy = null;
+      workflowCase.deadlineAt = null;
+      workflowCase.print = { machineId: '', sentAt: null, startedAt: null, completedAt: null };
+      workflowCase.reprintParts = [];
+      workflowCase.reprintReason = '';
+      workflowCase.reprintRequestedAt = null;
+    }
     if (qualityReprint) {
       workflowCase.reprintParts = reprintParts;
       workflowCase.reprintReason = reprintReason;
@@ -2171,7 +2213,7 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       workflowCase.targetMinutes = targetMinutesForTeam(targetTeam);
       // Starting in the portal records the manufacturer-app print start.
       workflowCase.startedAt = nextStatus === 'printing' ? now : null;
-      if (previousTeam !== targetTeam) {
+      if (adminMove || previousTeam !== targetTeam) {
         const automaticAssignee = await findTeamAssignee(targetTeam);
         workflowCase.assignedTo = automaticAssignee?._id || null;
         workflowCase.assignedAt = automaticAssignee ? now : null;
@@ -2187,7 +2229,7 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     if (nextStatus === 'quality_check') workflowCase.print.completedAt = now;
     workflowCase.history.push({
       actorId: req.user.id,
-      action: 'status_changed',
+      action: adminMove ? 'admin_stage_changed' : 'status_changed',
       fromStatus: previousStatus,
       toStatus: nextStatus,
       note: qualityReprint

@@ -301,6 +301,7 @@
         <div class="three"><label>Catalog<select id="productCatalog"></select></label><label>Serial number<input id="productSerial"></label><label>Product type<input id="productType" placeholder="Bracelet, ring…"></label></div>
         <button id="createProduct" type="button" class="button secondary">Create catalogue product</button>
       </div>
+      <details id="adminStageSection" class="section" hidden><summary>Advanced stage change · Admin</summary><p class="muted">Move this task forward or back to correct a problem. The destination team receives it with a new timer; the reason stays in its history.</p><div class="two"><label>Destination stage<select id="adminStage"></select></label><label>Printing method<select id="adminStageMethod"><option value="undecided">Choose if moving to printing</option><option value="wax">Wax</option><option value="resin">Resin</option></select></label></div><label>Reason for moving<input id="adminStageReason" maxlength="1000" placeholder="Describe the problem and required correction"></label><button id="adminMoveStage" type="button" class="button">Move to selected stage</button></details>
       <div id="completionSection" class="section"><h3 id="completionHeading">Complete this step</h3><div class="two"><label id="nextStatusField">Move workflow to<select id="nextStatus"></select></label><label id="machineField" hidden>Printer used in manufacturer app<select id="machineId"><option value="">Printer selected outside this portal</option></select></label></div><p id="manualPrintNote" class="muted" hidden>Select and start the physical printer in the manufacturer application, then click Start printing here to record the time.</p><label>Work note<input id="transitionNote" maxlength="1000" placeholder="What you completed or what the next employee needs to know"></label><button id="moveCase" type="button" class="button">Complete step and send forward</button></div>
       <div class="section"><h3>History</h3><ul id="caseHistory" class="history"></ul></div>
     </div>
@@ -657,6 +658,12 @@
       renderHistory();
       setCaseEditable(item);
       renderOrderValidation(item);
+      $('adminStageSection').hidden=!isAdmin();
+      $('adminStage').innerHTML=Object.keys(transitions).filter(status=>status!==item.status&&status!=='task_ready'&&(status!=='awaiting_validation'||item.requestType==='order_validation'&&order?.validationStatus==='pending')).map(status=>'<option value="'+status+'">'+esc(pretty(status))+'</option>').join('');
+      $('adminStageMethod').value=item.productionMethod||'undecided';
+      $('adminStageReason').value='';
+      $('adminMoveStage').disabled=Boolean(item.archivedAt);
+      $('adminMoveStage').title=item.archivedAt?'Resume the archived order first':'';
       renderBossMove(item);
       show('caseError');show('caseSuccess');
       if(!$('caseDialog').open)$('caseDialog').showModal();
@@ -734,6 +741,18 @@
     $('resumeOrder').addEventListener('click',async event=>{event.target.disabled=true;try{await changeOrderArchive(state.selected,'resume')}catch(error){show('caseError',error.message)}finally{event.target.disabled=false}});
     $('releaseTask').addEventListener('click',async event=>{event.target.disabled=true;try{await api('/workflow/cases/'+state.selected._id+'/release',{method:'POST',body:'{}'});$('caseDialog').close();show('message','Task returned to the team inbox.');await loadAll()}catch(error){show('caseError',error.message)}finally{event.target.disabled=false}});
     $('assignTask').addEventListener('click',async event=>{event.target.disabled=true;try{const data=await api('/workflow/cases/'+state.selected._id+'/assignment',{method:'PATCH',body:JSON.stringify({userId:$('assignUser').value||null})});await refreshSelected(data,data.assignedTo?'Task assigned to '+(data.assignedTo.name||data.assignedTo.email)+'.':'Task returned to the team inbox.')}catch(error){show('caseError',error.message)}finally{event.target.disabled=false}});
+    $('adminMoveStage').addEventListener('click',async event=>{
+      show('caseError');
+      const note=$('adminStageReason').value.trim();
+      if(!note)return show('caseError','Explain the problem and why this stage is needed.');
+      const status=$('adminStage').value;
+      if(!confirm('Move '+state.selected.requestedName+' from '+pretty(state.selected.status)+' to '+pretty(status)+'?'))return;
+      event.target.disabled=true;
+      try{
+        const data=await api('/workflow/cases/'+state.selected._id+'/transition',{method:'POST',body:JSON.stringify({adminMove:true,status,note,productionMethod:$('adminStageMethod').value})});
+        await refreshSelected(data,'Moved to '+pretty(data.status)+'. The reason is saved in the task history.');
+      }catch(error){show('caseError',error.message)}finally{event.target.disabled=Boolean(state.selected.archivedAt)}
+    });
     $('moveCase').addEventListener('click',async event=>{show('caseError');if(state.selected.status==='quality_check'&&$('nextStatus').value==='ready_to_print'){openReprint(state.selected);$('reprintReason').value=$('transitionNote').value.trim();return}event.target.disabled=true;try{const data=await api('/workflow/cases/'+state.selected._id+'/transition',{method:'POST',body:JSON.stringify({status:$('nextStatus').value,note:$('transitionNote').value})});$('caseDialog').close();show('message',data.requestedName+' completed this step and moved to '+pretty(data.status)+'.');await loadAll()}catch(error){show('caseError',error.message)}finally{event.target.disabled=false}});
     $('createProduct').addEventListener('click',async event=>{show('caseError');if(!confirm('Create this permanent product and add it to the connected order?'))return;event.target.disabled=true;try{const data=await api('/workflow/cases/'+state.selected._id+'/create-product',{method:'POST',body:JSON.stringify({catalogId:$('productCatalog').value,serialNumber:$('productSerial').value,type:$('productType').value})});await refreshSelected(data.workflowCase,'Product '+data.product.name+' created and routed to printing.')}catch(error){show('caseError',error.message)}finally{event.target.disabled=false}});
     $('orderValidationItems').addEventListener('click',async event=>{

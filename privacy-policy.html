@@ -26,7 +26,7 @@
 <body>
   <div class="container">
     <h1>Privacy Policy</h1>
-    <p class="date">Last updated: February 16, 2026</p>
+    <p class="date">Last updated: October 1, 2026</p>
 
     <p>Asawer ("we", "our", or "us") operates the Asawer mobile application. This page informs you of our policies regarding the collection, use, and disclosure of personal data when you use our app.</p>
 
@@ -36,7 +36,7 @@
       <li><strong>Account Information:</strong> Name, email address, and password (encrypted).</li>
       <li><strong>Order Data:</strong> Products you order, order status, and order history.</li>
       <li><strong>Wishlist Data:</strong> Products you save to your wishlist.</li>
-      <li><strong>Device Information:</strong> Device type, operating system, and push notification tokens (for sending order updates).</li>
+      <li><strong>Device or Other IDs:</strong> An app-scoped Android device ID or iOS vendor ID, or a randomly generated installation ID when those IDs are unavailable. We also collect the device manufacturer, model, operating system, and push notification token.</li>
     </ul>
 
     <h2>2. How We Use Your Information</h2>
@@ -45,12 +45,13 @@
       <li>Provide and maintain the app's functionality.</li>
       <li>Process and track your jewelry orders.</li>
       <li>Send push notifications about order status changes.</li>
+      <li>Associate a customer account with its approved phone, detect sign-ins from a different phone, prevent unauthorized account access, and process phone-change approvals.</li>
       <li>Manage catalog access permissions.</li>
       <li>Improve the app experience.</li>
     </ul>
 
     <h2>3. Data Storage & Security</h2>
-    <p>Your data is stored securely on MongoDB Atlas cloud infrastructure. Passwords are hashed using bcrypt. Authentication tokens (JWT) are stored locally on your device using encrypted storage. We use HTTPS for all data transmission.</p>
+    <p>Your account, order, and approved-device records are stored on MongoDB Atlas cloud infrastructure. Passwords are hashed using bcrypt. Authentication tokens (JWT) and a fallback installation ID may be stored locally by the app. We use HTTPS for data transmission.</p>
 
     <h2>4. Third-Party Services</h2>
     <p>We use the following third-party services:</p>
