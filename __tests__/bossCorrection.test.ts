@@ -246,3 +246,74 @@ describe('boss corrects a stock check that was completed by mistake', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 });
+
+describe('boss sends an order confirmation back to Customer Service', () => {
+  let validationCase: any;
+  let productTasks: number;
+
+  beforeEach(() => {
+    const session = { withTransaction: jest.fn(async (work: () => Promise<void>) => work()), endSession: jest.fn() };
+    jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+    validationCase = {
+      _id: caseId, orderId, orderItemId: null, status: 'completed', requestType: 'order_validation',
+      quantity: 1, assignedTeam: 'customer_service', assignedTo: 'cs-user', startedAt: new Date(), completedAt: new Date(),
+      priority: 'normal', productionMethod: 'undecided', customerId: { name: 'Client' }, print: {},
+      history: [{ action: 'order_validated', fromStatus: 'awaiting_validation', toStatus: 'completed' }],
+      save: jest.fn()
+    };
+    productTasks = 0;
+    const order = { _id: orderId, status: 'confirmed', validationStatus: 'approved', items: { id: () => null }, save: jest.fn() };
+    jest.spyOn(WorkflowCase, 'findById').mockImplementation(() => query(validationCase));
+    jest.spyOn(WorkflowCase, 'findOne').mockImplementation(() => query(null));
+    jest.spyOn(WorkflowCase, 'find').mockImplementation(() => query([{ status: 'awaiting_validation', isBlocked: false }]));
+    jest.spyOn(WorkflowCase, 'countDocuments').mockImplementation(() => query(productTasks));
+    jest.spyOn(Order, 'findById').mockImplementation(() => query(order));
+    jest.spyOn(Order, 'updateOne').mockResolvedValue({ modifiedCount: 1 });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  const run = async (body: any) => {
+    const res = response();
+    await correct({ params: { id: caseId }, body, user: boss, app: {} }, res);
+    return res;
+  };
+
+  test('refuses when the order already has stock or printing tasks, so they are not created twice', async () => {
+    productTasks = 3;
+    const res = await run({ stage: 'validation', reason: 'Wrong sizes' });
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].message).toContain('3 stock, printing or packing task(s)');
+    expect(validationCase.status).toBe('completed');
+    expect(Order.updateOne).not.toHaveBeenCalled();
+  });
+
+  test('reopens the order for confirmation when it has no product tasks', async () => {
+    const res = await run({ stage: 'validation', reason: 'Wrong sizes' });
+    expect(res.status).not.toHaveBeenCalled();
+    expect(validationCase.status).toBe('awaiting_validation');
+    expect(validationCase.assignedTeam).toBe('customer_service');
+    expect(Order.updateOne).toHaveBeenCalledWith(
+      { _id: orderId },
+      { $set: { validationStatus: 'pending', fulfillmentState: 'in_progress', 'items.$[].fulfillmentStatus': 'awaiting_validation' } },
+      expect.anything()
+    );
+  });
+
+  test('an order waiting for confirmation cannot be marked Ready, which would skip stock and printing', async () => {
+    validationCase.status = 'awaiting_validation';
+    const res = await run({ stage: 'ready', reason: 'Done' });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(validationCase.status).toBe('awaiting_validation');
+  });
+
+  test('a print task waiting to print cannot be marked Ready, which would skip printing and quality', async () => {
+    validationCase.requestType = 'print_required';
+    validationCase.status = 'ready_to_print';
+    const res = await run({ stage: 'ready', reason: 'Done' });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json.mock.calls[0][0].message).toContain('skip Printing');
+    expect(validationCase.status).toBe('ready_to_print');
+  });
+});

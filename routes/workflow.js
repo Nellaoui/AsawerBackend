@@ -33,7 +33,8 @@ const {
   latestModelVersion,
   teamForStatus,
   targetMinutesForTeam,
-  validateTransition
+  validateTransition,
+  skippedStepError
 } = require('../utils/workflowRules');
 const { effectiveDeadline, stepTimesSnapshot, MIN_SAMPLES } = require('../utils/stepTimes');
 
@@ -1799,8 +1800,10 @@ const STAGE_LABELS = {
 
 // The stages a task can be put on, and the status each one means for it.
 const stageStatusesFor = (workflowCase) => {
+  // An order confirmation is only finished by confirming the order, which
+  // creates its stock and printing work. The boss can only send it back.
   if (workflowCase.requestType === 'order_validation') {
-    return { validation: 'awaiting_validation', ready: 'completed' };
+    return workflowCase.status === 'completed' ? { validation: 'awaiting_validation' } : {};
   }
   if (workflowCase.requestType === 'stock_pick') {
     return workflowCase.orderId && workflowCase.orderItemId
@@ -1810,6 +1813,27 @@ const stageStatusesFor = (workflowCase) => {
   if (workflowCase.requestType === 'pack_order') return { packing: 'packing', ready: 'completed' };
   if (workflowCase.status === 'task_ready') return { ready: 'completed' };
   return { order_received: 'boss_review', printing: 'ready_to_print', quality: 'quality_check', ready: 'completed' };
+};
+
+// Sending a confirmed order back to Customer Service. Confirming it again
+// creates its stock and printing work, so this is only allowed while the order
+// has none; otherwise each product task is fixed on its own.
+const PRODUCT_TASK_TYPES = ['stock_pick', 'print_required', 'pack_order'];
+const reopenOrderValidation = async ({ workflowCase, session = null }) => {
+  if (workflowCase.requestType !== 'order_validation' || !workflowCase.orderId) return;
+  const productTasks = await WorkflowCase.countDocuments({
+    orderId: workflowCase.orderId,
+    requestType: { $in: PRODUCT_TASK_TYPES },
+    status: { $nin: CLOSED_STATUSES }
+  }).session(session);
+  if (productTasks) {
+    failWith(`This order already has ${productTasks} stock, printing or packing task(s). Confirming it again would create them twice. Use Fix this task on those tasks instead.`);
+  }
+  await Order.updateOne(
+    { _id: workflowCase.orderId },
+    { $set: { validationStatus: 'pending', fulfillmentState: 'in_progress', 'items.$[].fulfillmentStatus': 'awaiting_validation' } },
+    { session }
+  );
 };
 
 const correctionOptions = async (workflowCase) => {
@@ -1835,7 +1859,7 @@ const correctionOptions = async (workflowCase) => {
     status: workflowCase.status,
     quantity: workflowCase.quantity,
     canDelete: !closed && !['order_validation', 'pack_order'].includes(workflowCase.requestType),
-    stages: closed ? [] : Object.entries(stageStatusesFor(workflowCase)).map(([stage, status]) => ({
+    stages: closed ? [] : Object.entries(stageStatusesFor(workflowCase)).filter(([, status]) => !skippedStepError(workflowCase, status)).map(([stage, status]) => ({
       stage, status, label: STAGE_LABELS[stage], current: status === workflowCase.status
     })),
     stock
@@ -1893,6 +1917,8 @@ router.post('/cases/:id/correction', operationsAuth, async (req, res) => {
         failWith(allowed.length ? `This task can only be put on: ${allowed.join(', ')}` : 'This task cannot be moved between stages', 400);
       }
       const target = stage ? stages[stage] : null;
+      const skipError = target ? skippedStepError(workflowCase, target) : null;
+      if (skipError) failWith(skipError, 400);
       const isStockTask = workflowCase.requestType === 'stock_pick';
 
       let order = null;
@@ -1961,6 +1987,7 @@ router.post('/cases/:id/correction', operationsAuth, async (req, res) => {
         if (fromStatus === 'printing') workflowCase.print.completedAt = now;
         notes.push('Marked done');
       } else if (target) {
+        if (target === 'awaiting_validation') await reopenOrderValidation({ workflowCase, session });
         if (target === 'ready_to_print' && !['wax', 'resin'].includes(workflowCase.productionMethod)) {
           failWith('Choose Wax or Resin for this task before sending it to printing');
         }
@@ -2112,6 +2139,8 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     if (adminMove) {
       if (!CASE_STATUSES.includes(nextStatus)) return res.status(400).json({ message: 'Unknown workflow status' });
       if (nextStatus === workflowCase.status) return res.status(409).json({ message: 'Choose a different stage' });
+      const skipError = skippedStepError(workflowCase, nextStatus);
+      if (skipError) return res.status(409).json({ message: skipError });
       if (['ready_to_print', 'printing'].includes(nextStatus)) {
         const method = req.body.productionMethod || workflowCase.productionMethod;
         if (!['wax', 'resin'].includes(method)) return res.status(400).json({ message: 'Choose Wax or Resin for the destination printing team' });
@@ -2126,6 +2155,9 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
         const order = await Order.findById(workflowCase.orderId).select('validationStatus');
         if (order?.validationStatus === 'pending' && ['completed', 'cancelled', 'rejected'].includes(nextStatus)) {
           return res.status(409).json({ message: 'Return to Awaiting validation and confirm the order items before closing the validation task' });
+        }
+        if (order && order.validationStatus !== 'pending' && nextStatus === 'awaiting_validation') {
+          await reopenOrderValidation({ workflowCase });
         }
       }
     }
@@ -2245,9 +2277,6 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       } finally {
         await session.endSession();
       }
-    }
-    if (workflowCase.requestType === 'order_validation' && workflowCase.orderId && nextStatus === 'awaiting_validation') {
-      await Order.updateOne({ _id: workflowCase.orderId }, { $set: { validationStatus: 'pending', fulfillmentState: 'in_progress' } });
     }
     await workflowCase.save();
     if (nextStatus === 'printing' && selectedMachine) {

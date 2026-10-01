@@ -93,9 +93,33 @@ describe('administrator stage corrections', () => {
     task.requestType='order_validation'; task.orderId=id; task.status='completed'; req.body.status='awaiting_validation';
     jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'approved'}))} as any);
     jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(async()=>[{status:'awaiting_validation'}])} as any);
+    jest.spyOn(WorkflowCase,'countDocuments').mockReturnValue({session:jest.fn(async()=>0)} as any);
     jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
     const res=response(); await transition(req,res);
     expect(res.status).not.toHaveBeenCalled(); expect(task.assignedTeam).toBe('customer_service');
-    expect(Order.updateOne).toHaveBeenCalledWith({_id:id},{$set:{validationStatus:'pending',fulfillmentState:'in_progress'}});
+    expect(Order.updateOne).toHaveBeenCalledWith({_id:id},{$set:{validationStatus:'pending',fulfillmentState:'in_progress','items.$[].fulfillmentStatus':'awaiting_validation'}},{session:null});
+  });
+  test('keeps an already-validated order confirmed when its stock or printing tasks exist, so they are not created twice', async () => {
+    task.requestType='order_validation'; task.orderId=id; task.status='completed'; req.body.status='awaiting_validation';
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'approved'}))} as any);
+    jest.spyOn(WorkflowCase,'countDocuments').mockReturnValue({session:jest.fn(async()=>4)} as any);
+    jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
+    const res=response(); await transition(req,res);
+    expect(res.status).toHaveBeenCalledWith(409); expect(task.save).not.toHaveBeenCalled();
+    expect(Order.updateOne).not.toHaveBeenCalled();
+  });
+});
+
+describe('administrator stage moves keep every step', () => {
+  let task: any;
+  beforeEach(() => {
+    task = { _id: id, status: 'ready_to_print', requestType: 'print_required', assignedTeam: 'wax_print', productionMethod: 'wax', print: {}, history: [], save: jest.fn() };
+    jest.spyOn(WorkflowCase, 'findById').mockImplementation(() => Object.assign(Promise.resolve(task), { populate: jest.fn().mockReturnThis() }));
+  });
+  afterEach(() => { jest.restoreAllMocks(); jest.clearAllMocks(); });
+  test.each(['completed', 'quality_check', 'packing'])('refuses to jump a print task waiting to print to %s', async status => {
+    const req = { params: { id }, user: { id: 'admin', role: 'admin' }, app: {}, body: { adminMove: true, status, note: 'Skip it' } };
+    const res = response(); await transition(req, res);
+    expect(res.status).toHaveBeenCalledWith(409); expect(task.save).not.toHaveBeenCalled();
   });
 });

@@ -130,6 +130,52 @@ const validateTransition = (workflowCase, nextStatus) => {
   return null;
 };
 
+// The steps each kind of task goes through, in order. Statuses in one inner
+// list belong to the same step. A boss or admin may send a task back to any
+// earlier step, but forward only to the very next one, so no order reaches
+// Ready without its stock check, printing, quality check and packing.
+const STEP_ORDER = {
+  order_validation: [['awaiting_validation'], ['completed']],
+  stock_pick: [['stock_picking'], ['completed']],
+  pack_order: [['packing'], ['completed']],
+  extra: [['task_ready'], ['completed']],
+  production: [
+    ['needs_customer_info', 'boss_review', 'waiting_customer_approval', 'modeling', 'file_validation'],
+    ['ready_to_print'],
+    ['printing'],
+    ['quality_check'],
+    ['completed']
+  ]
+};
+const STEP_NAMES = {
+  ready_to_print: 'Printing',
+  printing: 'Printing',
+  quality_check: 'Quality',
+  packing: 'Packing',
+  stock_picking: 'Stock check'
+};
+
+const stepsFor = (workflowCase) => {
+  if (STEP_ORDER[workflowCase.requestType]) return STEP_ORDER[workflowCase.requestType];
+  if (workflowCase.status === 'task_ready') return STEP_ORDER.extra;
+  return STEP_ORDER.production;
+};
+
+// Why moving this task to nextStatus would skip a step, or null when it does not.
+const skippedStepError = (workflowCase, nextStatus) => {
+  if (['cancelled', 'rejected'].includes(nextStatus)) return null;
+  if (nextStatus === 'packing' && workflowCase.requestType !== 'pack_order') {
+    return 'Only the packing task goes on Packing. It opens by itself when every product of the order is done';
+  }
+  const steps = stepsFor(workflowCase);
+  const stepOf = status => steps.findIndex(step => step.includes(status));
+  const current = stepOf(workflowCase.status);
+  const next = stepOf(nextStatus);
+  if (current < 0 || next < 0 || next <= current + 1) return null;
+  const missed = steps[current + 1][0];
+  return `This would skip ${STEP_NAMES[missed] || 'a step'}. Move the task one step at a time`;
+};
+
 module.exports = {
   ALLOWED_TRANSITIONS,
   CASE_STATUSES,
@@ -137,6 +183,7 @@ module.exports = {
   PRODUCTION_METHODS,
   REPRINT_PART_CODES,
   normalizeReprintParts,
+  skippedStepError,
   TEAM_TARGET_MINUTES,
   latestModelVersion,
   targetMinutesForTeam,

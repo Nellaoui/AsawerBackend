@@ -245,6 +245,14 @@ const transitionOrder = async (orderId, nextStatus, actorId) => {
         throw error;
       }
 
+      // Confirming here would skip Customer Service's check, which is what
+      // creates the stock and printing tasks.
+      if (nextStatus === 'confirmed' && order.validationCaseId && order.validationStatus === 'pending') {
+        const error = new Error('Confirm this order from its Customer Service validation task');
+        error.statusCode = 409;
+        throw error;
+      }
+
       if (nextStatus === 'cancelled') {
         await releaseReservedInventory(order, actorId, session);
         await WorkflowCase.updateMany(

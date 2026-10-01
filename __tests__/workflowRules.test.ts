@@ -70,3 +70,34 @@ describe('order exception workflow rules', () => {
     expect(() => normalizeReprintParts([{ code: 'B', quantity: 0 }])).toThrow(/positive whole-number/i);
   });
 });
+
+describe('no task skips a step', () => {
+  const { skippedStepError } = require('../utils/workflowRules');
+  const printTask = (status: string) => ({ requestType: 'print_required', status });
+
+  test('a print task cannot jump to Ready before printing and quality', () => {
+    expect(skippedStepError(printTask('ready_to_print'), 'completed')).toContain('skip Printing');
+    expect(skippedStepError(printTask('printing'), 'completed')).toContain('skip Quality');
+    expect(skippedStepError(printTask('ready_to_print'), 'quality_check')).toContain('skip Printing');
+    expect(skippedStepError(printTask('boss_review'), 'completed')).toContain('skip Printing');
+  });
+
+  test('the next step and any earlier step are allowed', () => {
+    expect(skippedStepError(printTask('boss_review'), 'ready_to_print')).toBeNull();
+    expect(skippedStepError(printTask('printing'), 'quality_check')).toBeNull();
+    expect(skippedStepError(printTask('quality_check'), 'completed')).toBeNull();
+    expect(skippedStepError(printTask('completed'), 'ready_to_print')).toBeNull();
+    expect(skippedStepError(printTask('quality_check'), 'boss_review')).toBeNull();
+    expect(skippedStepError(printTask('printing'), 'cancelled')).toBeNull();
+  });
+
+  test('only the packing task goes on Packing', () => {
+    expect(skippedStepError(printTask('quality_check'), 'packing')).toContain('Only the packing task');
+    expect(skippedStepError({ requestType: 'pack_order', status: 'completed' }, 'packing')).toBeNull();
+  });
+
+  test('stock tasks finish from the stock check, and may still go to printing when units are missing', () => {
+    expect(skippedStepError({ requestType: 'stock_pick', status: 'stock_picking' }, 'completed')).toBeNull();
+    expect(skippedStepError({ requestType: 'stock_pick', status: 'stock_picking' }, 'ready_to_print')).toBeNull();
+  });
+});
