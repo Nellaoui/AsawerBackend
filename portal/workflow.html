@@ -659,7 +659,7 @@
       setCaseEditable(item);
       renderOrderValidation(item);
       $('adminStageSection').hidden=!isAdmin();
-      $('adminStage').innerHTML=Object.keys(transitions).filter(status=>status!==item.status&&status!=='task_ready'&&(status!=='awaiting_validation'||item.requestType==='order_validation'&&order?.validationStatus==='pending')).map(status=>'<option value="'+status+'">'+esc(pretty(status))+'</option>').join('');
+      $('adminStage').innerHTML=Object.keys(transitions).filter(status=>status!==item.status&&status!=='task_ready'&&(status!=='awaiting_validation'||item.requestType==='order_validation')).map(status=>'<option value="'+status+'">'+esc(pretty(status))+'</option>').join('');
       $('adminStageMethod').value=item.productionMethod||'undecided';
       $('adminStageReason').value='';
       $('adminMoveStage').disabled=Boolean(item.archivedAt);

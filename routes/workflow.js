@@ -1788,6 +1788,7 @@ router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
 // log with who made it, the reason and any stock count change.
 const CLOSED_STATUSES = ['cancelled', 'rejected'];
 const STAGE_LABELS = {
+  validation: 'Awaiting validation',
   order_received: 'Order received',
   stock_check: 'Stock check',
   printing: 'Printing',
@@ -1798,7 +1799,9 @@ const STAGE_LABELS = {
 
 // The stages a task can be put on, and the status each one means for it.
 const stageStatusesFor = (workflowCase) => {
-  if (workflowCase.requestType === 'order_validation') return {};
+  if (workflowCase.requestType === 'order_validation') {
+    return { validation: 'awaiting_validation', ready: 'completed' };
+  }
   if (workflowCase.requestType === 'stock_pick') {
     return workflowCase.orderId && workflowCase.orderItemId
       ? { stock_check: 'stock_picking', printing: 'ready_to_print', ready: 'completed' }
@@ -2124,9 +2127,6 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
         if (order?.validationStatus === 'pending' && ['completed', 'cancelled', 'rejected'].includes(nextStatus)) {
           return res.status(409).json({ message: 'Return to Awaiting validation and confirm the order items before closing the validation task' });
         }
-        if (order?.validationStatus !== 'pending' && nextStatus === 'awaiting_validation') {
-          return res.status(409).json({ message: 'This order is already validated. Use Customer information to review it without duplicating production tasks' });
-        }
       }
     }
     if (!adminMove && workflowCase.requestType === 'order_validation' && workflowCase.orderId && ['completed', 'cancelled', 'rejected'].includes(nextStatus)) {
@@ -2245,6 +2245,9 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       } finally {
         await session.endSession();
       }
+    }
+    if (workflowCase.requestType === 'order_validation' && workflowCase.orderId && nextStatus === 'awaiting_validation') {
+      await Order.updateOne({ _id: workflowCase.orderId }, { $set: { validationStatus: 'pending', fulfillmentState: 'in_progress' } });
     }
     await workflowCase.save();
     if (nextStatus === 'printing' && selectedMachine) {

@@ -89,4 +89,13 @@ describe('administrator stage corrections', () => {
     expect(res.status).not.toHaveBeenCalled(); expect(task.assignedTeam).toBe('customer_service');
     expect(Order.updateOne).toHaveBeenCalledWith({_id:id},{$set:{fulfillmentState:'in_progress'}});
   });
+  test('returns an already-validated order validation task to awaiting_validation and resets order validationStatus', async () => {
+    task.requestType='order_validation'; task.orderId=id; task.status='completed'; req.body.status='awaiting_validation';
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'approved'}))} as any);
+    jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(async()=>[{status:'awaiting_validation'}])} as any);
+    jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
+    const res=response(); await transition(req,res);
+    expect(res.status).not.toHaveBeenCalled(); expect(task.assignedTeam).toBe('customer_service');
+    expect(Order.updateOne).toHaveBeenCalledWith({_id:id},{$set:{validationStatus:'pending',fulfillmentState:'in_progress'}});
+  });
 });
