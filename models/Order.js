@@ -113,6 +113,8 @@ const orderSchema = new mongoose.Schema({
   },
   operationsArchivedAt: { type: Date, default: null },
   operationsArchivedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+  // Set when an order waiting to be confirmed is archived: it is erased for good at this time.
+  archivePurgeAt: { type: Date, default: null, index: true },
   inventoryState: {
     // Existing orders remain untracked; newly created orders reserve inventory.
     type: String,

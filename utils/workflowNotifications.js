@@ -190,6 +190,7 @@ const startWorkflowDeadlineNotifier = app => {
 };
 
 module.exports = {
+  activeAdminIds,
   checkWorkflowDeadlines,
   notifyCaseAssignment,
   notifyFailedPrint,

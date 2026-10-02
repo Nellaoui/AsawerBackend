@@ -1,12 +1,14 @@
 // Employees are only told when a task arrives for them. Deadlines, blocks,
 // failed prints and removals stay visible in the portal itself. Staff the owner
 // allowed to approve phone changes also get those requests and the customer
-// activity report (only they are ever sent them).
+// activity report (only they are ever sent them). The boss is told when an
+// employee asks to archive an order (only bosses and admins are sent those).
 const EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES = [
   'new_task',
   'reassigned',
   'phone_change_request',
-  'customer_inactive'
+  'customer_inactive',
+  'archive_requested'
 ];
 
 const employeeActionableTypes = new Set(EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES);

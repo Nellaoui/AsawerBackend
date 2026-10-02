@@ -19,6 +19,7 @@ const { startWorkflowDeadlineNotifier } = require('./utils/workflowNotifications
 const { startInactivityNotifier } = require('./utils/customerPhoneService');
 const { startStepTimeTracker } = require('./utils/stepTimes');
 const { startBackupScheduler } = require('./utils/backupService');
+const { startArchivePurge } = require('./utils/archivePurge');
 const { installErrorMonitoring, monitorExpressError } = require('./utils/errorMonitor');
 const { ensureDefaultMachines } = require('./utils/machineRegistry');
 const { STAFF_ROOM, APP_ROOM, userRoom, isStaffUser, broadcastOnWrite, setLiveIo, broadcastCatalogsOnWrite } = require('./utils/liveUpdates');
@@ -77,6 +78,7 @@ db.once('open', () => {
   startWorkflowDeadlineNotifier(app);
   startInactivityNotifier(app);
   startBackupScheduler();
+  startArchivePurge();
 });
 
 // We'll create an HTTP server and attach Socket.IO so routes can use io via app.get('io')

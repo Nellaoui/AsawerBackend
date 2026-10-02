@@ -64,6 +64,15 @@ const workflowCaseSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false, index: true },
   archivedAt: { type: Date, default: null, index: true },
   archivedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+  // Incoming tasks archived by Customer Service or the boss are erased for good at this time.
+  archivePurgeAt: { type: Date, default: null, index: true },
+  // An employee who cannot archive asks the boss to.
+  archiveRequest: {
+    requestedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+    requestedByName: { type: String, trim: true, maxlength: 120, default: '' },
+    requestedAt: { type: Date, default: null },
+    reason: { type: String, trim: true, maxlength: 500, default: '' }
+  },
   blockedReason: { type: String, trim: true, maxlength: 1000, default: '' },
   blockedAt: { type: Date, default: null },
   blockedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
