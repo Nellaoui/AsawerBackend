@@ -321,9 +321,13 @@
     const show = (id, text='') => { const el=$(id); clearTimeout(noticeTimers[id]); el.textContent=text; el.style.display=text ? 'block' : 'none'; if(text&&id==='message') noticeTimers[id]=setTimeout(()=>{el.style.display='none';},4500); };
     async function api(path, options={}) {
       const headers = { 'Content-Type':'application/json', ...(options.headers || {}) };
+      // Another portal tab (or the workflow page around this one) may have renewed the sign-in.
+      try { const saved=localStorage.getItem('authToken'); if (state.token && saved) state.token=saved; } catch {}
       if (state.token) headers.Authorization = `Bearer ${state.token}`;
       const response = await fetch(`${API}${path}`, { ...options, headers });
       const data = await response.json().catch(() => ({}));
+      // An ended sign-in goes back to the sign-in screen instead of failing every action with "Token expired".
+      if (response.status === 401 && state.token && !path.startsWith('/auth/login')) { signOut(SIGNED_OUT); throw new Error(SIGNED_OUT); }
       if (!response.ok) {
         const error = new Error(data.message || `Request failed (${response.status})`);
         // Callers need the body of a 409 to open the product that already exists.
@@ -335,9 +339,17 @@
     }
     function setAuthenticated(value) { $('loginCard').hidden=value; $('workspace').hidden=!value; $('account').hidden=!value; }
     function signOut(message='') { state.token=''; state.user=null; localStorage.removeItem('authToken'); setAuthenticated(false); if(message) show('loginError',message); }
+    // The server hands out a fresh token on /auth/me, so a portal that stays open
+    // keeps its sign-in as long as it is used at least once a week.
+    const SIGNED_OUT = 'Your sign-in has ended. Please sign in again.';
+    let lastRenew = 0;
+    function keepToken(data) { if (!data?.token) return; state.token=data.token; lastRenew=Date.now(); try { localStorage.setItem('authToken',data.token); } catch {} }
+    async function renewSession() { if (!state.token || Date.now()-lastRenew < 60*60*1000) return; try { const data=await api('/auth/me'); keepToken(data); if (data.user) state.user=data.user; } catch {} }
+    setInterval(renewSession, 6*60*60*1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') renewSession(); });
     async function restoreSession() {
       if (!state.token) return setAuthenticated(false);
-      try { const data=await api('/auth/me'); state.user=data.user; enterWorkspace(); } catch { signOut('Please sign in again.'); }
+      try { const data=await api('/auth/me'); keepToken(data); state.user=data.user; enterWorkspace(); } catch { signOut('Please sign in again.'); }
     }
     function enterWorkspace() {
       // Stock control stays with stock staff and the boss. Customer service is
