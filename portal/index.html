@@ -106,6 +106,11 @@
     .button:focus-visible,a.button:focus-visible,input:focus-visible,select:focus-visible,.check:focus-within{outline:3px solid var(--gold);outline-offset:3px}
     .toolbar:focus-within{border-color:#f0c75e88}.toolbar>input:focus-visible{outline-offset:0;border-radius:8px}
     @media(max-width:900px){.button,.button.small,a.button{min-height:44px;font-size:.875rem;display:inline-flex;align-items:center;justify-content:center}}
+    /* - and + next to a quantity, so staff change it by one without typing. */
+    .stepper{display:flex;align-items:stretch;gap:6px;max-width:220px}.stepper input{flex:1;min-width:52px;padding:8px 4px;text-align:center;font-weight:700;-moz-appearance:textfield;appearance:textfield}.stepper input::-webkit-inner-spin-button,.stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+    .step-btn{flex:none;width:44px;min-height:44px;border:1px solid #3a4558;border-radius:10px;background:#1b2330;color:#fff;font-size:1.4rem;font-weight:800;line-height:1;touch-action:manipulation}.step-btn:hover:not(:disabled){border-color:var(--gold)}.step-btn:active:not(:disabled){transform:scale(.94)}.step-btn:disabled{opacity:.35;cursor:default}.step-btn:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+    .variant-table td:nth-child(2){min-width:160px}.size-entry>.field{display:grid;gap:7px;font-weight:650}
+    @media(max-width:620px){.variant-table th,.variant-table td{padding:10px 5px}.variant-table th{letter-spacing:0;font-size:.68rem}.variant-table td:nth-child(2){min-width:0}.variant-table .stepper{gap:4px}.variant-table .stepper input{min-width:40px;width:40px}.variant-table .step-btn{width:40px}}
     @media(prefers-reduced-transparency:reduce){header{backdrop-filter:none;background:#090d13}}
     @media(prefers-contrast:more){:root{--muted:#d8e0ec;--line:#7b8797}.card,.panel,.toolbar{border-color:var(--line)}.button.secondary{border-color:#9ca9ba}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
@@ -255,7 +260,7 @@
       <div class="modal-body">
         <div id="stockError" class="error"></div>
         <label>Action<select id="action"><option value="receive">Add units</option><option value="remove">Remove units</option><option value="set">Set exact total</option></select></label>
-        <label>Quantity<input id="quantity" type="number" min="0" step="1" required></label>
+        <label for="quantity">Quantity<div class="stepper"><button type="button" class="step-btn" data-step="-1" aria-label="One less">−</button><input id="quantity" type="number" min="0" step="1" inputmode="numeric" required><button type="button" class="step-btn" data-step="1" aria-label="One more">+</button></div></label>
         <div class="two"><label>Low-stock warning<input id="threshold" type="number" min="0" step="1"></label><label>Storage location<input id="location" maxlength="120" placeholder="Shelf A-03"></label></div>
         <label>Reference or note<input id="notes" maxlength="500" placeholder="Supplier delivery or receipt number"></label>
         <p id="preview" class="muted"></p>
@@ -298,7 +303,7 @@
       <div id="sizeStockError" class="error" aria-live="assertive"></div>
       <label>Production method<select id="sizeStockMethod"><option value="wax">Wax</option><option value="resin">Resin</option></select></label>
       <div class="table-wrap"><table class="variant-table"><thead><tr><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
-      <p class="muted">Type how many pieces are on the shelf for each size, then save. Use + Add size for a size that is not listed.</p>
+      <p class="muted">Use − and + or type how many pieces are on the shelf for each size, then save. Use + Add size for a size that is not listed.</p>
     </div>
     <div class="modal-foot"><button id="addVariant" type="button" class="button secondary">+ Add size</button><button id="closeVariants" type="button" class="button secondary">Cancel</button><button id="saveSizeStock" type="submit" class="button">Save quantities</button></div>
     </form>
@@ -486,8 +491,9 @@ Cancel = hidden (private)`);
     function addProductSizeRow(size='',quantity=0,locked=false){
       const row=document.createElement('div');
       row.className='size-entry'+(locked?' locked':'');
-      row.innerHTML='<label>Size<input data-product-size list="commonProductSizes" maxlength="80" placeholder="54" value="'+escapeHtml(size)+'"'+(locked?' readonly':'')+'></label><label data-create-stock>Starting quantity<input data-product-quantity type="number" min="0" step="1" value="'+escapeHtml(quantity)+'"></label>'+(locked?'':'<button class="button secondary small" type="button" data-remove-size aria-label="Remove size">Remove</button>');
+      row.innerHTML='<label>Size<input data-product-size list="commonProductSizes" maxlength="80" placeholder="54" value="'+escapeHtml(size)+'"'+(locked?' readonly':'')+'></label><div class="field" data-create-stock>Starting quantity'+stepperHtml('<input data-product-quantity type="number" min="0" step="1" inputmode="numeric" value="'+escapeHtml(quantity)+'" aria-label="Starting quantity">','starting quantity')+'</div>'+(locked?'':'<button class="button secondary small" type="button" data-remove-size aria-label="Remove size">Remove</button>');
       $('productSizeRows').append(row);
+      syncSteppers(row);
     }
     function renderProductSizeRows(sizes=[],locked=false){
       $('productSizeRows').replaceChildren();
@@ -777,9 +783,12 @@ Cancel = hidden (private)`);
     function renderHistory(items) {
       $('history').innerHTML=items.length ? items.map(m => { const product=typeof m.productId==='object'?m.productId:null; const actor=typeof m.actorId==='object'?m.actorId:null; return `<li><div><strong>${escapeHtml(product?.name || 'Product')} · ${escapeHtml(m.type.replaceAll('_',' '))}</strong><br><span class="muted">${m.stockBefore} → ${m.stockAfter}${actor?.name?' · '+escapeHtml(actor.name):''}${m.notes?'<br>'+escapeHtml(m.notes):''}</span></div><div style="text-align:right"><strong class="${m.quantity<0?'negative':'positive'}">${m.quantity>0?'+':''}${m.quantity}</strong><br><small class="muted">${new Date(m.createdAt).toLocaleString('en-GB',{timeZone:'Africa/Casablanca',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'})}</small></div></li>`; }).join('') : '<li class="muted">No stock history yet.</li>';
     }
-    function openStock(product,mode) { state.selected=product; $('dialogTitle').textContent=mode==='receive'?'Add stock':'Adjust stock'; $('dialogProduct').textContent=`${product.name} · ${product.serialNumber} · ${product.stock} available`; $('action').value=mode==='receive'?'receive':'set'; $('action').disabled=mode==='receive'; $('quantity').value=mode==='receive'?'1':String(product.stock); $('threshold').value=String(product.lowStockThreshold); $('location').value=product.stockLocation || ''; $('notes').value=''; show('stockError'); updatePreview(); $('stockDialog').showModal(); }
+    function openStock(product,mode) { state.selected=product; $('dialogTitle').textContent=mode==='receive'?'Add stock':'Adjust stock'; $('dialogProduct').textContent=`${product.name} · ${product.serialNumber} · ${product.stock} available`; $('action').value=mode==='receive'?'receive':'set'; $('action').disabled=mode==='receive'; $('quantity').value=mode==='receive'?'1':String(product.stock); $('threshold').value=String(product.lowStockThreshold); $('location').value=product.stockLocation || ''; $('notes').value=''; show('stockError'); updatePreview(); syncSteppers($('stockDialog')); $('stockDialog').showModal(); }
     function openProduction(product) { state.selected=product; $('productionProduct').textContent=`${product.name} · ${product.serialNumber}`; $('fulfillmentPolicy').value=product.fulfillmentPolicy || 'stock_then_print'; $('printMethod').value=product.printMethod || 'none'; show('productionError'); $('productionDialog').showModal(); }
     function openDamage(product) { state.selected=product; $('damageProduct').textContent=`${product.name} · ${product.serialNumber}`; $('damageQuantity').value='1'; $('damageOrder').value=''; $('damageNotes').value=''; show('damageError'); $('damageDialog').showModal(); }
+    const stepperHtml=(input,label)=>`<div class="stepper"><button type="button" class="step-btn" data-step="-1" aria-label="One less ${label}">−</button>${input}<button type="button" class="step-btn" data-step="1" aria-label="One more ${label}">+</button></div>`;
+    // Minus switches off at the lowest allowed number (0, or the reserved pieces).
+    function syncSteppers(root){for(const input of root.querySelectorAll('.stepper input')){const min=Number(input.min||0),value=Number(input.value);input.closest('.stepper').querySelector('[data-step="-1"]').disabled=input.disabled||input.readOnly||(Number.isFinite(value)&&value<=min)}}
     const sizeKeyOf=size=>String(size||'').trim().replace(',','.').toUpperCase().replace(/\s+/g,' ').replace(/\.0+$/,'');
     function sizeRowsFor(product,method){
       const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method);
@@ -790,11 +799,12 @@ Cancel = hidden (private)`);
     }
     function sizeRowHtml(row,isNew=false){
       const sizeCell=isNew?'<input data-new-size maxlength="80" placeholder="54" aria-label="New size">':`<strong>${escapeHtml(row.size)}</strong>`;
-      return `<tr data-size-row data-size="${escapeHtml(row.size)}" data-original="${isNew?'':row.onHand}"><td>${sizeCell}</td><td><input data-size-qty type="number" min="${row.reserved}" step="1" value="${row.onHand}" aria-label="On hand for size ${escapeHtml(row.size||'new')}" style="max-width:110px"></td><td style="color:var(--blue);font-weight:700">${row.reserved}</td><td><span class="stock ${row.onHand-row.reserved<=0?'out':''}">${Math.max(row.onHand-row.reserved,0)}</span></td></tr>`;
+      return `<tr data-size-row data-size="${escapeHtml(row.size)}" data-original="${isNew?'':row.onHand}" data-reserved="${row.reserved}"><td>${sizeCell}</td><td>${stepperHtml(`<input data-size-qty type="number" min="${row.reserved}" step="1" inputmode="numeric" value="${row.onHand}" aria-label="On hand for size ${escapeHtml(row.size||'new')}">`,`for size ${escapeHtml(row.size||'new')}`)}</td><td style="color:var(--blue);font-weight:700">${row.reserved}</td><td><span data-size-available class="stock ${row.onHand-row.reserved<=0?'out':''}">${Math.max(row.onHand-row.reserved,0)}</span></td></tr>`;
     }
     function renderSizeRows(){
       const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value);
       $('variantsBody').innerHTML=rows.map(row=>sizeRowHtml(row)).join('')||'<tr data-empty><td colspan="4" class="muted">No sizes yet. Use + Add size.</td></tr>';
+      syncSteppers($('variantsBody'));
     }
     function openVariants(product) {
       state.selected=product; show('sizeStockError');
@@ -806,6 +816,7 @@ Cancel = hidden (private)`);
     function addVariant() {
       $('variantsBody').querySelector('[data-empty]')?.remove();
       $('variantsBody').insertAdjacentHTML('beforeend',sizeRowHtml({size:'',onHand:0,reserved:0},true));
+      syncSteppers($('variantsBody').lastElementChild);
       $('variantsBody').lastElementChild.querySelector('[data-new-size]').focus();
     }
     function updatePreview() { const p=state.selected,q=Number($('quantity').value),a=$('action').value; if(!p || !Number.isFinite(q)) return $('preview').textContent=''; const after=a==='set'?q:p.stock+(a==='receive'?q:-q); $('preview').textContent=`Available now: ${p.stock} → after saving: ${after}`; }
@@ -822,6 +833,16 @@ Cancel = hidden (private)`);
     $('productionForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const policy=$('fulfillmentPolicy').value;const method=$('printMethod').value;if(policy!=='stock_only'&&method==='none')return show('productionError','Choose wax or resin for a printable product.');const button=event.submitter;button.disabled=true;try{await api(`/workflow/products/${p.productId}/production`,{method:'PATCH',body:JSON.stringify({fulfillmentPolicy:policy,printMethod:method})});$('productionDialog').close();show('message',`${p.name} production rule saved.`);await loadInventory();}catch(error){show('productionError',error.message)}finally{button.disabled=false}});
     $('cancelDamage').addEventListener('click',()=>$('damageDialog').close());
     $('sizeStockMethod').addEventListener('change',renderSizeRows);
+    document.addEventListener('click',event=>{
+      const button=event.target.closest('.stepper [data-step]');if(!button)return;
+      const input=button.parentElement.querySelector('input');if(input.disabled||input.readOnly)return;
+      const min=Number(input.min||0),max=input.max===''?Infinity:Number(input.max),now=Math.trunc(Number(input.value));
+      input.value=String(Math.min(max,Math.max(min,(Number.isFinite(now)?now:min)+Number(button.dataset.step))));
+      input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    document.addEventListener('input',event=>{const box=event.target.closest?.('.stepper');if(box)syncSteppers(box.parentElement)});
+    // Available follows On hand while staff count, before saving.
+    $('variantsBody').addEventListener('input',event=>{const row=event.target.closest('[data-size-row]');if(!row||!event.target.matches('[data-size-qty]'))return;const free=Math.max(Number(event.target.value)-Number(row.dataset.reserved||0),0);const pill=row.querySelector('[data-size-available]');if(Number.isFinite(free)){pill.textContent=free;pill.classList.toggle('out',free<=0)}});
     $('sizeStockForm').addEventListener('submit',async event=>{
       event.preventDefault(); show('sizeStockError');
       const sizes=[];
