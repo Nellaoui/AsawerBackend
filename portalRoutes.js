@@ -20,6 +20,11 @@ router.get('/product-options.js', (req, res) => {
   res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'productOptions.js'));
 });
+// Shop working hours, shared with the backend step timer.
+router.get('/working-time.js', (req, res) => {
+  res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'workingTime.js'));
+});
 router.get('/workflow', servePortal('workflow.html'));
 router.get('/inventory-embed', (req, res, next) => {
   if (req.query.embedded !== '1') return res.redirect(302, '/admin/workflow');

@@ -36,7 +36,8 @@ const {
   validateTransition,
   skippedStepError
 } = require('../utils/workflowRules');
-const { effectiveDeadline, stepTimesSnapshot, MIN_SAMPLES } = require('../utils/stepTimes');
+const { effectiveDeadline, lateMinutes: stepLateMinutes, stepTimesSnapshot, MIN_SAMPLES } = require('../utils/stepTimes');
+const { stepMinutes } = require('../utils/workingTime');
 
 const router = express.Router();
 
@@ -866,7 +867,7 @@ router.get('/analytics', operationsAuth, async (req, res) => {
           orderId: item.orderId?._id || item.orderId || null,
           orderSubmittedAt: item.orderId?.createdAt || null,
           deadlineAt: deadline,
-          lateMinutes: minutesBetween(deadline, now),
+          lateMinutes: stepLateMinutes(item, deadline, now),
           startedAt: item.startedAt,
           priority: item.priority
         });
@@ -892,7 +893,11 @@ router.get('/analytics', operationsAuth, async (req, res) => {
     for (const item of timedCases) {
       for (const event of item.history || []) {
         if (event.workMinutes === null || event.workMinutes === undefined) continue;
-        const minutes = Number(event.workMinutes || 0);
+        // Work time in shop working hours (printing keeps the full clock).
+        const finishedAt = event.createdAt ? new Date(event.createdAt).getTime() : NaN;
+        const minutes = Number.isFinite(finishedAt)
+          ? stepMinutes(event.fromStatus, finishedAt - Number(event.workMinutes || 0) * 60000, finishedAt) || 0
+          : Number(event.workMinutes || 0);
         const metric = employeeMap.get(String(event.actorId?._id || event.actorId));
         if (metric) {
           metric.completedSteps += 1;

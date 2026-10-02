@@ -33,6 +33,13 @@ describe('public operations portal pages', () => {
     expect(html).toContain("/admin/inventory-embed?embedded=1");
   });
 
+  test('serves the shop working hours script the portal times steps with', async () => {
+    const response = await fetch(`${baseUrl}/admin/working-time.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/javascript/);
+    expect(await response.text()).toContain('root.WorkingTime = api');
+  });
+
   test('serves the embedded product management page', async () => {
     const response = await fetch(`${baseUrl}/admin/inventory-embed?embedded=1`);
     expect(response.status).toBe(200);
