@@ -61,6 +61,7 @@ const WORKFLOW_STAGE_FILTERS = {
   printing: ['ready_to_print', 'printing'],
   quality: ['quality_check'],
   packing: ['packing'],
+  ready_orders: ['completed'],
   ready: ['completed']
 };
 const TEAM_BY_WORK_ROLE = Object.fromEntries(
@@ -575,6 +576,9 @@ router.get('/cases', operationsAuth, async (req, res) => {
         return res.status(400).json({ message: 'Invalid workflow stage' });
       }
       filter.status = { $in: WORKFLOW_STAGE_FILTERS[stage] };
+      // An order is ready only once its packing task is done; other finished
+      // tasks are steps of orders that may still be printing.
+      if (stage === 'ready_orders') filter.requestType = 'pack_order';
     } else if (req.query.status) filter.status = String(req.query.status);
     else if (req.query.active === 'true') filter.status = ACTIVE_STATUSES;
     if (scope === 'mine' && req.query.status === 'completed') {
