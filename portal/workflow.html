@@ -159,12 +159,12 @@
     .notification-copy .notification-open{display:inline;color:var(--gold);font-size:.8rem;font-weight:750}.notification-copy .notification-open span{display:inline;color:inherit}
     .notification-time{font-size:.75rem;font-variant-numeric:tabular-nums}
     @media(max-width:700px){.notification-head .notification-filter{width:100%}.notification-filter button{flex:1}.notification-row{grid-template-columns:12px 1fr}.notification-time{grid-column:2}}
-    /* Sent to printing: green so staff see at a glance the product is on the machine. */
-    .task.job.in-print,.task.job.in-print:hover{border-color:#22c55e;background:linear-gradient(120deg,#0e2619,#0b1712);box-shadow:inset 5px 0 #22c55e,0 10px 28px #0003}
-    .task.job.in-print .number{background:#22c55e;color:#052e16;border-color:#0b1712}
-    .print-state{display:inline-flex;align-items:center;gap:7px;margin-bottom:6px;padding:4px 11px;border:1px solid #22c55e66;border-radius:999px;background:#14532d;color:#dcfce7;font-size:.8rem;font-weight:800}
-    .print-state::before{content:"";width:8px;height:8px;border-radius:50%;background:#4ade80;box-shadow:0 0 0 3px #4ade8033}
-    .workflow-stage.current.printing{background:#166534;color:#dcfce7;box-shadow:inset 0 0 0 1px #22c55e}
+    /* Sent to printing: blue so staff see at a glance the product is on the machine. Green stays for finished steps. */
+    .task.job.in-print,.task.job.in-print:hover{border-color:#3b82f6;background:linear-gradient(120deg,#0e1a30,#0b1220);box-shadow:inset 5px 0 #3b82f6,0 10px 28px #0003}
+    .task.job.in-print .number{background:#3b82f6;color:#0b1a3a;border-color:#0b1220}
+    .print-state{display:inline-flex;align-items:center;gap:7px;margin-bottom:6px;padding:4px 11px;border:1px solid #3b82f666;border-radius:999px;background:#1e3a8a;color:#dbeafe;font-size:.8rem;font-weight:800}
+    .print-state::before{content:"";width:8px;height:8px;border-radius:50%;background:#60a5fa;box-shadow:0 0 0 3px #60a5fa33}
+    .workflow-stage.current.printing{background:#1d4ed8;color:#dbeafe;box-shadow:inset 0 0 0 1px #3b82f6}
   </style>
 </head>
 <body>
