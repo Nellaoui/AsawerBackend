@@ -31,6 +31,7 @@ const response = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() })
 const cases = [
   {
     _id: ids.caseDone,
+    requestType: 'pack_order',
     requestedName: 'Gold ring',
     status: 'completed',
     assignedTeam: 'packing',
@@ -87,6 +88,21 @@ describe('find a task across the pipeline', () => {
     expect(results[0].customer).toEqual({ name: 'Amina', email: 'amina@test.com' });
     expect(caseFilter.$or).toEqual(expect.arrayContaining([{ orderId: { $in: [ids.order] } }]));
     expect(caseFilter.createdAt).toBeDefined();
+  });
+
+  test('a finished stock check or confirmation never reads as a ready order while its product is still printing', async () => {
+    const order = cases[1].orderId;
+    (WorkflowCase.find as jest.Mock).mockImplementation(() => query([
+      { ...cases[1], isBlocked: false, blockedReason: '' },
+      { _id: 'stock', requestType: 'stock_pick', requestedName: 'Gold ring', status: 'completed', assignedTeam: 'none', orderId: order, updatedAt: new Date('2026-09-28T10:00:00Z') },
+      { _id: 'confirm', requestType: 'order_validation', requestedName: 'Validate order ORD-1042', status: 'completed', assignedTeam: 'none', orderId: order, updatedAt: new Date('2026-09-26T10:00:00Z') },
+      { _id: 'quality', requestType: 'print_required', requestedName: 'Gold ring', status: 'completed', assignedTeam: 'none', orderId: order, updatedAt: new Date('2026-09-25T10:00:00Z') },
+      { _id: 'extra', taskKind: 'extra', requestType: 'general_task', requestedName: 'Clean display', status: 'completed', assignedTeam: 'none', orderId: order, updatedAt: new Date('2026-09-24T10:00:00Z') }
+    ]));
+    const res = response();
+    await findTasks({ query: { q: 'ord-1042' }, user: { id: 'cs-id', role: 'employee', workRole: 'customer_service' } }, res);
+    const { results } = res.json.mock.calls[0][0];
+    expect(results.map((item: any) => item.stage)).toEqual(['Printing', 'Stock check done', 'Order confirmed', 'Printed and checked', 'Done']);
   });
 
   test('matches the short order code the portal shows', async () => {

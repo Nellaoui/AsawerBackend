@@ -658,6 +658,17 @@ const FIND_STAGE_LABELS = {
   rejected: 'Rejected',
   cancelled: 'Cancelled'
 };
+// A finished task names the step it finished. Only the packing task means the
+// whole order is ready: a finished stock check or confirmation says nothing
+// about the printing still going on for the same product.
+const findStageLabel = (item) => {
+  if (item.status !== 'completed') return FIND_STAGE_LABELS[item.status] || item.status;
+  if (item.requestType === 'pack_order') return FIND_STAGE_LABELS.completed;
+  if (item.requestType === 'order_validation') return 'Order confirmed';
+  if (item.requestType === 'stock_pick') return 'Stock check done';
+  if (item.taskKind === 'extra' || item.requestType === 'general_task') return 'Done';
+  return 'Printed and checked';
+};
 const TEAM_LABELS = {
   stock: 'Stock',
   customer_service: 'Customer Service',
@@ -709,7 +720,7 @@ router.get('/find', operationsAuth, async (req, res) => {
     if (customerOrderIds.length) matches.push({ orderId: { $in: customerOrderIds } });
 
     const found = await WorkflowCase.find({ ...visibleTaskFilter(), $or: matches })
-      .select('orderId productId customerId customer requestedName quantity status assignedTeam assignedTo isBlocked blockedReason archivedAt priority deadlineAt targetMinutes assignedAt stageQueuedAt productionMethod print.machineId createdAt updatedAt')
+      .select('orderId productId customerId customer requestType taskKind requestedName quantity status assignedTeam assignedTo isBlocked blockedReason archivedAt priority deadlineAt targetMinutes assignedAt stageQueuedAt productionMethod print.machineId createdAt updatedAt')
       .populate('orderId', 'orderNumber userId')
       .populate('productId', 'name serialNumber imageUrl stockLocation')
       .populate('assignedTo', 'name email')
@@ -734,7 +745,7 @@ router.get('/find', operationsAuth, async (req, res) => {
         product: product ? { name: product.name, serialNumber: product.serialNumber || '', imageUrl: product.imageUrl || '', stockLocation: product.stockLocation || '' } : null,
         customer: customer ? { name: customer.name || '', email: customer.email || '' } : null,
         status: item.status,
-        stage: FIND_STAGE_LABELS[item.status] || item.status,
+        stage: findStageLabel(item),
         team: item.assignedTeam,
         teamLabel: TEAM_LABELS[item.assignedTeam] || item.assignedTeam,
         assignedTo: item.assignedTo && typeof item.assignedTo === 'object' ? { name: item.assignedTo.name || item.assignedTo.email || '' } : null,
