@@ -588,7 +588,8 @@ router.get('/cases', operationsAuth, async (req, res) => {
         { 'history.actorId': { $in: participantIds } }
       ];
     }
-    if (req.query.method) filter.productionMethod = String(req.query.method);
+    const method = String(req.query.method || '');
+    if (method && !['wax', 'resin'].includes(method)) filter.productionMethod = method;
     if (req.query.taskKind && ['order', 'extra'].includes(String(req.query.taskKind))) filter.taskKind = String(req.query.taskKind);
     if (req.query.orderId && mongoose.Types.ObjectId.isValid(req.query.orderId)) filter.orderId = req.query.orderId;
     if (req.query.customerId) {
@@ -622,6 +623,20 @@ router.get('/cases', operationsAuth, async (req, res) => {
       } else {
         filter.$or = searchFilter;
       }
+    }
+    if (['wax', 'resin'].includes(method)) {
+      // A packing task covers the whole order and has no print method of its
+      // own: it matches when the order's items use this method and not the other.
+      const otherMethod = method === 'wax' ? 'resin' : 'wax';
+      const methodOrderIds = await Order.find({
+        $and: [{ 'items.productionMethod': method }, { 'items.productionMethod': { $ne: otherMethod } }]
+      }).distinct('_id');
+      filter.$and = [...(filter.$and || []), {
+        $or: [
+          { productionMethod: method },
+          ...(methodOrderIds.length ? [{ requestType: 'pack_order', orderId: { $in: methodOrderIds } }] : [])
+        ]
+      }];
     }
 
     const [caseDocuments, total] = await Promise.all([
