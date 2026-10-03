@@ -651,15 +651,25 @@ router.get('/cases', operationsAuth, async (req, res) => {
       }];
     }
 
-    const [caseDocuments, total] = await Promise.all([
-      populateCase(WorkflowCase.find(filter).sort(taskSort).skip((page - 1) * limit).limit(limit)),
-      WorkflowCase.countDocuments(filter)
-    ]);
+    // A page holds whole orders, not product tasks: one order with many
+    // products used to fill a page and push every other order to later pages.
+    const rows = await WorkflowCase.find(filter).sort(taskSort).select('_id orderId').lean();
+    const orderGroups = new Map();
+    for (const row of rows) {
+      const key = row.orderId ? `order:${row.orderId}` : `task:${row._id}`;
+      if (!orderGroups.has(key)) orderGroups.set(key, []);
+      orderGroups.get(key).push(row._id);
+    }
+    const pageIds = [...orderGroups.values()].slice((page - 1) * limit, page * limit).flat();
+    const caseDocuments = pageIds.length
+      ? await populateCase(WorkflowCase.find({ _id: { $in: pageIds } }).sort(taskSort))
+      : [];
     const cases = await hydrateCaseCustomers(caseDocuments);
+    const orders = orderGroups.size;
 
     res.json({
       cases,
-      pagination: { page, limit, total, pages: Math.max(Math.ceil(total / limit), 1) }
+      pagination: { page, limit, total: rows.length, orders, pages: Math.max(Math.ceil(orders / limit), 1) }
     });
   } catch (error) {
     console.error('Error fetching workflow cases:', error);
