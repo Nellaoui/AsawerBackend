@@ -74,7 +74,7 @@ const ALLOWED_TRANSITIONS = {
   file_validation: ['needs_customer_info', 'modeling', 'ready_to_print', 'rejected', 'cancelled'],
   ready_to_print: ['printing', 'modeling', 'cancelled'],
   printing: ['quality_check', 'ready_to_print', 'cancelled'],
-  quality_check: ['completed', 'ready_to_print', 'modeling', 'cancelled'],
+  quality_check: ['packing', 'ready_to_print', 'modeling', 'cancelled'],
   packing: ['completed', 'cancelled'],
   completed: [],
   rejected: [],

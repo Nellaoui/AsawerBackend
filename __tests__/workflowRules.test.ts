@@ -58,7 +58,7 @@ describe('order exception workflow rules', () => {
   test('keeps failed quality work inside the same case for a reprint', () => {
     const qualityCase = makeCase({ status: 'quality_check', productionMethod: 'resin' });
     expect(validateTransition(qualityCase, 'ready_to_print')).toBeNull();
-    expect(validateTransition(qualityCase, 'completed')).toBeNull();
+    expect(validateTransition(qualityCase, 'packing')).toBeNull();
   });
 
   test('accepts exact reprint parts and quantities, and rejects ambiguous requests', () => {

@@ -243,9 +243,11 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     : (openCases.length ? 'in_progress' : 'ready');
 
     if (!openCases.length) {
+    // Lines that passed quality already went to packing one by one, so no extra pack task is needed.
+    const linesWentToPacking = await WorkflowCase.exists({ orderId, requestType: { $ne: 'pack_order' }, 'history.toStatus': 'packing' });
     // A packing task the boss cancelled because it opened too early does not count.
     const existingPackingTask = await WorkflowCase.findOne({ orderId, requestType: 'pack_order', status: { $ne: 'cancelled' } }).select('_id status');
-    if (!existingPackingTask) {
+    if (!existingPackingTask && !linesWentToPacking) {
       const order = await Order.findById(orderId).select('items workflowCaseIds');
       if (order) {
         const assignedTo = await findTeamAssignee('packing');

@@ -23,7 +23,7 @@ describe.each([
     expect(validateTransition({ status: 'ready_to_print', productionMethod }, 'printing')).toBeNull();
     expect(validateTransition({ status: 'printing', productionMethod }, 'quality_check')).toBeNull();
     expect(teamForStatus('quality_check')).toBe('quality');
-    expect(validateTransition({ status: 'quality_check', productionMethod }, 'completed')).toBeNull();
+    expect(validateTransition({ status: 'quality_check', productionMethod }, 'packing')).toBeNull();
 
     // Packing is created only after the stock and print cases are completed.
     expect(teamForStatus('packing')).toBe('packing');
