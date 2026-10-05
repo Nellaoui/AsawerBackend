@@ -8,6 +8,7 @@ const Order = require('../models/Order');
 const WorkflowCase = require('../models/WorkflowCase');
 const StockVariant = require('../models/StockVariant');
 const StockOrphan = require('../models/StockOrphan');
+const Wishlist = require('../models/Wishlist');
 const SizePreset = require('../models/SizePreset');
 const User = require('../models/User');
 const { operationsAuth } = require('../middlewares/auth');
@@ -905,6 +906,40 @@ router.patch('/products/:id/variants/:variantId', operationsAuth, inventoryRoleA
   } catch (error) {
     console.error('Error updating stock size:', error);
     res.status(500).json({ message: 'Failed to update stock size' });
+  }
+});
+
+// DELETE /api/inventory/products/:id - Remove a product nobody has ordered.
+// A product that appears in an order or a task is kept, so past orders still
+// show what was bought.
+router.delete('/products/:id', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+  try {
+    const product = await Product.findById(req.params.id).select('_id name');
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const [inOrder, inTask] = await Promise.all([
+      Order.exists({ 'items.productId': product._id }),
+      WorkflowCase.exists({ productId: product._id })
+    ]);
+    if (inOrder || inTask) {
+      return res.status(409).json({
+        message: `${product.name} is used by past orders or tasks, so it cannot be deleted. Move it to another catalogue instead.`
+      });
+    }
+
+    await Product.deleteOne({ _id: product._id });
+    await Promise.all([
+      Catalog.updateMany({ products: product._id }, { $pull: { products: product._id } }),
+      StockVariant.updateMany({ productIds: product._id }, { $pull: { productIds: product._id } }),
+      Wishlist.deleteMany({ productId: product._id })
+    ]);
+    res.json({ message: 'Product deleted', productId: String(product._id) });
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ message: 'Failed to delete the product' });
   }
 });
 
