@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { isTabletAccount } = require('../utils/customerTablet');
-const { MESSAGES, isPhoneLockedAccount, visitUpdate } = require('../utils/customerPhones');
+const { MESSAGES, isPhoneLockEnabled, isPhoneLockedAccount, visitUpdate } = require('../utils/customerPhones');
 const { getRequireApp } = require('../utils/customerPhoneService');
 
 // A shop tablet account keeps no admin rights: everywhere it counts as a plain
@@ -128,12 +128,12 @@ const auth = async (req, res, next) => {
 
     const customer = !decoded.isImpersonated && isPhoneLockedAccount(user);
     // The account was moved to another phone: this phone's session ends.
-    if (customer && decoded.did && user.boundDeviceId && decoded.did !== user.boundDeviceId) {
+    if (customer && isPhoneLockEnabled() && decoded.did && user.boundDeviceId && decoded.did !== user.boundDeviceId) {
       return res.status(401).json({ code: 'PHONE_CHANGED', message: MESSAGES.phoneMoved });
     }
     // Once the owner turns the phone lock on, sessions that never named a phone
     // (old app versions, the website) have to sign in again.
-    if (customer && !decoded.did && await getRequireApp()) {
+    if (customer && isPhoneLockEnabled() && !decoded.did && await getRequireApp()) {
       return res.status(401).json({ code: 'APP_UPDATE_REQUIRED', message: MESSAGES.needsApp });
     }
 

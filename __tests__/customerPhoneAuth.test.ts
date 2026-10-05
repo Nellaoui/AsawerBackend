@@ -15,6 +15,9 @@ describe('a customer session on a phone that is no longer linked', () => {
   let next: jest.Mock;
   const request = () => ({ header: jest.fn(() => 'Bearer signed-token') });
 
+  beforeAll(() => { process.env.PHONE_LOCK_ENABLED = 'true'; });
+  afterAll(() => { delete process.env.PHONE_LOCK_ENABLED; });
+
   beforeEach(() => {
     jest.clearAllMocks();
     user = { _id: 'customer-id', email: 'client@example.test', role: 'user', isAdmin: false, isActive: true, boundDeviceId: 'android:new' };

@@ -12,6 +12,8 @@ const customer = (extra = {}) => ({ _id: 'c1', role: 'user', isAdmin: false, ema
 const DAY = 24 * 60 * 60 * 1000;
 
 describe('one phone per customer account', () => {
+  beforeAll(() => { process.env.PHONE_LOCK_ENABLED = 'true'; });
+  afterAll(() => { delete process.env.PHONE_LOCK_ENABLED; });
   const phone = { deviceId: 'android:aaa', deviceName: 'Samsung A51', platform: 'android' };
 
   test('the first phone is remembered', () => {
@@ -99,5 +101,14 @@ describe('customer visits', () => {
     expect(visitUpdate(new Date(now.getTime() - 31 * 60 * 1000), now)).toHaveProperty('$inc');
     expect(visitUpdate(new Date(now.getTime() - 10 * 60 * 1000), now)).toEqual({ $set: { lastSeenAt: now } });
     expect(visitUpdate(new Date(now.getTime() - 60 * 1000), now)).toBeNull();
+  });
+});
+
+describe('phone lock paused (default)', () => {
+  it('lets every customer sign in from any phone, the website or an old app', () => {
+    delete process.env.PHONE_LOCK_ENABLED;
+    const bound = customer({ boundDeviceId: 'android:aaa' });
+    expect(decidePhoneSignIn({ user: bound, device: { deviceId: 'android:bbb', platform: 'android' }, requireApp: true })).toBe('allow');
+    expect(decidePhoneSignIn({ user: bound, device: { platform: 'web' }, requireApp: true })).toBe('allow');
   });
 });

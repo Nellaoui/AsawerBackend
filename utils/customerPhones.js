@@ -25,6 +25,10 @@ const deviceFromBody = (body = {}) => {
   };
 };
 
+// The one-phone lock is paused: every customer can sign in from any phone, the
+// website or an old app. Set PHONE_LOCK_ENABLED=true on the server to bring it back.
+const isPhoneLockEnabled = () => process.env.PHONE_LOCK_ENABLED === 'true';
+
 const roleOf = user => (user?.isAdmin ? 'admin' : (user?.role || 'user'));
 
 // Only customers are tied to a phone: never admins, employees or the shop tablet.
@@ -38,7 +42,7 @@ const isPhoneLockedAccount = user => Boolean(user) && roleOf(user) === 'user' &&
 //   needs_app  refused: the app is too old to say which phone it is
 //   web        refused: customers must use the phone app
 const decidePhoneSignIn = ({ user, device = {}, requireApp = false }) => {
-  if (!isPhoneLockedAccount(user)) return 'allow';
+  if (!isPhoneLockEnabled() || !isPhoneLockedAccount(user)) return 'allow';
   if (!device.deviceId) {
     if (!requireApp) return 'allow';
     return device.platform === 'web' ? 'web' : 'needs_app';
@@ -96,6 +100,7 @@ module.exports = {
   decidePhoneSignIn,
   deviceFromBody,
   isManagerAccount,
+  isPhoneLockEnabled,
   isPhoneLockedAccount,
   isQuiet,
   quietSince,
