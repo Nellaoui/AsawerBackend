@@ -628,6 +628,29 @@ router.get('/cases', operationsAuth, async (req, res) => {
       const pattern = new RegExp(escapeRegExp(searchValue), 'i');
       const searchFilter = [{ requestedName: pattern }, { requirements: pattern }, { 'customer.name': pattern }, { 'customer.email': pattern }];
       if (mongoose.Types.ObjectId.isValid(searchValue)) searchFilter.push({ orderId: searchValue });
+      // Staff see the product reference and the order number on every card,
+      // so typing either one must find the task, not only the task name.
+      // One character would match most products, so it only searches task names.
+      if (searchValue.length >= 2) {
+        // Older orders have no number; cards show "#" + the last 6 characters of the id.
+        const idTail = /^[0-9a-f]{4,24}$/i.test(searchValue) ? searchValue.toLowerCase() : null;
+        const [searchProductIds, searchOrders, tailOrders] = await Promise.all([
+          Product.find({ $or: [{ serialNumber: pattern }, { name: pattern }] }).select('_id').limit(200).lean(),
+          Order.find({ orderNumber: pattern }).select('_id').limit(100).lean(),
+          idTail
+            ? Order.find({ $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: `${idTail}$` } } }).select('_id').limit(100).lean()
+            : []
+        ]);
+        if (searchProductIds.length) {
+          const productIds = searchProductIds.map(product => product._id);
+          searchFilter.push({ productId: { $in: productIds } });
+          const productOrders = await Order.find({ 'items.productId': { $in: productIds } }).select('_id').sort({ createdAt: -1 }).limit(300).lean();
+          // Validation and packing tasks cover a whole order and have no product of their own.
+          if (productOrders.length) searchFilter.push({ productId: null, orderId: { $in: productOrders.map(order => order._id) } });
+        }
+        const orderIds = [...searchOrders, ...tailOrders].map(order => order._id);
+        if (orderIds.length) searchFilter.push({ orderId: { $in: orderIds } });
+      }
       if (filter.$or) {
         const scopeOr = filter.$or;
         delete filter.$or;
