@@ -162,7 +162,8 @@
         <div id="productsView" role="tabpanel" aria-labelledby="tabProducts">
         <section class="panel">
           <div class="panel-head"><div><h2>Existing products</h2><p class="subtitle">Select a product to add or adjust stock. No duplicate products are created.</p></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Available</th><th>Reserved</th><th>Catalog</th><th>Location</th><th>Supply</th><th>Action</th></tr></thead><tbody id="products"></tbody></table></div>
+          <div id="moveBar" class="panel-head" hidden style="gap:10px;flex-wrap:wrap;align-items:center"><strong id="moveCount"></strong><select id="moveCatalog" aria-label="Catalogue to move to" style="width:auto;min-width:220px;max-width:320px"></select><button id="moveGo" class="button small" type="button">Move</button><button id="moveClear" class="button secondary small" type="button">Clear</button></div>
+          <div class="table-wrap"><table><thead><tr><th style="width:32px"></th><th>Product</th><th>Available</th><th>Reserved</th><th>Catalog</th><th>Location</th><th>Supply</th><th>Action</th></tr></thead><tbody id="products"></tbody></table></div>
           <div class="footer"><span id="pageLabel" class="muted"></span><div><button id="previous" class="button secondary small">Previous</button> <button id="next" class="button secondary small">Next</button></div></div>
         </section>
         </div>
@@ -314,7 +315,7 @@
     const embedded = new URLSearchParams(location.search).get('embedded') === '1';
     if (embedded) document.body.classList.add('embedded');
     const API = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:5000/api' : 'https://asawerbackend.onrender.com/api';
-    const state = { token: localStorage.getItem('authToken') || '', user: null, products: [], page: 1, pages: 1, total: 0, selected: null };
+    const state = { token: localStorage.getItem('authToken') || '', user: null, products: [], page: 1, pages: 1, total: 0, selected: null, picked: new Set() };
     const noticeTimers = {};
     const $ = id => document.getElementById(id);
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
@@ -373,7 +374,7 @@
       const live=options.live===true;
       const requestId=++inventoryRequestId;
       show('workspaceError');
-      if (!live&&!state.products.length) $('products').innerHTML='<tr><td colspan="7" class="loading-cell"><div class="skeleton-block" aria-label="Loading products"></div></td></tr>';
+      if (!live&&!state.products.length) $('products').innerHTML='<tr><td colspan="8" class="loading-cell"><div class="skeleton-block" aria-label="Loading products"></div></td></tr>';
       $('refresh').disabled=true;
       const params=new URLSearchParams({ page:String(state.page), limit:'25' });
       if($('search').value.trim()) params.set('search',$('search').value.trim());
@@ -393,7 +394,7 @@
     // ---- Products that are not ready to sell ---------------------------
     async function loadCatalogChoices(){
       try{
-        state.catalogs=await api('/inventory/catalogs');
+        state.catalogs=await api('/inventory/catalogs');renderMoveBar();
         $('productCatalog').innerHTML='<option value="">Choose a catalogue</option>'+state.catalogs.map(c=>`<option value="${escapeHtml(c._id)}">${escapeHtml(c.name)}${c.isPublic?'':' (private)'}</option>`).join('');
       }catch(error){console.error('Could not load catalogues:',error)}
     }
@@ -787,14 +788,38 @@ Cancel = hidden (private)`);
       }catch(error){show('workspaceError',error.message);button.disabled=false}
     });
 
+    async function toggleShop(product){
+      const removing=product.removedFromShop!==true;
+      if(removing&&!confirm(`Remove ${product.name} (${product.serialNumber}) from the shop? Customers will no longer see it. Old orders keep it, and you can show it again.`))return;
+      try{await api('/inventory/products/'+product.productId+'/shop',{method:'PATCH',body:JSON.stringify({removed:removing})});show('message',removing?`${product.name} removed from the shop.`:`${product.name} is back in the shop.`);await loadInventory();}
+      catch(error){show('message',error.message);}
+    }
+    function renderMoveBar(){
+      const n=state.picked.size;$('moveBar').hidden=n===0;$('moveCount').textContent=n+(n===1?' selected':' selected');
+      const current=$('moveCatalog').value;
+      $('moveCatalog').innerHTML='<option value="">Move to catalogue…</option>'+(state.catalogs||[]).map(c=>`<option value="${escapeHtml(c._id)}">${escapeHtml(c.name)}</option>`).join('');
+      $('moveCatalog').value=current;
+    }
+    $('products').addEventListener('change',event=>{const box=event.target.closest('input[data-pick]');if(!box)return;if(box.checked)state.picked.add(box.dataset.pick);else state.picked.delete(box.dataset.pick);renderMoveBar();});
+    $('moveClear').addEventListener('click',()=>{state.picked.clear();renderProducts();renderMoveBar();});
+    $('moveGo').addEventListener('click',async()=>{
+      const catalogId=$('moveCatalog').value;if(!catalogId){show('message','Choose a catalogue first.');return;}
+      const name=$('moveCatalog').selectedOptions[0].textContent;
+      if(!confirm(`Move ${state.picked.size} product(s) to ${name}?`))return;
+      $('moveGo').disabled=true;
+      try{const r=await api('/inventory/products/move',{method:'POST',body:JSON.stringify({productIds:[...state.picked],catalogId})});state.picked.clear();show('message',`${r.moved} product(s) moved to ${r.catalogName}.`);await loadInventory();renderMoveBar();}
+      catch(error){show('message',error.message);}
+      finally{$('moveGo').disabled=false;}
+    });
     async function deleteProduct(product){
       if(!confirm(`Delete ${product.name} (${product.serialNumber}) for good? Customers will no longer see it.`))return;
       try{await api('/inventory/products/'+product.productId,{method:'DELETE'});show('message',`${product.name} deleted.`);await loadInventory();}
       catch(error){show('message',error.message);}
     }
     function renderProducts() {
-      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const draft=p.stockSyncState==='needs_details'||p.isActive===false; return `<tr><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions"><button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">Manage sizes</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="edit">Edit / catalogue</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="delete">Delete</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="7" class="muted">No products match this filter.</td></tr>';
+      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const removed=p.removedFromShop===true; const draft=!removed&&(p.stockSyncState==='needs_details'||p.isActive===false); return `<tr${removed?' style="opacity:.6"':''}><td><input type="checkbox" class="pick" data-pick="${escapeHtml(p.productId)}" aria-label="Select ${escapeHtml(p.name)}"${state.picked.has(p.productId)?' checked':''}></td><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${removed?'Removed from shop · customers cannot see it':draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions"><button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">Manage sizes</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="edit">Edit / catalogue</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="shop">${removed?'Show in shop again':'Remove from shop'}</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="delete">Delete</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="8" class="muted">No products match this filter.</td></tr>';
       $('pageLabel').textContent=`Page ${state.page} of ${state.pages} · ${state.total} products`;
+      renderMoveBar();
       $('previous').disabled=state.page<=1; $('next').disabled=state.page>=state.pages;
     }
     function renderHistory(items) {
@@ -843,7 +868,7 @@ Cancel = hidden (private)`);
     $('searchForm').addEventListener('submit',event=>{event.preventDefault();clearTimeout(inventorySearchTimer);state.page=1;loadInventory({live:true});});
     $('lowStock').addEventListener('change',()=>{state.page=1;loadInventory();}); $('refresh').addEventListener('click',loadInventory);
     $('previous').addEventListener('click',()=>{if(state.page>1){state.page--;loadInventory();}}); $('next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;loadInventory();}});
-    $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else if(button.dataset.mode==='edit')openFixDialogFor({...product,_id:product.productId,catalogId:product.catalogId&&product.catalogId._id||product.catalogId});else if(button.dataset.mode==='delete')deleteProduct(product);else openStock(product,button.dataset.mode);});
+    $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else if(button.dataset.mode==='edit')openFixDialogFor({...product,_id:product.productId,catalogId:product.catalogId&&product.catalogId._id||product.catalogId});else if(button.dataset.mode==='delete')deleteProduct(product);else if(button.dataset.mode==='shop')toggleShop(product);else openStock(product,button.dataset.mode);});
     $('action').addEventListener('change',updatePreview); $('quantity').addEventListener('input',updatePreview); $('cancel').addEventListener('click',()=>$('stockDialog').close());
     $('stockForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const action=$('action').value;const quantity=Number($('quantity').value);if(!Number.isSafeInteger(quantity)||quantity<0||(action!=='set'&&quantity===0))return show('stockError','Enter a valid whole-number quantity.');if(action==='remove'&&quantity>p.stock)return show('stockError',`Only ${p.stock} units are available.`);if(!confirm(`Save this ${action} stock adjustment for ${p.name}?`))return;const button=event.submitter;button.disabled=true;try{await api(`/inventory/products/${p.productId}`,{method:'PATCH',body:JSON.stringify({action,quantity,notes:$('notes').value.trim(),lowStockThreshold:Number($('threshold').value||0),stockLocation:$('location').value.trim()})});$('stockDialog').close();show('message',`${p.name} stock updated successfully.`);await loadInventory();}catch(error){show('stockError',error.message);}finally{button.disabled=false;}});
     $('cancelProduction').addEventListener('click',()=>$('productionDialog').close());

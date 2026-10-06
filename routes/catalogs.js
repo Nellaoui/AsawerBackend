@@ -127,7 +127,10 @@ router.get('/:id', auth, async (req, res) => {
       .populate({
         path: 'products',
         ...(req.user.role === 'admin' ? {} : { match: { isActive: { $ne: false } } }),
-        populate: { path: 'relatedProducts' }
+        populate: {
+          path: 'relatedProducts',
+          ...(req.user.role === 'admin' ? {} : { match: { isActive: { $ne: false } } })
+        }
       });
 
     if (!catalog) {

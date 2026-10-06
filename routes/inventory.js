@@ -388,14 +388,14 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
     const search = String(req.query.search || '').trim();
     const filter = search ? { $or: await productSearchConditions(search) } : {};
     const products = await Product.find(filter)
-      .select('name serialNumber type imageUrl price isActive stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp setupIssue stock')
+      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)
       .lean();
 
     const flagged = products.map((product) => {
       const needsImage = !product.imageUrl || /placeholder/i.test(product.imageUrl);
-      const needsDetails = product.stockSyncState === 'needs_details' || product.isActive === false;
+      const needsDetails = product.stockSyncState === 'needs_details' || (product.isActive === false && !product.removedFromShop);
       const needsClassification = product.fulfillmentPolicy !== 'stock_only'
         && (!product.printMethod || product.printMethod === 'none');
       const needsPrice = !product.price || Number(product.price) <= 0;
@@ -405,7 +405,7 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
     // `needsPrice` and `needsClassification` are still reported so the form can
     // show them, but neither holds a product back: it is priced and routed when
     // it is ready to sell.
-    }).filter((product) => product.needsImage || product.needsDetails || product.reported);
+    }).filter((product) => !product.removedFromShop && (product.needsImage || product.needsDetails || product.reported));
     const catalogNames = new Map((await Catalog.find({ _id: { $in: flagged.map(p => p.catalogId).filter(Boolean) } }).select('name').lean())
       .map(catalog => [String(catalog._id), catalog.name]));
     for (const product of flagged) product.catalogName = catalogNames.get(String(product.catalogId)) || '';
@@ -716,7 +716,8 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
     // print method are optional and are filled in when they are known.
     const ready = Boolean(cleanImageUrl(product.imageUrl));
     if (ready) {
-      product.isActive = true;
+      // A product taken off the shop stays off until it is shown again.
+      product.isActive = !product.removedFromShop;
       // Leave a sheet-synced product synced; only a draft graduates to manual.
       if (product.stockSyncState === 'needs_details') product.stockSyncState = 'manual';
       product.setupIssue = {
@@ -940,6 +941,59 @@ router.delete('/products/:id', operationsAuth, inventoryRoleAuth, async (req, re
   } catch (error) {
     console.error('Error deleting product:', error);
     res.status(500).json({ message: 'Failed to delete the product' });
+  }
+});
+
+// PATCH /api/inventory/products/:id/shop - Take a product off the shop or bring it back.
+// Customers stop seeing a removed product; old orders and tasks keep it.
+router.patch('/products/:id/shop', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+  if (typeof req.body?.removed !== 'boolean') {
+    return res.status(400).json({ message: 'Say whether the product is removed from the shop' });
+  }
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    product.removedFromShop = req.body.removed;
+    if (req.body.removed) {
+      product.isActive = false;
+    } else {
+      // Back in the shop only if it is complete; a draft stays a draft.
+      product.isActive = Boolean(cleanImageUrl(product.imageUrl)) && product.stockSyncState !== 'needs_details';
+    }
+    await product.save();
+    res.json({ productId: String(product._id), removedFromShop: product.removedFromShop, isActive: product.isActive });
+  } catch (error) {
+    console.error('Error changing shop visibility:', error);
+    res.status(500).json({ message: 'Failed to change the product' });
+  }
+});
+
+// POST /api/inventory/products/move - Move several products to one catalogue.
+router.post('/products/move', operationsAuth, productSetupAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.productIds) ? [...new Set(req.body.productIds.map(String))] : [];
+    if (!ids.length || ids.length > 200 || !ids.every((id) => mongoose.Types.ObjectId.isValid(id))) {
+      return res.status(400).json({ message: 'Choose between 1 and 200 products' });
+    }
+    const catalog = await findCatalog(req.body.catalogId);
+    if (!catalog) return res.status(400).json({ message: 'Choose a catalogue to move them to' });
+
+    // Only products that still exist are moved, so a stale selection (a product
+    // deleted meanwhile) never leaves a dangling reference in the catalogue.
+    const found = (await Product.find({ _id: { $in: ids } }).select('_id').lean()).map((product) => product._id);
+    if (found.length) {
+      await Product.updateMany({ _id: { $in: found } }, { $set: { catalogId: catalog._id } });
+      await Catalog.updateMany({ _id: { $ne: catalog._id }, products: { $in: found } }, { $pull: { products: { $in: found } } });
+      await Catalog.updateOne({ _id: catalog._id }, { $addToSet: { products: { $each: found } } });
+    }
+    res.json({ moved: found.length, catalogName: catalog.name });
+  } catch (error) {
+    console.error('Error moving products:', error);
+    res.status(500).json({ message: 'Failed to move the products' });
   }
 });
 

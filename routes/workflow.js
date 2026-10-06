@@ -968,7 +968,7 @@ router.get('/analytics', operationsAuth, async (req, res) => {
         .select('requestedName orderId productId productionMethod history')
         .populate('productId', 'name serialNumber imageUrl')
         .lean(),
-      Product.find({})
+      Product.find({ removedFromShop: { $ne: true } })
         .select('name serialNumber imageUrl isActive stockSyncState printMethod fulfillmentPolicy price updatedAt')
         .sort({ updatedAt: -1 })
         .lean()

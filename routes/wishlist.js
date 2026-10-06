@@ -24,7 +24,7 @@ router.get('/', auth, async (req, res) => {
     // Transform products to include productId field and proper catalogId
     const products = wishlistItems
       .map(item => item.productId)
-      .filter(product => product)
+      .filter(product => product && product.isActive !== false)
       .map(product => {
         const productObj = product.toObject();
         return {

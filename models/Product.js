@@ -44,6 +44,12 @@ const productSchema = new mongoose.Schema({
     ref: 'Product',
     default: null
   },
+  // Set from the portal "Remove from shop" button. The product stays in old
+  // orders but customers never see it; isActive is kept false alongside it.
+  removedFromShop: {
+    type: Boolean,
+    default: false
+  },
   stockSyncState: {
     type: String,
     enum: ['manual', 'synced', 'needs_details'],
