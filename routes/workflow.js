@@ -660,7 +660,7 @@ const attachOrderLines = async (cases) => {
         quantity: orderItems.get(String(row.orderItemId))?.quantity || row.quantity || 1,
         step: lineStepFor(row.status),
         detail: lineDetailFor(row),
-        reprint: (row.reprintParts || []).length > 0,
+        reprint: row.status !== 'completed' && (row.reprintParts || []).length > 0,
         isBlocked: Boolean(row.isBlocked)
       }))
     };
