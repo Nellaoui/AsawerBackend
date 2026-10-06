@@ -927,7 +927,7 @@ router.delete('/products/:id', operationsAuth, inventoryRoleAuth, async (req, re
     ]);
     if (inOrder || inTask) {
       return res.status(409).json({
-        message: `${product.name} is used by past orders or tasks, so it cannot be deleted. Move it to another catalogue instead.`
+        message: `${product.name} is in orders or tasks, so it cannot be deleted. Use Remove from shop instead.`
       });
     }
 
