@@ -284,6 +284,38 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     { $set: { fulfillmentState } }
   );
 
+  // Packing finishes product by product: tell the customer how many are done
+  // ("3 of 5"). One message per count, so repeated refreshes stay quiet.
+  if (fulfillmentState !== 'ready') {
+    const [order, packedCases] = await Promise.all([
+      Order.findById(orderId).select('userId orderNumber items').lean(),
+      WorkflowCase.find({ orderId, status: { $nin: ['cancelled', 'rejected'] }, requestType: { $nin: ['order_validation', 'pack_order'] } }).select('orderItemId productId status history.fromStatus').lean()
+    ]);
+    const total = order?.items?.length || 0;
+    // A product is done when it went through packing and none of its tasks
+    // (stock check, printing, packing) is still open.
+    const itemCases = new Map();
+    for (const item of packedCases) {
+      const key = String(item.orderItemId || item.productId || item._id);
+      if (!itemCases.has(key)) itemCases.set(key, []);
+      itemCases.get(key).push(item);
+    }
+    const done = [...itemCases.values()].filter(group =>
+      group.every(item => item.status === 'completed') && group.some(item => (item.history || []).some(entry => entry.fromStatus === 'packing'))
+    ).length;
+    if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId)) && total > 1 && done > 0 && done < total) {
+      const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
+      await safelyNotify(() => notifyUser(app, {
+        userId: order.userId,
+        title: `Your order is coming together: ${done} of ${total} products ready`,
+        body: `Order ${label}: ${done} of ${total} products are ready. We will tell you when all of them are done.`,
+        type: 'order_progress',
+        data: { type: 'order', orderId: String(orderId), status: 'partial', done, total },
+        dedupeKey: `order-progress-${orderId}-${done}`
+      }));
+    }
+  }
+
   // Packing was the last step: tell the customer on their phone. The dedupe
   // key keeps it to one message per order however often this runs.
   if (fulfillmentState === 'ready') {
@@ -293,7 +325,7 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
       await safelyNotify(() => notifyUser(app, {
         userId: order.userId,
         title: '🎉 Your order is ready',
-        body: `Order ${label} is finished and ready for you.`,
+        body: `Order ${label}: all your products are done and ready for you.`,
         type: 'order_ready',
         data: { type: 'order', orderId: String(orderId), status: 'ready' },
         dedupeKey: `order-ready-${orderId}`
@@ -564,6 +596,77 @@ router.get('/customers/:id/overview', operationsAuth, async (req, res) => {
   }
 });
 
+// Where each product of an order stands, so Quality and Packing staff see the
+// whole order and not only the products waiting for them.
+const LINE_STEP = {
+  stock_picking: 'stock',
+  quality_check: 'quality',
+  packing: 'packing',
+  completed: 'done'
+};
+const lineStepFor = (status) => LINE_STEP[status] || 'printing';
+// What the customer-facing step hides: stock check, waiting for the machine,
+// on the machine, or sent back from quality to print again.
+const lineDetailFor = (row) => {
+  if (row.status === 'completed') return 'Done';
+  const reprint = (row.reprintParts || []).length > 0;
+  if (row.status === 'stock_picking') return 'Stock check';
+  if (row.status === 'ready_to_print') return reprint ? 'Reprint waiting' : 'Waiting to print';
+  if (row.status === 'printing') return reprint ? 'Reprinting' : 'Printing';
+  if (row.status === 'quality_check') return 'Waiting for quality';
+  if (row.status === 'packing') return 'Ready to pack';
+  return 'Being prepared';
+};
+const LINE_STEP_ORDER = ['stock', 'printing', 'quality', 'packing', 'done'];
+const attachOrderLines = async (cases) => {
+  const orderIds = [...new Set(cases.map(item => String(item.orderId?._id || item.orderId || '')).filter(mongoose.Types.ObjectId.isValid))];
+  if (!orderIds.length) return cases;
+  const rows = await WorkflowCase.find({
+    orderId: { $in: orderIds },
+    requestType: { $nin: ['order_validation', 'pack_order'] },
+    status: { $nin: ['cancelled', 'rejected'] },
+    archivedAt: null
+  }).select('orderId orderItemId productId requestedName status isBlocked reprintParts').populate('productId', 'serialNumber name imageUrl').lean();
+  // Size and quantity live on the order's items; the page already has them populated.
+  const orderItems = new Map();
+  for (const item of cases) {
+    for (const orderItem of (item.orderId?.items || [])) orderItems.set(String(orderItem._id), orderItem);
+  }
+  const linesByOrder = new Map();
+  for (const row of rows) {
+    const orderKey = String(row.orderId);
+    const lineKey = String(row.orderItemId || row.productId || row._id);
+    if (!linesByOrder.has(orderKey)) linesByOrder.set(orderKey, new Map());
+    const lines = linesByOrder.get(orderKey);
+    const current = lines.get(lineKey);
+    // A product split between stock and printing is shown by its least advanced
+    // task; it only counts as done when every task of it is finished.
+    const rank = (item) => LINE_STEP_ORDER.indexOf(lineStepFor(item.status));
+    const blocked = Boolean(row.isBlocked || current?.isBlocked) && row.status !== 'completed';
+    if (!current || rank(row) < rank(current)) lines.set(lineKey, { ...row, isBlocked: blocked });
+    else if (blocked) lines.set(lineKey, { ...current, isBlocked: true });
+  }
+  return cases.map(item => {
+    const lines = linesByOrder.get(String(item.orderId?._id || item.orderId || ''));
+    if (!lines) return item;
+    return {
+      ...item,
+      orderLines: [...lines.values()].map(row => ({
+        id: row._id,
+        name: row.requestedName,
+        reference: row.productId?.serialNumber || '',
+        imageUrl: row.productId?.imageUrl || '',
+        size: orderItems.get(String(row.orderItemId))?.size || '',
+        quantity: orderItems.get(String(row.orderItemId))?.quantity || row.quantity || 1,
+        step: lineStepFor(row.status),
+        detail: lineDetailFor(row),
+        reprint: (row.reprintParts || []).length > 0,
+        isBlocked: Boolean(row.isBlocked)
+      }))
+    };
+  });
+};
+
 router.get('/cases', operationsAuth, async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -687,7 +790,7 @@ router.get('/cases', operationsAuth, async (req, res) => {
     const caseDocuments = pageIds.length
       ? await populateCase(WorkflowCase.find({ _id: { $in: pageIds } }).sort(taskSort))
       : [];
-    const cases = await hydrateCaseCustomers(caseDocuments);
+    const cases = await attachOrderLines(await hydrateCaseCustomers(caseDocuments));
     const orders = orderGroups.size;
 
     res.json({
@@ -2363,7 +2466,10 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       if (!reprintReason) return res.status(400).json({ message: 'Explain why these parts need reprinting' });
     }
     const startsPrintingNow = workflowCase.status === 'ready_to_print' && nextStatus === 'printing';
-    if (!isManagerUser(req.user) && !workflowCase.startedAt && !startsPrintingNow) {
+    // Quality and packing finish with one click: no separate Start step.
+    const finishesInOneClick = (workflowCase.status === 'quality_check' && nextStatus === 'packing')
+      || (workflowCase.status === 'packing' && nextStatus === 'completed');
+    if (!isManagerUser(req.user) && !workflowCase.startedAt && !startsPrintingNow && !finishesInOneClick) {
       return res.status(409).json({ message: 'Start this task before marking the step complete' });
     }
 
