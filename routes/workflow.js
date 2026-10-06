@@ -2468,7 +2468,8 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     const startsPrintingNow = workflowCase.status === 'ready_to_print' && nextStatus === 'printing';
     // Quality and packing finish with one click: no separate Start step.
     const finishesInOneClick = (workflowCase.status === 'quality_check' && nextStatus === 'packing')
-      || (workflowCase.status === 'packing' && nextStatus === 'completed');
+      || (workflowCase.status === 'packing' && nextStatus === 'completed')
+      || qualityReprint;
     if (!isManagerUser(req.user) && !workflowCase.startedAt && !startsPrintingNow && !finishesInOneClick) {
       return res.status(409).json({ message: 'Start this task before marking the step complete' });
     }
