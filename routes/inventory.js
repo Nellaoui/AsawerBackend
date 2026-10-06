@@ -443,19 +443,22 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     // so narrow with the family and number, then compare canonical forms.
     const canonical = canonicalProductReference(serialNumber);
     const parts = serialNumber.match(/^([A-Za-z]+)\s*([0-9]+)/);
+    // A product removed from the shop no longer holds its reference, so the
+    // same reference can be created again as a fresh product.
     const candidates = parts
-      ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i') })
-        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue')
+      ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i'), removedFromShop: { $ne: true } })
+        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue catalogId')
         .limit(50)
         .lean()
-      : await Product.find({ serialNumber }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue').limit(50).lean();
+      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
     const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
 
     if (duplicate) {
       // The portal opens this product for editing instead of creating a second
       // one, so hand back enough to do that without another round trip.
+      const where = duplicate.catalogId ? await Catalog.findById(duplicate.catalogId).select('name').lean() : null;
       return res.status(409).json({
-        message: `"${duplicate.serialNumber}" already exists. Open it and add what is missing instead of creating it again.`,
+        message: `"${duplicate.serialNumber}" already exists${where?.name ? ` in ${where.name}` : ''}. Open it and add what is missing instead of creating it again.`,
         productId: duplicate._id,
         existing: duplicate,
         normalizedReference: serialNumber
@@ -910,9 +913,9 @@ router.patch('/products/:id/variants/:variantId', operationsAuth, inventoryRoleA
   }
 });
 
-// DELETE /api/inventory/products/:id - Remove a product nobody has ordered.
-// A product that appears in an order or a task is kept, so past orders still
-// show what was bought.
+// DELETE /api/inventory/products/:id - Erase a product for good.
+// Past orders and tasks keep the name and quantity they were created with, but
+// lose the link to the product (photo and reference).
 router.delete('/products/:id', operationsAuth, inventoryRoleAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid product ID' });
@@ -920,16 +923,6 @@ router.delete('/products/:id', operationsAuth, inventoryRoleAuth, async (req, re
   try {
     const product = await Product.findById(req.params.id).select('_id name');
     if (!product) return res.status(404).json({ message: 'Product not found' });
-
-    const [inOrder, inTask] = await Promise.all([
-      Order.exists({ 'items.productId': product._id }),
-      WorkflowCase.exists({ productId: product._id })
-    ]);
-    if (inOrder || inTask) {
-      return res.status(409).json({
-        message: `${product.name} is in orders or tasks, so it cannot be deleted. Use Remove from shop instead.`
-      });
-    }
 
     await Product.deleteOne({ _id: product._id });
     await Promise.all([

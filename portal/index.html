@@ -812,7 +812,7 @@ Cancel = hidden (private)`);
       finally{$('moveGo').disabled=false;}
     });
     async function deleteProduct(product){
-      if(!confirm(`Delete ${product.name} (${product.serialNumber}) for good? Customers will no longer see it.`))return;
+      if(!confirm(`Delete ${product.name} (${product.serialNumber}) for good? Old orders keep its name but lose its photo.`))return;
       try{await api('/inventory/products/'+product.productId,{method:'DELETE'});show('message',`${product.name} deleted.`);await loadInventory();}
       catch(error){show('message',error.message);}
     }
