@@ -249,6 +249,7 @@
       <label id="productNoteField">Note<input id="productNote" placeholder="What is still missing?"></label>
       </div>
       <div class="modal-foot">
+        <button class="button secondary" type="button" id="productDelete" hidden>Delete this product</button>
         <button class="button secondary" type="button" id="productCancel">Cancel</button>
         <button class="button" type="button" id="productSave">Create product</button>
       </div>
@@ -582,6 +583,7 @@ Cancel = hidden (private)`);
         ?'Add whatever is missing. A photo takes it off this list. A price is optional.'
         :'Add the photo now and the product is ready to sell straight away. A price is optional.';
       $('productSave').textContent=mode==='fix'?'Save product':'Create product';
+      $('productDelete').hidden=!(mode==='fix'&&state.fixingId&&state.canManageStock);
       $('productSerial').value=prefill.serialNumber||'';
       $('productSerial').readOnly=mode==='fix';
       $('productName').value=prefill.name||prefill.serialNumber||'';
@@ -679,6 +681,12 @@ Cancel = hidden (private)`);
     });
     $('productForm').addEventListener('submit',event=>{event.preventDefault();$('productSave').click()});
     $('productCancel').addEventListener('click',()=>$('productDialog').close());
+    $('productDelete').addEventListener('click',async()=>{
+      const reference=$('productSerial').value;
+      if(!confirm(`Delete ${reference} for good? Old orders keep its name but lose its photo.`))return;
+      try{await api('/inventory/products/'+state.fixingId,{method:'DELETE'});$('productDialog').close();show('message',`${reference} deleted.`);await Promise.all([loadInventory(),loadNeedsSetup()]);}
+      catch(error){show('productError',error.message);}
+    });
     $('newCatalog').addEventListener('click',createCatalogFromForm);
     $('productSerial').addEventListener('blur',()=>{
       if(state.productMode==='fix')return;
