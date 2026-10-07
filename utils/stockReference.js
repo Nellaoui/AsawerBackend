@@ -39,8 +39,13 @@ const canonicalStockReference = (value) => foldSetWords(displayStockReference(va
 // catalogue collect five spellings of the same bracelet.
 // Unlike displayStockReference this keeps the real family (GOU, COL, BO...)
 // instead of forcing BRA onto everything.
+// A reference that starts with a digit (3P T 13MM, 3P T 13MM SERTIE) is not a
+// bracelet series: there SERTIE and SIMPLE are part of the name and make a
+// different product, so they are kept as typed.
 const normalizeProductReference = (value) => {
-  const folded = foldSetWords(normalizeText(value));
+  const text = normalizeText(value);
+  if (/^[0-9]+[A-Za-z]/.test(text)) return text.toUpperCase();
+  const folded = foldSetWords(text);
   const match = folded.match(/^([A-Za-z]+)[s_-]*([0-9]+)s*(.*)$/);
   if (!match) return folded.toUpperCase();
   const [, family, number, rest] = match;

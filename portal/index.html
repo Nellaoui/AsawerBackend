@@ -622,6 +622,7 @@ Cancel = hidden (private)`);
     // The reference is stored one way - BRA 312, BRA 312 S. Show that while
     // typing; the server normalises again and has the last word.
     function tidyReference(value){
+      if(/^\s*[0-9]+[A-Za-z]/.test(String(value||'')))return String(value).trim().replace(/\s+/g,' ').toUpperCase();
       const folded=String(value||'').trim().replace(/\s+/g,' ')
         .replace(/\b(simples?)\b/gi,'S').replace(/\b(serties?|sertis?)\b/gi,' ')
         .replace(/\s+/g,' ').trim();
