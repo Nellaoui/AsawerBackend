@@ -97,5 +97,11 @@
     return new Date(startMs + Math.max(Number(minutes) || 0, 0) * 60000);
   };
 
-  return { SHOP_HOURS, CLOCK_STEPS, usesClock, stepMinutes, addStepMinutes };
+  // Start of the shop day `back` days before the day that contains `ms`.
+  const shopDayStart = (ms, back = 0) => fromShop(Math.floor(toShop(ms) / DAY_MS) * DAY_MS - back * DAY_MS);
+  // "2026-10-06" for the shop day that contains `ms`, and the shop hour (0-23).
+  const shopDayKey = (ms) => new Date(toShop(ms)).toISOString().slice(0, 10);
+  const shopHour = (ms) => new Date(toShop(ms)).getUTCHours();
+
+  return { SHOP_HOURS, CLOCK_STEPS, usesClock, stepMinutes, addStepMinutes, shopDayStart, shopDayKey, shopHour };
 });

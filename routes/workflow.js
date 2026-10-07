@@ -41,6 +41,7 @@ const {
 } = require('../utils/workflowRules');
 const { effectiveDeadline, lateMinutes: stepLateMinutes, stepTimesSnapshot, MIN_SAMPLES } = require('../utils/stepTimes');
 const { stepMinutes } = require('../utils/workingTime');
+const { buildOverview } = require('../utils/bossOverview');
 
 const router = express.Router();
 
@@ -927,6 +928,17 @@ router.get('/find', operationsAuth, async (req, res) => {
   } catch (error) {
     console.error('❌ Error finding workflow tasks:', error);
     res.status(500).json({ message: 'Failed to search tasks' });
+  }
+});
+
+// Boss overview: totals and charts for today, the last 7 days or the last 30 days (Morocco time).
+router.get('/overview', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can view the overview' });
+    res.json(await buildOverview({ range: String(req.query.range || 'today'), isLateCase }));
+  } catch (error) {
+    console.error('Error building overview:', error);
+    res.status(500).json({ message: 'Failed to load the overview' });
   }
 });
 
