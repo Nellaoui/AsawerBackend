@@ -730,12 +730,20 @@ router.get('/cases', operationsAuth, async (req, res) => {
     if (req.query.search) {
       const searchValue = String(req.query.search).trim();
       const pattern = new RegExp(escapeRegExp(searchValue), 'i');
-      const searchFilter = [{ requestedName: pattern }, { requirements: pattern }, { 'customer.name': pattern }, { 'customer.email': pattern }];
+      const searchFilter = [{ requestedName: pattern }, { requirements: pattern }, { 'customer.name': pattern }, { 'customer.email': pattern }, { 'customer.phone': pattern }];
       if (mongoose.Types.ObjectId.isValid(searchValue)) searchFilter.push({ orderId: searchValue });
       // Staff see the product reference and the order number on every card,
       // so typing either one must find the task, not only the task name.
       // One character would match most products, so it only searches task names.
       if (searchValue.length >= 2) {
+        // Cards show the client's account name, which is not stored on the task itself.
+        const matchedCustomers = await User.find({ role: 'user', $or: [{ name: pattern }, { email: pattern }, { phone: pattern }] }).select('_id').limit(50).lean();
+        const clientIds = matchedCustomers.flatMap(customer => mixedIdValues(customer._id));
+        if (clientIds.length) {
+          searchFilter.push({ customerId: { $in: clientIds } });
+          const clientOrderIds = await Order.find({ userId: { $in: clientIds } }).distinct('_id');
+          if (clientOrderIds.length) searchFilter.push({ orderId: { $in: clientOrderIds } });
+        }
         // Older orders have no number; cards show "#" + the last 6 characters of the id.
         const idTail = /^[0-9a-f]{4,24}$/i.test(searchValue) ? searchValue.toLowerCase() : null;
         const [searchProductIds, searchOrders, tailOrders] = await Promise.all([
