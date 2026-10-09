@@ -20,6 +20,11 @@ router.get('/product-options.js', (req, res) => {
   res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'productOptions.js'));
 });
+// Sartla bracelet-list rules, shared with the backend routes.
+router.get('/sartla.js', (req, res) => {
+  res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'sartla.js'));
+});
 // Shop working hours, shared with the backend step timer.
 router.get('/working-time.js', (req, res) => {
   res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });

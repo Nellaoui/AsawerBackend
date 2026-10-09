@@ -19,6 +19,7 @@ const { notifyCaseAssignment, notifyTaskRemoved } = require('../utils/workflowNo
 const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalogMembership');
 const { normalizeStockSize } = require('../utils/stockReference');
 const productOptions = require('../utils/productOptions');
+const Sartla = require('../utils/sartla');
 
 const safelyNotify = async (operation) => {
   try {
@@ -56,6 +57,14 @@ const canValidateOrders = (user) => Boolean(
 );
 
 const { unpickedQuantity, quantitiesByProduct, releaseReservedInventory } = require('../utils/orderInventory');
+
+// A customer sees the sartla they ordered, not the bracelets the shop uses to
+// make it: those lines are free and only matter to the workshop.
+const withoutSartlaParts = (order) => {
+  const value = order && order.toObject ? order.toObject() : order;
+  if (!value || !Array.isArray(value.items)) return value;
+  return { ...value, items: value.items.filter(item => !item.partOfItemId) };
+};
 
 const commitReservedInventory = async (order, session) => {
   if (order.inventoryState !== 'reserved') return;
@@ -204,6 +213,8 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
       error.statusCode = 409;
       throw error;
     }
+    // A bracelet made for a sartla says so on its tasks, so packing puts the set together.
+    const forSartla = orderItem.partOfName ? ` Part of ${orderItem.partOfName}.` : '';
 
     if (Number(orderItem.stockQuantity || 0) > 0) {
       const assignedTo = await findTeamAssignee('stock', session);
@@ -225,7 +236,7 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
         taskKind: 'order',
         priority: 'normal',
         targetMinutes: targetMinutesForTeam('stock'),
-        requirements: stockPlan.requirements,
+        requirements: `${stockPlan.requirements}${forSartla}`,
         // Carry Customer Service's route so the Wax/Resin filters include stock
         // work, and so a unit missing from the shelf is printed on that route.
         productionMethod: ['wax', 'resin'].includes(orderItem.productionMethod) ? orderItem.productionMethod : 'undecided',
@@ -257,7 +268,7 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
       assignedAt: assignedTo ? now : null,
       stageQueuedAt: now,
       targetMinutes: targetMinutesForTeam(assignedTeam),
-      requirements: `Print ${orderItem.printQuantity} unit(s), size ${orderItem.size || '-'}, for this order using the manufacturer application. If the 3D file is unavailable, mark this task Blocked and give the reason.`,
+      requirements: `Print ${orderItem.printQuantity} unit(s), size ${orderItem.size || '-'}, for this order using the manufacturer application. If the 3D file is unavailable, mark this task Blocked and give the reason.${forSartla}`,
       productionMethod: orderItem.productionMethod,
       customerApproval: 'not_required',
       modelVersions: hasPortalModel ? [{
@@ -290,7 +301,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     if (existingOrder) {
       await existingOrder.populate('catalogId', 'name description');
       await existingOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
-      return res.status(200).json(existingOrder);
+      return res.status(200).json(withoutSartlaParts(existingOrder));
     }
     const orderNumber = `ASW-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Casablanca' }).format(new Date()).replaceAll('-', '')}-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
     const orderingUser = await User.findById(req.user.id).select('forcedProductionMethod').lean();
@@ -338,10 +349,27 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           throw error;
         }
 
+        // A sartla short of finished stock is made from its bracelets, so
+        // those bracelets are loaded too, whatever catalogue they sit in.
+        const braceletIds = [...new Set(products
+          .filter(product => Sartla.isSartlaType(product.type))
+          .flatMap(product => (product.sartlaSets || []).flatMap(set => (set.bracelets || []).map(item => String(item.productId))))
+          .filter(id => !productById.has(id)))];
+        if (braceletIds.length) {
+          await Product.updateMany(
+            { _id: { $in: braceletIds }, stock: { $exists: false } },
+            { $set: { stock: 0 } },
+            { session }
+          );
+          const bracelets = await Product.find({ _id: { $in: braceletIds } }).session(session);
+          for (const bracelet of bracelets) productById.set(String(bracelet._id), bracelet);
+        }
+        const stockProductIds = [...productById.keys()];
+
         const stockVariants = await StockVariant.find({
-          productIds: { $in: uniqueProductIds }
+          productIds: { $in: stockProductIds }
         }).session(session);
-        const variantsByProduct = new Map(uniqueProductIds.map(productId => [productId, []]));
+        const variantsByProduct = new Map(stockProductIds.map(productId => [productId, []]));
         for (const variant of stockVariants) {
           for (const linkedProductId of variant.productIds || []) {
             const productId = String(linkedProductId);
@@ -349,29 +377,77 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           }
         }
 
+        // One entry per order line. Bracelet lines for a sartla are appended
+        // while the loop runs, once it is known how many sartlas the shelf
+        // cannot cover.
+        const lines = items.map(item => ({
+          productId: String(item.productId),
+          quantity: Number(item.quantity),
+          size: item.size,
+          clasp: item.clasp,
+          height: item.height,
+          braceletCount: item.braceletCount
+        }));
+
         const allocationByItem = [];
-        for (const [itemIndex, item] of items.entries()) {
-          const productId = String(item.productId);
+        for (let itemIndex = 0; itemIndex < lines.length; itemIndex++) {
+          const line = lines[itemIndex];
+          const productId = line.productId;
           const product = productById.get(productId);
-          const quantity = Number(item.quantity);
+          const quantity = line.quantity;
+          const isPart = Boolean(line.partOfItemId);
+          if (!product) {
+            const error = new Error(`A bracelet of ${line.partOfName} no longer exists. Fix its bracelet list in the portal.`);
+            error.statusCode = 409;
+            throw error;
+          }
           // Catalog.products is the authoritative membership list shown to the
           // customer. A product can be featured in more than one catalog while
           // Product.catalogId continues to identify its primary catalog.
-          if (!catalogIncludesProduct(catalogProductIds, productId)) {
+          // A sartla's bracelets are internal and need not be in the catalogue.
+          if (!isPart && !catalogIncludesProduct(catalogProductIds, productId)) {
             const error = new Error(`Product ${product.name} is not in this catalog`);
             error.statusCode = 400;
             throw error;
           }
-          if (!product.isActive) {
+          if (!isPart && !product.isActive) {
             const error = new Error(`Product ${product.name} is not available`);
             error.statusCode = 409;
             throw error;
           }
 
+          const isSartla = !isPart && Sartla.isSartlaType(product.type);
+          let sartlaSet = null;
+          if (isSartla) {
+            const offered = Sartla.offeredCounts(product);
+            if (!offered.length) {
+              const error = new Error(`${product.name} is not ready to order yet`);
+              error.statusCode = 409;
+              throw error;
+            }
+            // An app too old to ask gets the smallest set.
+            const wantedCount = line.braceletCount === undefined || line.braceletCount === null || line.braceletCount === ''
+              ? offered[0]
+              : Number(line.braceletCount);
+            if (!offered.includes(wantedCount)) {
+              const error = new Error(`Choose ${offered.join(', ')} bracelets for ${product.name}`);
+              error.statusCode = 400;
+              error.code = 'BRACELET_COUNT_REQUIRED';
+              throw error;
+            }
+            line.braceletCount = wantedCount;
+            line._id = new mongoose.Types.ObjectId();
+            sartlaSet = Sartla.setFor(product, wantedCount);
+          }
+
           const productVariants = variantsByProduct.get(productId) || [];
           // Boucle and pendantif have no size; their stock lives under "One size".
-          const sizeKey = normalizeStockSize(item.size)
+          // Finished sartlas are counted per size and bracelet count ("5.4 x5").
+          const baseSizeKey = normalizeStockSize(line.size)
             || (productOptions.typeHasSizes(product.type) ? '' : normalizeStockSize(productOptions.ONE_SIZE));
+          const sizeKey = isSartla
+            ? normalizeStockSize(Sartla.stockSize(line.size, line.braceletCount))
+            : baseSizeKey;
           if (productVariants.length && !sizeKey) {
             const error = new Error(`Choose a size for ${product.name} so its exact stock can be checked`);
             error.statusCode = 400;
@@ -400,10 +476,15 @@ router.post('/', auth, validateOrderData, async (req, res) => {
 
           // Sheet-backed products use exact reference + size + Wax/Resin stock.
           // Older manual products keep their scalar-stock fallback until linked.
-          const policy = product.fulfillmentPolicy || 'stock_then_print';
+          // A sartla's single stock number cannot say which count it holds, so
+          // only its counted stock ("5.4 x5") is used.
+          // A sartla is never stock only: what the shelf lacks is made from bracelets.
+          const policy = isSartla && product.fulfillmentPolicy === 'stock_only'
+            ? 'stock_then_print'
+            : (product.fulfillmentPolicy || 'stock_then_print');
           let available = selectedVariant
             ? Math.max(selectedVariant.onHandQuantity - selectedVariant.reservedQuantity, 0)
-            : (productVariants.length ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
+            : (productVariants.length || isSartla ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
           let stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
           let printQuantity = quantity - stockQuantity;
 
@@ -437,7 +518,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
               return true;
             }
             const reservedProduct = await Product.findOneAndUpdate(
-              { _id: productId, isActive: true, stock: { $gte: wanted } },
+              { _id: productId, ...(isPart ? {} : { isActive: true }), stock: { $gte: wanted } },
               { $inc: { stock: -wanted, reservedStock: wanted } },
               { new: true, session }
             );
@@ -476,9 +557,29 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             available = nowAvailable;
           }
 
+          // Sartlas the shelf cannot cover are made from their bracelets: each
+          // bracelet becomes its own line and takes bracelet stock, and what
+          // that stock lacks goes to printing.
+          let assembleQuantity = 0;
+          if (isSartla && printQuantity > 0) {
+            assembleQuantity = printQuantity;
+            printQuantity = 0;
+            const partOfName = `${product.serialNumber || product.name} (${Sartla.label(line.braceletCount)})`;
+            for (const bracelet of Sartla.braceletsNeeded(sartlaSet, assembleQuantity)) {
+              lines.push({
+                productId: bracelet.productId,
+                quantity: bracelet.quantity,
+                size: line.size,
+                partOfItemId: line._id,
+                partOfName
+              });
+            }
+          }
+
           allocationByItem[itemIndex] = {
             stockQuantity,
             printQuantity,
+            assembleQuantity,
             inventoryVariantId: selectedVariant?._id || null,
             productionMethod: selectedVariant?.printMethod || preferredMethod || (printQuantity > 0 ? 'undecided' : 'none'),
             stockBefore: available,
@@ -487,25 +588,33 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         }
 
         let totalAmount = 0;
-        const orderItems = items.map((item, itemIndex) => {
-          const product = productById.get(String(item.productId));
-          const quantity = Number(item.quantity);
+        const orderItems = lines.map((line, itemIndex) => {
+          const product = productById.get(line.productId);
+          const quantity = line.quantity;
           const allocation = allocationByItem[itemIndex];
-          totalAmount += (product.price || 0) * quantity;
+          const isPart = Boolean(line.partOfItemId);
+          const isSartla = !isPart && Sartla.isSartlaType(product.type);
+          // A sartla's bracelets are paid for in the sartla's price.
+          const price = isPart ? 0 : (isSartla ? Sartla.priceFor(product, line.braceletCount) : (product.price || 0));
+          totalAmount += price * quantity;
           return {
+            ...(line._id ? { _id: line._id } : {}),
             productId: product._id,
             inventoryVariantId: allocation.inventoryVariantId,
             quantity,
             stockQuantity: allocation.stockQuantity,
             printQuantity: allocation.printQuantity,
+            assembleQuantity: allocation.assembleQuantity,
             productionMethod: allocation.productionMethod,
             fulfillmentStatus: 'awaiting_validation',
-            price: product.price || 0,
-            weight: product.weight || 0,
+            price,
+            weight: isPart ? 0 : (product.weight || 0),
             name: product.name,
-            size: item.size,
-            clasp: item.clasp,
-            height: item.height
+            size: line.size,
+            clasp: line.clasp,
+            height: line.height,
+            ...(isSartla ? { braceletCount: line.braceletCount } : {}),
+            ...(isPart ? { partOfItemId: line.partOfItemId, partOfName: line.partOfName } : {})
           };
         });
 
@@ -526,7 +635,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
         order = createdOrders[0];
 
         const movements = allocationByItem
-          .map((allocation, itemIndex) => ({ allocation, item: items[itemIndex] }))
+          .map((allocation, itemIndex) => ({ allocation, item: lines[itemIndex] }))
           .filter(({ allocation }) => allocation.stockQuantity > 0)
           .map(({ allocation, item }) => {
           const quantity = allocation.stockQuantity;
@@ -676,7 +785,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       console.error('Error notifying admins about new order:', err);
     }
 
-    res.status(201).json(orderWithSizes);
+    res.status(201).json(withoutSartlaParts(orderWithSizes));
   } catch (error) {
     if (error?.code === 11000) {
       const submissionKey = String(req.get('Idempotency-Key') || req.body.submissionKey || '').trim().slice(0, 160);
@@ -685,7 +794,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           .populate('catalogId', 'name description')
           .populate('items.productId', 'name imageUrl size serialNumber weight showWeight type')
         : null;
-      if (existingOrder) return res.status(200).json(existingOrder);
+      if (existingOrder) return res.status(200).json(withoutSartlaParts(existingOrder));
     }
     console.error('Error creating order:', error);
     res.status(error.statusCode || 500).json({
@@ -760,7 +869,7 @@ router.post('/:id/confirm-legacy-workflow', operationsAuth, async (req, res) => 
         if (!Number.isSafeInteger(quantity) || quantity < 1
           || !Number.isSafeInteger(stockQuantity) || stockQuantity < 0
           || !Number.isSafeInteger(printQuantity) || printQuantity < 0
-          || stockQuantity + printQuantity !== quantity) {
+          || stockQuantity + printQuantity + Number(item.assembleQuantity || 0) !== quantity) {
           const error = new Error(`Review the stock and print quantities for ${product.serialNumber}`);
           error.statusCode = 409;
           throw error;
@@ -1127,7 +1236,7 @@ router.get('/my', auth, async (req, res) => {
     if (limit) options.limit = parseInt(limit);
 
     const orders = await Order.findByUser(req.user.id, options);
-    res.json(orders);
+    res.json(orders.map(withoutSartlaParts));
   } catch (error) {
     console.error('Error fetching user orders:', error);
     res.status(500).json({ message: 'Server error' });
@@ -1169,7 +1278,7 @@ router.get('/:id', auth, async (req, res) => {
       }))
     };
 
-    res.json(orderWithSizes);
+    res.json(canManageOperations(req.user) ? orderWithSizes : withoutSartlaParts(orderWithSizes));
   } catch (error) {
     console.error('Error fetching order:', error);
     res.status(500).json({ message: 'Server error' });

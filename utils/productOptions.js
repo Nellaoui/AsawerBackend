@@ -7,8 +7,9 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.ProductOptions = api;
 })(typeof self !== 'undefined' ? self : this, function () {
-  // Every bague and bracelet offers the whole Size Presets list.
-  const PRESET_SIZE_TYPES = ['bague', 'bracelet'];
+  // Every bague and bracelet offers the whole Size Presets list. A sartla is a
+  // set of bracelets, so it offers the bracelet sizes.
+  const PRESET_SIZE_TYPES = ['bague', 'bracelet', 'sartla'];
   // Earrings and pendants never have a size. Their stock is kept as "One size".
   const NO_SIZE_TYPES = ['boucle', 'pendantif'];
   const ONE_SIZE = 'One size';
@@ -21,6 +22,8 @@
     const lower = String(type || '').trim().toLowerCase();
     return lower === 'braclet' ? 'bracelet' : lower;
   };
+  // The Size Presets entry a type reads its sizes from.
+  const presetKey = (type) => (normalizeType(type) === 'sartla' ? 'bracelet' : normalizeType(type));
   const typeHasSizes = (type) => !NO_SIZE_TYPES.includes(normalizeType(type));
   const typeHasHeights = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
   const typeHasClasps = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
@@ -29,7 +32,7 @@
   const usesPresetSizes = (type, presets) => {
     const t = normalizeType(type);
     if (!typeHasSizes(t)) return false;
-    return PRESET_SIZE_TYPES.includes(t) || Boolean(presets && presets[t] && presets[t].applyToAll === true);
+    return PRESET_SIZE_TYPES.includes(t) || Boolean(presets && presets[presetKey(t)] && presets[presetKey(t)].applyToAll === true);
   };
 
   /** Trimmed, de-duplicated, numeric-aware sorted list of strings. */
@@ -49,7 +52,7 @@
     return CLASP_TYPES.filter((c) => wanted.has(c));
   };
 
-  const presetSizes = (type, presets) => cleanList(presets && presets[normalizeType(type)] && presets[normalizeType(type)].availableSizes);
+  const presetSizes = (type, presets) => cleanList(presets && presets[presetKey(type)] && presets[presetKey(type)].availableSizes);
   const presetHeights = (type, presets) => (typeHasHeights(type)
     ? cleanList(presets && presets[normalizeType(type)] && presets[normalizeType(type)].availableHeights)
     : []);
@@ -74,7 +77,7 @@
 
   return {
     PRESET_SIZE_TYPES, NO_SIZE_TYPES, ONE_SIZE, CLASP_TYPES, CLASP_LABELS,
-    normalizeType, typeHasSizes, typeHasHeights, typeHasClasps, usesPresetSizes,
+    normalizeType, presetKey, typeHasSizes, typeHasHeights, typeHasClasps, usesPresetSizes,
     cleanList, cleanClasps, presetSizes, presetHeights, productOptionsFor,
   };
 });

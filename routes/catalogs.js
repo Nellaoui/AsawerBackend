@@ -6,6 +6,8 @@ const Product = require('../models/Product');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { auth } = require('../middlewares/auth');
+const Sartla = require('../utils/sartla');
+const { resolveSartlaSets } = require('../utils/sartlaSets');
 const { sendPushToUser } = require('../utils/pushNotification');
 const { catalogNameKey, pickCatalogChoices } = require('../utils/catalogChoices');
 
@@ -401,6 +403,14 @@ router.post('/:id/products', auth, async (req, res) => {
       availableClasps
     } = req.body;
 
+    // A sartla keeps a bracelet list per count; the lists are checked against real bracelets.
+    let sartlaSets = [];
+    if (Sartla.isSartlaType(type)) {
+      const resolved = await resolveSartlaSets(req.body.sartlaSets);
+      if (resolved.error) return res.status(400).json({ message: resolved.error });
+      sartlaSets = resolved.sets;
+    }
+
     if (!name || !serialNumber) {
       return res.status(400).json({ message: 'Name and serial number are required' });
     }
@@ -423,6 +433,7 @@ router.post('/:id/products', auth, async (req, res) => {
       availableSizes: availableSizes || [],
       availableHeights: availableHeights || [],
       availableClasps: Array.isArray(availableClasps) ? availableClasps : [],
+      sartlaSets,
       clasp: clasp || null,
       relatedProducts: relatedProducts || [],
       catalogId: catalog._id,

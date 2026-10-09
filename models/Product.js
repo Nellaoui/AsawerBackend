@@ -149,6 +149,20 @@ const productSchema = new mongoose.Schema({
     type: String,
     trim: true
   }],
+  // Sartla only: which bracelets make the set for each count the customer can
+  // pick (3, 5 or 7). A count with no list is not offered. `price` 0 means the
+  // product price. See utils/sartla.js.
+  sartlaSets: [{
+    _id: false,
+    count: { type: Number, enum: [3, 5, 7], required: true },
+    price: { type: Number, min: 0, default: 0 },
+    bracelets: [{
+      _id: false,
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+      reference: { type: String, trim: true, default: '' },
+      quantity: { type: Number, min: 1, required: true }
+    }]
+  }],
   relatedProducts: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product'

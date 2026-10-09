@@ -72,6 +72,9 @@
     .size-list{display:grid;gap:9px;margin-top:8px}.size-entry{display:grid;grid-template-columns:minmax(110px,1fr) minmax(110px,1fr) auto;align-items:end;gap:8px}.size-entry .button{white-space:nowrap}.size-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.size-heading .button{flex:none}
     @media(max-width:620px){.size-entry{grid-template-columns:1fr 1fr}.size-entry .button{grid-column:1/-1}}
     .size-entry.locked{grid-template-columns:minmax(110px,1fr) minmax(110px,1fr)}.size-entry.locked input[data-product-size]{opacity:.75}
+    #productDialog.sartla [data-create-stock]{display:none!important}
+    .sartla-sets{display:grid;gap:10px;margin-top:8px}.sartla-set{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:0;display:grid;gap:8px}.sartla-set legend{font-weight:700;padding:0 6px}.sartla-set legend .muted{font-weight:500}.sartla-set.bad{border-color:#b91c1c}.sartla-line{display:grid;grid-template-columns:minmax(120px,1fr) 90px auto;gap:8px;align-items:end}.sartla-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:end;justify-content:space-between}.sartla-foot label{max-width:200px}
+    @media(max-width:620px){.sartla-line{grid-template-columns:1fr 80px}.sartla-line .button{grid-column:1/-1}}
     .chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;font-weight:600;cursor:pointer;white-space:nowrap}.chip input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0;padding:0;flex:none;accent-color:var(--gold)}.chip:has(input:checked){border-color:var(--gold);color:var(--gold)}
     .size-note{margin:8px 0 0;color:var(--gold)}
     .tabs{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}.tab-list{display:flex;gap:6px;padding:5px;border:1px solid #ffffff10;border-radius:13px;background:#0c1118;flex-wrap:wrap}
@@ -209,6 +212,7 @@
           <option value="Collier">Collier</option>
           <option value="Boucle">Boucle</option>
           <option value="Pendantif">Pendantif</option>
+          <option value="Sartla">Sartla</option>
           <option value="Other">Other</option>
         </select>
       </label>
@@ -246,6 +250,12 @@
         <p id="productPreviousClasp" class="size-note" hidden></p>
         <div id="productClasps" class="chip-row"></div>
       </div>
+      <div id="productSartlaBlock" hidden>
+        <span class="field-label">Bracelets in this sartla</span>
+        <p class="muted" style="margin:0">Customers choose 3, 5 or 7 bracelets. Fill the list for each one you make; an empty list is not offered. When no finished sartla is on the shelf, an order takes these bracelets instead. Count finished sartlas later with Manage sizes.</p>
+        <p id="productSartlaLinked" class="size-note" hidden></p>
+        <div id="productSartlaSets" class="sartla-sets"></div>
+      </div>
       <label id="productNoteField">Note<input id="productNote" placeholder="What is still missing?"></label>
       </div>
       <div class="modal-foot">
@@ -255,6 +265,19 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="sartlaDialog">
+    <form id="sartlaForm">
+      <div class="modal-head"><h2>Bracelets in this sartla</h2><p id="sartlaProduct" class="subtitle"></p></div>
+      <div class="modal-body">
+        <div id="sartlaError" class="error" aria-live="assertive"></div>
+        <p class="muted" style="margin:0">Customers choose 3, 5 or 7 bracelets. Fill the list for each one you make; an empty list is not offered. When no finished sartla is on the shelf, an order takes these bracelets instead.</p>
+        <div id="sartlaDialogSets" class="sartla-sets"></div>
+      </div>
+      <div class="modal-foot"><button id="closeSartla" type="button" class="button secondary">Cancel</button><button id="saveSartla" type="submit" class="button">Save bracelets</button></div>
+    </form>
+  </dialog>
+  <datalist id="sartlaBracelets"></datalist>
 
   <dialog id="stockDialog">
     <form id="stockForm">
@@ -312,6 +335,7 @@
   </dialog>
 
   <script src="product-options.js"></script>
+  <script src="sartla.js"></script>
   <script>
     const embedded = new URLSearchParams(location.search).get('embedded') === '1';
     if (embedded) document.body.classList.add('embedded');
@@ -568,6 +592,116 @@ Cancel = hidden (private)`);
       $('productPreviousClasp').textContent=old?'Clasp saved before: '+(Options.CLASP_LABELS[old]||old):'';
       $('productPreviousClasp').hidden=!old;
     }
+    // ---- Sartla: which bracelets make each set ----------------------------
+    // The rules live in sartla.js, shared with the backend routes.
+    const SartlaRules=window.Sartla;
+    const isSartla=type=>SartlaRules.isSartlaType(type);
+    function sartlaLineHtml(line={}){
+      return '<div class="sartla-line" data-sartla-line><label>Bracelet<input data-sartla-ref list="sartlaBracelets" maxlength="80" placeholder="BRA 490" autocomplete="off" value="'+escapeHtml(line.reference||'')+'"></label><label>How many<input data-sartla-qty type="number" min="1" step="1" inputmode="numeric" value="'+escapeHtml(line.quantity||1)+'"></label><button class="button secondary small" type="button" data-sartla-remove>Remove</button></div>';
+    }
+    function renderSartlaSets(container,sets=[]){
+      $(container).innerHTML=SartlaRules.SARTLA_COUNTS.map(count=>{
+        const set=sets.find(row=>Number(row.count)===count)||{bracelets:[],price:0};
+        return '<fieldset class="sartla-set" data-sartla-count="'+count+'"><legend>'+count+' bracelets <span class="muted" data-sartla-total></span></legend><div data-sartla-lines>'+(set.bracelets||[]).map(sartlaLineHtml).join('')+'</div><div class="sartla-foot"><button class="button secondary small" type="button" data-sartla-add>+ Add bracelet</button><label>Price for '+count+' (optional)<input data-sartla-price type="number" min="0" step="0.01" placeholder="Product price" value="'+(Number(set.price)>0?escapeHtml(set.price):'')+'"></label></div></fieldset>';
+      }).join('');
+      updateSartlaTotals($(container));
+    }
+    function updateSartlaTotals(root){
+      for(const set of root.querySelectorAll('[data-sartla-count]')){
+        const count=Number(set.dataset.sartlaCount);
+        const total=[...set.querySelectorAll('[data-sartla-line]')].filter(line=>line.querySelector('[data-sartla-ref]').value.trim()).reduce((sum,line)=>sum+(Number(line.querySelector('[data-sartla-qty]').value)||0),0);
+        set.querySelector('[data-sartla-total]').textContent=total?'· '+total+' of '+count+(total===count?' ✓':''):'· not offered';
+        set.classList.toggle('bad',total>0&&total!==count);
+      }
+    }
+    function readSartlaSets(container){
+      return [...$(container).querySelectorAll('[data-sartla-count]')].map(set=>({
+        count:Number(set.dataset.sartlaCount),
+        price:set.querySelector('[data-sartla-price]').value.trim(),
+        bracelets:[...set.querySelectorAll('[data-sartla-line]')]
+          .map(line=>({reference:line.querySelector('[data-sartla-ref]').value.trim(),quantity:Number(line.querySelector('[data-sartla-qty]').value)}))
+          .filter(line=>line.reference)
+      }));
+    }
+    // Same check as the server, so a list that does not add up shows before saving.
+    function sartlaProblem(sets){
+      const result=SartlaRules.cleanSets(sets);
+      if(result.error)return result.error;
+      return result.sets.length?'':'Fill at least one bracelet list: 3, 5 or 7.';
+    }
+    function fillBraceletList(bracelets=[]){
+      $('sartlaBracelets').innerHTML=bracelets.map(b=>'<option value="'+escapeHtml(b.serialNumber)+'">').join('');
+    }
+    let braceletSearchTimer;
+    document.addEventListener('input',event=>{
+      const root=event.target.closest&&event.target.closest('.sartla-sets');
+      if(!root)return;
+      updateSartlaTotals(root);
+      if(!event.target.matches('[data-sartla-ref]'))return;
+      clearTimeout(braceletSearchTimer);
+      const search=event.target.value.trim();
+      if(!/[0-9]/.test(search))return;
+      braceletSearchTimer=setTimeout(()=>api('/inventory/bracelets?search='+encodeURIComponent(search)).then(data=>fillBraceletList(data.bracelets)).catch(()=>{}),250);
+    });
+    document.addEventListener('click',event=>{
+      const set=event.target.closest&&event.target.closest('[data-sartla-count]');
+      if(!set)return;
+      if(event.target.closest('[data-sartla-add]')){
+        const used=[...set.querySelectorAll('[data-sartla-line]')].reduce((sum,line)=>sum+(Number(line.querySelector('[data-sartla-qty]').value)||0),0);
+        set.querySelector('[data-sartla-lines]').insertAdjacentHTML('beforeend',sartlaLineHtml({quantity:Math.max(Number(set.dataset.sartlaCount)-used,1)}));
+        set.querySelector('[data-sartla-line]:last-child [data-sartla-ref]').focus();
+      }else if(event.target.closest('[data-sartla-remove]')){
+        event.target.closest('[data-sartla-line]').remove();
+      }else return;
+      updateSartlaTotals(set.parentElement);
+    });
+    function renderSartlaSection(sets=[]){
+      const show=isSartla(selectedType());
+      $('productSartlaBlock').hidden=!show;
+      $('productDialog').classList.toggle('sartla',show);
+      if(show)renderSartlaSets('productSartlaSets',sets);
+      else $('productSartlaLinked').hidden=true;
+    }
+    // SARTLA 490 goes with BRA 490: find it and start every empty list with it.
+    async function suggestLinkedBracelet(){
+      if(!isSartla(selectedType()))return;
+      const serial=$('productSerial').value.trim();
+      if(!serial)return;
+      try{
+        const data=await api('/inventory/bracelets?search='+encodeURIComponent(serial));
+        fillBraceletList(data.bracelets);
+        const note=$('productSartlaLinked');
+        if(data.linked){
+          note.textContent='Linked bracelet: '+data.linked.serialNumber+'. Each list starts with it. Change any line to mix bracelets.';
+          if(readSartlaSets('productSartlaSets').every(set=>!set.bracelets.length))
+            renderSartlaSets('productSartlaSets',SartlaRules.SARTLA_COUNTS.map(count=>SartlaRules.defaultSet(count,data.linked)));
+        }else{
+          note.textContent=data.linkedReference?'No bracelet '+data.linkedReference+' was found. Type the bracelets for each list.':'';
+        }
+        note.hidden=!note.textContent;
+      }catch(error){console.error('Could not look up the linked bracelet:',error)}
+    }
+    function openSartla(product){
+      state.selected=product; show('sartlaError');
+      $('sartlaProduct').textContent=`${product.name} · ${product.serialNumber}`;
+      renderSartlaSets('sartlaDialogSets',product.sartlaSets||[]);
+      $('sartlaDialog').showModal();
+    }
+    $('closeSartla').addEventListener('click',()=>$('sartlaDialog').close());
+    $('sartlaForm').addEventListener('submit',async event=>{
+      event.preventDefault();
+      const sets=readSartlaSets('sartlaDialogSets');
+      const problem=sartlaProblem(sets);
+      if(problem)return show('sartlaError',problem);
+      $('saveSartla').disabled=true;
+      try{
+        await api('/inventory/products/'+state.selected.productId+'/setup',{method:'PATCH',body:JSON.stringify({sartlaSets:sets})});
+        $('sartlaDialog').close();
+        show('message',`Bracelets saved for ${state.selected.serialNumber}.`);
+        await loadInventory({live:true});
+      }catch(error){show('sartlaError',error.message)}
+      finally{$('saveSartla').disabled=false}
+    });
     function checkedValues(container,name){return [...$(container).querySelectorAll('[data-'+name+']:checked')].map(input=>input.value)}
     function updateProductMethod(){
       $('productDialog').classList.toggle('stock-only',$('productPrintMethod').value==='none');
@@ -594,6 +728,7 @@ Cancel = hidden (private)`);
       renderSizeSection();
       renderHeights(prefill.heights||[]);
       renderClasps(prefill.clasps||[],state.previousClasp);
+      renderSartlaSection(prefill.sartlaSets||[]);
       $('productPrintMethod').value=prefill.fulfillmentPolicy==='stock_only'?'none':(['wax','resin'].includes(prefill.printMethod)?prefill.printMethod:'');
       updateProductMethod();
       $('productPrice').value=Number(prefill.price)>0?Number(prefill.price):'';
@@ -611,7 +746,7 @@ Cancel = hidden (private)`);
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
         sizes:product.availableSizes||[],heights:product.availableHeights||[],clasps:product.availableClasps||[],clasp:product.clasp,
-        price:product.price,printMethod:product.printMethod,
+        price:product.price,printMethod:product.printMethod,sartlaSets:product.sartlaSets||[],
         fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
         note:product.setupIssue&&product.setupIssue.note
       },'fix');
@@ -679,6 +814,9 @@ Cancel = hidden (private)`);
       renderSizeSection();
       renderHeights(heights);
       renderClasps(clasps,state.previousClasp);
+      const sets=$('productSartlaBlock').hidden?[]:readSartlaSets('productSartlaSets');
+      renderSartlaSection(sets);
+      if(state.productMode!=='fix')suggestLinkedBracelet();
     });
     $('productForm').addEventListener('submit',event=>{event.preventDefault();$('productSave').click()});
     $('productCancel').addEventListener('click',()=>$('productDialog').close());
@@ -693,6 +831,7 @@ Cancel = hidden (private)`);
       if(state.productMode==='fix')return;
       const tidy=tidyReference($('productSerial').value);
       if(tidy)$('productSerial').value=tidy;
+      suggestLinkedBracelet();
     });
     $('productSave').addEventListener('click', async ()=>{
       const name=$('productName').value.trim();
@@ -718,10 +857,13 @@ Cancel = hidden (private)`);
       const availableHeights=Options.typeHasHeights(type)?checkedValues('productHeights','height'):[];
       const availableClasps=Options.typeHasClasps(type)?checkedValues('productClasps','clasp'):[];
       const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
+      // A sartla's finished stock is counted per bracelet count later, in Manage sizes.
+      const sartlaSets=isSartla(type)?readSartlaSets('productSartlaSets'):undefined;
+      if(sartlaSets){const problem=sartlaProblem(sartlaSets);if(problem)return show('productError',problem)}
       $('productSave').disabled=true;
       try{
         if(state.productMode==='fix'){
-          const body={name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy};
+          const body={name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
           $('productDialog').close();
@@ -731,7 +873,7 @@ Cancel = hidden (private)`);
           if(!serialNumber)return show('productError','Reference and name are required.');
           let data;
           try{
-            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId&&!sartlaSets?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
           }catch(error){
             // 409: the reference is already in the catalogue, however it was
             // spelled. Switch to fixing that product rather than making a second.
@@ -826,7 +968,7 @@ Cancel = hidden (private)`);
       catch(error){show('message',error.message);}
     }
     function renderProducts() {
-      $('products').innerHTML=state.products.length ? state.products.map(p => { const synced=(p.stockVariants||[]).length>0; const removed=p.removedFromShop===true; const draft=!removed&&(p.stockSyncState==='needs_details'||p.isActive===false); return `<tr${removed?' style="opacity:.6"':''}><td><input type="checkbox" class="pick" data-pick="${escapeHtml(p.productId)}" aria-label="Select ${escapeHtml(p.name)}"${state.picked.has(p.productId)?' checked':''}></td><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${removed?'Removed from shop · customers cannot see it':draft?'Needs image & details':synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions"><button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">Manage sizes</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="edit">Edit / catalogue</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="shop">${removed?'Show in shop again':'Remove from shop'}</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="delete">Delete</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="8" class="muted">No products match this filter.</td></tr>';
+      $('products').innerHTML=state.products.length ? state.products.map(p => { const sartla=isSartla(p.type); const synced=(p.stockVariants||[]).length>0||sartla; const removed=p.removedFromShop===true; const draft=!removed&&(p.stockSyncState==='needs_details'||p.isActive===false); return `<tr${removed?' style="opacity:.6"':''}><td><input type="checkbox" class="pick" data-pick="${escapeHtml(p.productId)}" aria-label="Select ${escapeHtml(p.name)}"${state.picked.has(p.productId)?' checked':''}></td><td><strong>${escapeHtml(p.name)}</strong><br><span class="muted">${escapeHtml(p.serialNumber)} · ${escapeHtml(p.type || 'Other')}</span><br><span class="badge ${draft?'draft':''}">${removed?'Removed from shop · customers cannot see it':draft?'Needs image & details':sartla?`Sartla · ${SartlaRules.offeredCounts(p).join(', ')||'no'} bracelets`:synced?`${p.stockVariants.length} size entries · Sheet synced`:'Manual stock'}</span></td><td><span class="stock ${p.stock===0?'out':p.stock<=p.lowStockThreshold?'low':''}">${p.stock}</span></td><td style="color:var(--blue);font-weight:700">${p.reservedStock}</td><td>${escapeHtml(p.catalogName || '—')}</td><td>${escapeHtml(p.stockLocation || 'Not set')}</td><td>${escapeHtml((p.fulfillmentPolicy || 'stock_then_print').replaceAll('_',' '))}${p.printMethod && p.printMethod!=='none'?'<br><span class="muted">'+escapeHtml(p.printMethod)+'</span>':''}</td><td><div class="actions">${sartla?`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="sartla">Bracelets</button>`:''}<button class="button small" data-id="${escapeHtml(p.productId)}" data-mode="sizes">Manage sizes</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="receive">Add stock</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="adjust">Adjust</button>`}<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="edit">Edit / catalogue</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="production">Production</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="shop">${removed?'Show in shop again':'Remove from shop'}</button><button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-mode="delete">Delete</button>${synced?'':`<button class="button secondary small" data-id="${escapeHtml(p.productId)}" data-stock-only data-mode="damage">Damaged</button>`}</div></td></tr>`; }).join('') : '<tr><td colspan="8" class="muted">No products match this filter.</td></tr>';
       $('pageLabel').textContent=`Page ${state.page} of ${state.pages} · ${state.total} products`;
       renderMoveBar();
       $('previous').disabled=state.page<=1; $('next').disabled=state.page>=state.pages;
@@ -843,8 +985,13 @@ Cancel = hidden (private)`);
     const sizeKeyOf=size=>String(size||'').trim().replace(',','.').toUpperCase().replace(/\s+/g,' ').replace(/\.0+$/,'');
     function sizeRowsFor(product,method){
       const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method);
+      // Finished sartlas are counted per size and per number of bracelets: 5.4 x5.
+      const baseSizes=(product.availableSizes||[]).map(String);
+      const listed=isSartla(product.type)
+        ?baseSizes.flatMap(size=>SartlaRules.offeredCounts(product).map(count=>SartlaRules.stockSize(size,count)))
+        :baseSizes;
       const sizes=[];
-      for(const size of [...(product.availableSizes||[]).map(String),...variants.map(v=>v.size)]){if(size&&!sizes.some(s=>sizeKeyOf(s)===sizeKeyOf(size)))sizes.push(size)}
+      for(const size of [...listed,...variants.map(v=>v.size)]){if(size&&!sizes.some(s=>sizeKeyOf(s)===sizeKeyOf(size)))sizes.push(size)}
       sizes.sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
       return sizes.map(size=>{const v=variants.find(x=>sizeKeyOf(x.size)===sizeKeyOf(size));return{size,onHand:v?v.onHandQuantity:0,reserved:v?v.reservedQuantity:0}});
     }
@@ -877,7 +1024,7 @@ Cancel = hidden (private)`);
     $('searchForm').addEventListener('submit',event=>{event.preventDefault();clearTimeout(inventorySearchTimer);state.page=1;loadInventory({live:true});});
     $('lowStock').addEventListener('change',()=>{state.page=1;loadInventory();}); $('refresh').addEventListener('click',loadInventory);
     $('previous').addEventListener('click',()=>{if(state.page>1){state.page--;loadInventory();}}); $('next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;loadInventory();}});
-    $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else if(button.dataset.mode==='edit')openFixDialogFor({...product,_id:product.productId,catalogId:product.catalogId&&product.catalogId._id||product.catalogId});else if(button.dataset.mode==='delete')deleteProduct(product);else if(button.dataset.mode==='shop')toggleShop(product);else openStock(product,button.dataset.mode);});
+    $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='sartla')openSartla(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else if(button.dataset.mode==='edit')openFixDialogFor({...product,_id:product.productId,catalogId:product.catalogId&&product.catalogId._id||product.catalogId});else if(button.dataset.mode==='delete')deleteProduct(product);else if(button.dataset.mode==='shop')toggleShop(product);else openStock(product,button.dataset.mode);});
     $('action').addEventListener('change',updatePreview); $('quantity').addEventListener('input',updatePreview); $('cancel').addEventListener('click',()=>$('stockDialog').close());
     $('stockForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const action=$('action').value;const quantity=Number($('quantity').value);if(!Number.isSafeInteger(quantity)||quantity<0||(action!=='set'&&quantity===0))return show('stockError','Enter a valid whole-number quantity.');if(action==='remove'&&quantity>p.stock)return show('stockError',`Only ${p.stock} units are available.`);if(!confirm(`Save this ${action} stock adjustment for ${p.name}?`))return;const button=event.submitter;button.disabled=true;try{await api(`/inventory/products/${p.productId}`,{method:'PATCH',body:JSON.stringify({action,quantity,notes:$('notes').value.trim(),lowStockThreshold:Number($('threshold').value||0),stockLocation:$('location').value.trim()})});$('stockDialog').close();show('message',`${p.name} stock updated successfully.`);await loadInventory();}catch(error){show('stockError',error.message);}finally{button.disabled=false;}});
     $('cancelProduction').addEventListener('click',()=>$('productionDialog').close());

@@ -3,6 +3,8 @@ const { body, validationResult } = require('express-validator');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const { auth, adminAuth } = require('../middlewares/auth');
+const Sartla = require('../utils/sartla');
+const { resolveSartlaSets } = require('../utils/sartlaSets');
 
 const router = express.Router();
 
@@ -134,6 +136,13 @@ router.put('/:id', adminAuth, async (req, res) => {
     if (availableSizes !== undefined) product.availableSizes = availableSizes;
     if (availableHeights !== undefined) product.availableHeights = availableHeights;
     if (availableClasps !== undefined) product.availableClasps = availableClasps;
+    if (!Sartla.isSartlaType(product.type)) {
+      if ((product.sartlaSets || []).length) product.sartlaSets = [];
+    } else if (req.body.sartlaSets !== undefined) {
+      const resolved = await resolveSartlaSets(req.body.sartlaSets);
+      if (resolved.error) return res.status(400).json({ message: resolved.error });
+      product.sartlaSets = resolved.sets;
+    }
 
     await product.save();
     res.json(product);

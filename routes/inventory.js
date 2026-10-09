@@ -17,6 +17,8 @@ const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { notifyCaseAssignment } = require('../utils/workflowNotifications');
 const productOptions = require('../utils/productOptions');
+const Sartla = require('../utils/sartla');
+const { resolveSartlaSets } = require('../utils/sartlaSets');
 const { recomputeProductStock } = require('../utils/stockCount');
 
 // Size presets keyed by type, for the same size rules the app applies.
@@ -388,7 +390,7 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
     const search = String(req.query.search || '').trim();
     const filter = search ? { $or: await productSearchConditions(search) } : {};
     const products = await Product.find(filter)
-      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp setupIssue stock')
+      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp sartlaSets setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)
       .lean();
@@ -425,6 +427,34 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
 // POST /api/inventory/products - Create a product from the portal.
 // A photo and a supply route can be supplied here, in which case the product is
 // born ready and never reaches the problem list. Without them it is created as
+// GET /api/inventory/bracelets?search=490 - Bracelets to put in a sartla.
+// Searching with a sartla reference (SARTLA 490) finds its series (BRA 490).
+router.get('/bracelets', operationsAuth, productSetupAuth, async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim().slice(0, 60);
+    const linked = Sartla.linkedBraceletReference(search);
+    const number = (search.match(/[0-9]+/) || [])[0];
+    const filter = { type: /^\s*brac?elet\s*$/i, mergedInto: null, removedFromShop: { $ne: true } };
+    if (number) filter.serialNumber = new RegExp(`(^|[^0-9])${number}([^0-9]|$)`);
+    else if (search) filter.serialNumber = new RegExp(escapeRegExp(search), 'i');
+    const bracelets = await Product.find(filter)
+      .select('_id serialNumber name imageUrl isActive')
+      .sort({ serialNumber: 1 })
+      .limit(30)
+      .lean();
+    const linkedKey = canonicalProductReference(linked);
+    const match = linked ? bracelets.find(bracelet => canonicalProductReference(bracelet.serialNumber) === linkedKey) : null;
+    res.json({
+      linkedReference: linked,
+      linked: match || null,
+      bracelets
+    });
+  } catch (error) {
+    console.error('Error finding bracelets:', error);
+    res.status(500).json({ message: 'Failed to find bracelets' });
+  }
+});
+
 // a draft, exactly as before. Price is optional either way.
 router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
   try {
@@ -447,10 +477,10 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     // same reference can be created again as a fresh product.
     const candidates = parts
       ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i'), removedFromShop: { $ne: true } })
-        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue catalogId')
+        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId')
         .limit(50)
         .lean()
-      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
+      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
     const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
 
     if (duplicate) {
@@ -507,6 +537,13 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       availableClasps: req.body?.availableClasps
     }, await loadSizePresets());
 
+    let sartlaSets = [];
+    if (Sartla.isSartlaType(type)) {
+      const resolved = await resolveSartlaSets(req.body?.sartlaSets);
+      if (resolved.error) return res.status(400).json({ message: resolved.error });
+      sartlaSets = resolved.sets;
+    }
+
     const imageUrl = cleanImageUrl(req.body?.imageUrl);
     const rawPrice = Number(req.body?.price);
     const price = Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : 0;
@@ -532,6 +569,7 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       availableSizes: options.availableSizes,
       availableHeights: options.availableHeights,
       availableClasps: options.availableClasps,
+      sartlaSets,
       catalogId: catalog?._id,
       createdBy: req.user.id,
       isActive: ready,
@@ -699,6 +737,15 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
       for (const field of optionFields) product[field] = options[field];
     }
 
+    // Bracelet lists belong to a sartla only; changing the type away drops them.
+    if (!Sartla.isSartlaType(product.type)) {
+      if ((product.sartlaSets || []).length) product.sartlaSets = [];
+    } else if (req.body?.sartlaSets !== undefined) {
+      const resolved = await resolveSartlaSets(req.body.sartlaSets);
+      if (resolved.error) return res.status(400).json({ message: resolved.error });
+      product.sartlaSets = resolved.sets;
+    }
+
     if (req.body?.description !== undefined) {
       product.description = String(req.body.description).trim().slice(0, 2000);
     }
@@ -754,6 +801,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         availableSizes: product.availableSizes,
         availableHeights: product.availableHeights,
         availableClasps: product.availableClasps,
+        sartlaSets: product.sartlaSets,
         catalogId: product.catalogId,
         stockSyncState: product.stockSyncState,
         setupIssue: product.setupIssue
@@ -793,9 +841,12 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
       sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin',
       notes: 'Created manually in the stock portal'
     });
-    product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
-      .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
-    await product.save();
+    // A sartla's stock sizes carry the bracelet count (5.4 x5); its customer sizes stay the bracelet sizes.
+    if (!Sartla.isSartlaType(product.type)) {
+      product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      await product.save();
+    }
     if (quantity) await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: 0, stockAfter: quantity, notes: `Size ${size} (${printMethod}): created in stock portal` });
     await recomputeProductStock([product._id]);
     res.status(201).json(serializeVariant(variant));
@@ -872,9 +923,11 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
           notes: `Size ${row.size} (${printMethod}): set in stock portal`
         }], { session });
       }
-      product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), ...cleaned.map(row => row.size)])]
-        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
-      await product.save({ session });
+      if (!Sartla.isSartlaType(product.type)) {
+        product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), ...cleaned.map(row => row.size)])]
+          .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+        await product.save({ session });
+      }
       await recomputeProductStock([product._id], session);
     });
     res.json({ changed });

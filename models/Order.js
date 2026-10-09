@@ -50,6 +50,30 @@ const orderItemSchema = new mongoose.Schema({
     min: 0,
     default: null
   },
+  // Sartla line: how many bracelets the customer chose (3, 5 or 7), and how
+  // many of the sartlas are made from bracelets because no finished one was
+  // on the shelf. Those bracelets are separate lines with partOfItemId set.
+  // On a sartla line stockQuantity + printQuantity + assembleQuantity = quantity.
+  braceletCount: {
+    type: Number,
+    default: null
+  },
+  assembleQuantity: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  // Bracelet line that is part of a sartla on the same order. It is free
+  // (price 0) and goes through stock and printing like any bracelet.
+  partOfItemId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null
+  },
+  partOfName: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   inventoryVariantId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'StockVariant',

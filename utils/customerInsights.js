@@ -24,6 +24,8 @@ function buildCustomerInsights(orders = [], workflowCases = [], now = new Date()
 
   for (const order of validOrders) {
     for (const item of order.items || []) {
+      // Bracelets used to make a sartla are not something the customer chose.
+      if (item.partOfItemId) continue;
       const product = item.productId || {};
       const productId = idOf(product);
       const quantity = Number(item.quantity || 0);
