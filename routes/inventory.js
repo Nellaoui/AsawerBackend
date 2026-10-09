@@ -20,6 +20,7 @@ const productOptions = require('../utils/productOptions');
 const Sartla = require('../utils/sartla');
 const { resolveSartlaSets } = require('../utils/sartlaSets');
 const { recomputeProductStock } = require('../utils/stockCount');
+const { auditCatalogChange } = require('../utils/catalogAudit');
 
 // Size presets keyed by type, for the same size rules the app applies.
 // A failed read falls back to the sizes the portal sent.
@@ -755,6 +756,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
     }
 
     let catalogChanged = false;
+    const previousCatalogId = String(product.catalogId || '');
     if (req.body?.catalogId !== undefined) {
       const catalog = await findCatalog(req.body.catalogId);
       if (!catalog) return res.status(400).json({ message: 'Choose a catalogue for this product' });
@@ -779,7 +781,15 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
     }
 
     await product.save();
-    if (catalogChanged) await syncCatalogMembership(product._id, product.catalogId);
+    if (catalogChanged) {
+      await syncCatalogMembership(product._id, product.catalogId);
+      await auditCatalogChange(req, 'catalog.products_moved', product.catalogId, {
+        count: 1,
+        productIds: [String(product._id)],
+        fromCatalogIds: [previousCatalogId],
+        via: 'product_setup',
+      });
+    }
 
     res.json({
       ready,
@@ -1030,11 +1040,18 @@ router.post('/products/move', operationsAuth, productSetupAuth, async (req, res)
 
     // Only products that still exist are moved, so a stale selection (a product
     // deleted meanwhile) never leaves a dangling reference in the catalogue.
-    const found = (await Product.find({ _id: { $in: ids } }).select('_id').lean()).map((product) => product._id);
+    const foundProducts = await Product.find({ _id: { $in: ids } }).select('_id catalogId').lean();
+    const found = foundProducts.map((product) => product._id);
     if (found.length) {
       await Product.updateMany({ _id: { $in: found } }, { $set: { catalogId: catalog._id } });
       await Catalog.updateMany({ _id: { $ne: catalog._id }, products: { $in: found } }, { $pull: { products: { $in: found } } });
       await Catalog.updateOne({ _id: catalog._id }, { $addToSet: { products: { $each: found } } });
+      await auditCatalogChange(req, 'catalog.products_moved', catalog._id, {
+        toCatalog: catalog.name,
+        count: found.length,
+        productIds: found.map(String),
+        fromCatalogIds: [...new Set(foundProducts.map((product) => String(product.catalogId || '')))],
+      });
     }
     res.json({ moved: found.length, catalogName: catalog.name });
   } catch (error) {

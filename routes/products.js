@@ -8,26 +8,6 @@ const { resolveSartlaSets } = require('../utils/sartlaSets');
 
 const router = express.Router();
 
-// TEMPORARY: Add prices to existing products
-router.get('/migrate-prices', async (req, res) => {
-  try {
-    const result = await Product.updateMany(
-      { price: { $exists: false } }, // Find products without price field
-      { $set: { price: 99.99 } }     // Set default price
-    );
-
-    console.log('Price migration result:', result);
-    res.json({
-      message: 'Products updated with default prices',
-      modifiedCount: result.modifiedCount,
-      success: true
-    });
-  } catch (error) {
-    console.error('Error migrating product prices:', error);
-    res.status(500).json({ message: 'Migration failed', success: false });
-  }
-});
-
 // Get all products accessible to the current user
 router.get('/', auth, async (req, res) => {
   try {

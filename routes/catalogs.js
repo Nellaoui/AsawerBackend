@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const { limitRelatedProducts } = require('../utils/relatedProductAccess');
+const { accessSnapshot, auditAccessChange, auditCatalogChange } = require('../utils/catalogAudit');
 const mongoose = require('mongoose');
 const Catalog = require('../models/Catalog');
 const Product = require('../models/Product');
@@ -10,50 +12,6 @@ const Sartla = require('../utils/sartla');
 const { resolveSartlaSets } = require('../utils/sartlaSets');
 const { sendPushToUser } = require('../utils/pushNotification');
 const { catalogNameKey, pickCatalogChoices } = require('../utils/catalogChoices');
-
-// TEMPORARY: Update existing catalogs to be public (GET for easy testing)
-router.get('/migrate-public', async (req, res) => {
-  try {
-    const result = await Catalog.updateMany(
-      { isPublic: { $ne: true } }, // Find catalogs that are not public
-      { $set: { isPublic: true } }  // Set them to public
-    );
-
-    console.log('Migration result:', result);
-    res.json({
-      message: 'Catalogs updated to public',
-      modifiedCount: result.modifiedCount,
-      success: true
-    });
-  } catch (error) {
-    console.error('Error migrating catalogs:', error);
-    res.status(500).json({ message: 'Migration failed', success: false });
-  }
-});
-
-// DEBUG: Check all catalogs in database
-router.get('/debug-all', async (req, res) => {
-  try {
-    const allCatalogs = await Catalog.find({});
-
-    const catalogInfo = allCatalogs.map(catalog => ({
-      id: catalog._id,
-      name: catalog.name,
-      isPublic: catalog.isPublic,
-      ownerId: catalog.ownerId,
-      productCount: catalog.products ? catalog.products.length : 0,
-      allowedUserIds: (catalog.allowedUserIds || []).map(u => u && u.toString ? u.toString() : String(u)),
-    }));
-
-    res.json({
-      totalCatalogs: allCatalogs.length,
-      catalogs: catalogInfo
-    });
-  } catch (error) {
-    console.error('Error fetching debug info:', error);
-    res.status(500).json({ message: 'Debug failed' });
-  }
-});
 
 // Fields the catalog list screen needs to draw its cards and search products.
 // Screens that show or edit a whole product load the catalog through GET /:id.
@@ -165,6 +123,8 @@ router.get('/:id', auth, async (req, res) => {
         };
       }).filter(Boolean) || []
     };
+
+    transformedCatalog.products = await limitRelatedProducts(transformedCatalog.products, req.user);
 
     res.json(transformedCatalog);
   } catch (error) {
@@ -317,6 +277,7 @@ router.put('/:id', auth, async (req, res) => {
     console.log('Edit permission granted for catalog');
 
     const { name, description, allowedUserIds, isPublic } = req.body;
+    const accessBefore = accessSnapshot(catalog);
 
     if (name) catalog.name = name;
     if (description !== undefined) catalog.description = description;
@@ -324,6 +285,7 @@ router.put('/:id', auth, async (req, res) => {
     if (isPublic !== undefined) catalog.isPublic = isPublic;
 
     await catalog.save();
+    await auditAccessChange(req, catalog, accessBefore, 'catalog_edit');
     // Skip populating ownerId to support test-mode string IDs
 
     res.json(catalog);
@@ -364,6 +326,11 @@ router.delete('/:id', auth, async (req, res) => {
 
     // Delete the catalog
     await Catalog.findByIdAndDelete(req.params.id);
+    await auditCatalogChange(req, 'catalog.deleted', catalog._id, {
+      name: catalog.name,
+      productCount: (catalog.products || []).length,
+      ...accessSnapshot(catalog),
+    });
 
     res.json({ message: 'Catalog and all its products deleted successfully' });
   } catch (error) {
@@ -733,6 +700,8 @@ router.put('/:id/permissions', auth, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to manage catalog permissions' });
     }
 
+    const accessBefore = accessSnapshot(catalog);
+
     console.log('Updating catalog permissions:', {
       catalogId: catalog._id,
       allowedUserIds,
@@ -785,6 +754,7 @@ router.put('/:id/permissions', auth, async (req, res) => {
     }
 
     await catalog.save();
+    await auditAccessChange(req, catalog, accessBefore, 'permissions');
 
     console.log('Catalog permissions updated successfully');
     res.json({ 
