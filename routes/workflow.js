@@ -135,6 +135,16 @@ const scopedCaseFilter = (user, scope = 'mine') => {
   return { assignedTo: user.id };
 };
 
+const STEP_MOVE_ACTIONS = ['status_changed', 'stock_missing', 'order_validated'];
+const FORWARD_STEP_ORDER = ['task_ready', 'needs_customer_info', 'boss_review', 'waiting_customer_approval', 'modeling', 'file_validation', 'awaiting_validation', 'stock_picking', 'ready_to_print', 'printing', 'quality_check', 'packing', 'completed'];
+// A step the person finished: the task moved on, never back to an earlier step or into cancelled/rejected.
+const isForwardMove = entry => {
+  if (!STEP_MOVE_ACTIONS.includes(entry.action) || !entry.toStatus || entry.toStatus === entry.fromStatus) return false;
+  if (['cancelled', 'rejected'].includes(entry.toStatus)) return false;
+  const from = FORWARD_STEP_ORDER.indexOf(entry.fromStatus);
+  const to = FORWARD_STEP_ORDER.indexOf(entry.toStatus);
+  return from < 0 || to < 0 || to > from;
+};
 const taskSort = { priority: -1, taskKind: -1, deadlineAt: 1, 'quote.dueDate': 1, createdAt: 1 };
 
 const minutesBetween = (start, end = new Date()) => {
@@ -693,16 +703,23 @@ router.get('/cases', operationsAuth, async (req, res) => {
       if (stage === 'ready_orders') filter.requestType = 'pack_order';
     } else if (req.query.status) filter.status = String(req.query.status);
     else if (req.query.active === 'true') filter.status = ACTIVE_STATUSES;
-    if (scope === 'mine' && req.query.status === 'completed') {
+    // "My completed work" lists every product the person passed on to the next
+    // step (or finished), not only tasks that went through every step.
+    const mineDone = scope === 'mine' && req.query.status === 'completed';
+    if (mineDone) {
       const participantIds = [String(req.user.id)];
       if (mongoose.Types.ObjectId.isValid(String(req.user.id))) {
         participantIds.push(new mongoose.Types.ObjectId(String(req.user.id)));
       }
       delete filter.assignedTo;
-      filter.$or = [
-        { assignedTo: req.user.id },
-        { 'history.actorId': { $in: participantIds } }
-      ];
+      delete filter.status;
+      filter.history = {
+        $elemMatch: {
+          actorId: { $in: participantIds },
+          action: { $in: STEP_MOVE_ACTIONS },
+          toStatus: { $nin: [null, 'cancelled', 'rejected'] }
+        }
+      };
     }
     const method = String(req.query.method || '');
     if (method && !['wax', 'resin'].includes(method)) filter.productionMethod = method;
@@ -788,7 +805,15 @@ router.get('/cases', operationsAuth, async (req, res) => {
 
     // A page holds whole orders, not product tasks: one order with many
     // products used to fill a page and push every other order to later pages.
-    const rows = await WorkflowCase.find(filter).sort(taskSort).select('_id orderId').lean();
+    let rows = await WorkflowCase.find(filter).sort(taskSort).select(mineDone ? '_id orderId history' : '_id orderId').lean();
+    const myDoneAt = new Map();
+    if (mineDone) {
+      for (const row of rows) {
+        const mine = (row.history || []).filter(entry => sameUserId(entry.actorId, req.user.id) && isForwardMove(entry));
+        if (mine.length) myDoneAt.set(String(row._id), new Date(Math.max(...mine.map(entry => new Date(entry.createdAt).getTime()))));
+      }
+      rows = rows.filter(row => myDoneAt.has(String(row._id))).sort((a, b) => myDoneAt.get(String(b._id)) - myDoneAt.get(String(a._id)));
+    }
     const orderGroups = new Map();
     for (const row of rows) {
       const key = row.orderId ? `order:${row.orderId}` : `task:${row._id}`;
@@ -800,6 +825,11 @@ router.get('/cases', operationsAuth, async (req, res) => {
       ? await populateCase(WorkflowCase.find({ _id: { $in: pageIds } }).sort(taskSort))
       : [];
     const cases = await attachOrderLines(await hydrateCaseCustomers(caseDocuments));
+    if (mineDone) {
+      for (const item of cases) item.myDoneAt = myDoneAt.get(String(item._id)) || null;
+      const position = new Map(pageIds.map((id, index) => [String(id), index]));
+      cases.sort((a, b) => position.get(String(a._id)) - position.get(String(b._id)));
+    }
     const orders = orderGroups.size;
 
     res.json({
