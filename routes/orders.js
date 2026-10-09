@@ -10,6 +10,7 @@ const WorkflowCase = require('../models/WorkflowCase');
 const AuditLog = require('../models/AuditLog');
 const StockVariant = require('../models/StockVariant');
 const User = require('../models/User');
+const Wishlist = require('../models/Wishlist');
 const { auth, operationsAuth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
@@ -680,6 +681,23 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       });
     } finally {
       await session.endSession();
+    }
+
+    // Ordered products go to the customer's wishlist (never twice). A sartla's
+    // internal bracelet lines are not products the customer chose.
+    try {
+      const orderedIds = [...new Set(order.items.filter(item => !item.partOfItemId).map(item => String(item.productId)))];
+      if (orderedIds.length) {
+        await Wishlist.bulkWrite(orderedIds.map(productId => ({
+          updateOne: {
+            filter: { userId: req.user.id, productId },
+            update: { $setOnInsert: { userId: req.user.id, productId, createdAt: new Date() } },
+            upsert: true
+          }
+        })), { ordered: false });
+      }
+    } catch (err) {
+      console.error('⚠️  Failed to add ordered products to wishlist:', err);
     }
 
     const assignedCases = await WorkflowCase.find({ _id: { $in: order.workflowCaseIds || [] }, assignedTo: { $ne: null } });
