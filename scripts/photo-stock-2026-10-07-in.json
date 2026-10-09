@@ -1,0 +1,261 @@
+{
+  "batchId": "photo-stock-2026-10-07-in",
+  "capturedAt": "2026-10-07T00:00:00.000Z",
+  "printMethod": "wax",
+  "source": "Handwritten STOCK IN sheet headed 'Stock TO' supplied 2026-10-07. 'TO' is part of every product reference (e.g. BRA 025 TO).",
+  "excluded": [
+    "Rows skipped because the handwriting was not certain: BRA 025 S, BRA 035 S, BRA 004, BRA 023 (two rows), BRA 019 (two rows), BRA 013, BRA 021, BRA 021 S, BRA 200 (two rows), BRA 648, BRA 648 S, BRA TATO 001-004"
+  ],
+  "items": [
+    {
+      "reference": "BRA 032 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 7
+      }
+    },
+    {
+      "reference": "BRA 025 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 4,
+        "60": 1
+      }
+    },
+    {
+      "reference": "BRA 034 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 10,
+        "56": 1,
+        "57": 2,
+        "54": 2,
+        "59": 1,
+        "63": 1
+      }
+    },
+    {
+      "reference": "BRA 035 TO",
+      "photo": 1,
+      "sizes": {
+        "59": 1,
+        "56": 1
+      }
+    },
+    {
+      "reference": "BRA 036 TO",
+      "photo": 1,
+      "sizes": {
+        "57": 5,
+        "55": 5
+      }
+    },
+    {
+      "reference": "BRA 037 TO",
+      "photo": 1,
+      "sizes": {
+        "60": 1
+      }
+    },
+    {
+      "reference": "BRA 003 TO",
+      "photo": 1,
+      "sizes": {
+        "54": 1,
+        "58": 1,
+        "60": 1,
+        "56": 2
+      }
+    },
+    {
+      "reference": "BRA 003 S TO",
+      "photo": 1,
+      "sizes": {
+        "58": 2
+      }
+    },
+    {
+      "reference": "BRA 007 TO",
+      "photo": 1,
+      "sizes": {
+        "57": 1,
+        "60": 2,
+        "54": 2
+      }
+    },
+    {
+      "reference": "BRA 008 TO",
+      "photo": 1,
+      "sizes": {
+        "54": 2,
+        "55": 1,
+        "58": 1,
+        "57": 2,
+        "61": 1
+      }
+    },
+    {
+      "reference": "BRA 300 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 2,
+        "60": 3,
+        "54": 1
+      }
+    },
+    {
+      "reference": "BRA 022 TO",
+      "photo": 1,
+      "sizes": {
+        "57": 5,
+        "58": 1,
+        "54": 7,
+        "60": 3
+      }
+    },
+    {
+      "reference": "BRA 020 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 3,
+        "57": 2,
+        "54": 2
+      }
+    },
+    {
+      "reference": "BRA 031 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 3
+      }
+    },
+    {
+      "reference": "BRA 033 TO",
+      "photo": 1,
+      "sizes": {
+        "62": 3
+      }
+    },
+    {
+      "reference": "BRA 012 TO",
+      "photo": 1,
+      "sizes": {
+        "54": 20,
+        "57": 15
+      }
+    },
+    {
+      "reference": "BRA 015 TO",
+      "photo": 1,
+      "sizes": {
+        "54": 11,
+        "55": 1,
+        "56": 3,
+        "57": 9,
+        "58": 1,
+        "59": 4,
+        "61": 2
+      }
+    },
+    {
+      "reference": "BRA 002 TO",
+      "photo": 1,
+      "sizes": {
+        "60": 3,
+        "56": 1,
+        "58": 2
+      }
+    },
+    {
+      "reference": "BRA 001 TO",
+      "photo": 1,
+      "sizes": {
+        "60": 2,
+        "56": 1,
+        "58": 4
+      }
+    },
+    {
+      "reference": "BRA 017 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 9
+      }
+    },
+    {
+      "reference": "BRA 016 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 12
+      }
+    },
+    {
+      "reference": "BRA 649 S TO",
+      "photo": 1,
+      "sizes": {
+        "63": 3,
+        "58": 1
+      }
+    },
+    {
+      "reference": "BRA 649 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 1
+      }
+    },
+    {
+      "reference": "BRA 650 S TO",
+      "photo": 1,
+      "sizes": {
+        "60": 3,
+        "58": 1
+      }
+    },
+    {
+      "reference": "BRA 650 TO",
+      "photo": 1,
+      "sizes": {
+        "54": 1,
+        "58": 2
+      }
+    },
+    {
+      "reference": "BRA 656 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 2,
+        "56": 2,
+        "63": 1
+      }
+    },
+    {
+      "reference": "BRA 657 TO",
+      "photo": 1,
+      "sizes": {
+        "56": 1
+      }
+    },
+    {
+      "reference": "BRA 655 TO",
+      "photo": 1,
+      "sizes": {
+        "56": 2
+      }
+    },
+    {
+      "reference": "BRA 665 TO",
+      "photo": 1,
+      "sizes": {
+        "63": 1
+      }
+    },
+    {
+      "reference": "BRA 011 TO",
+      "photo": 1,
+      "sizes": {
+        "58": 4
+      }
+    }
+  ]
+}

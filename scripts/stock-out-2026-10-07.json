@@ -1,0 +1,69 @@
+{
+  "batchId": "stock-out-2026-10-07",
+  "source": "Handwritten STOCK OUT sheet supplied 2026-10-07. 'TO' is part of each product reference (e.g. BA 013 TO).",
+  "excludedRows": [
+    "Skipped because the handwriting was not certain: BRA VISSE S, BA VISSE S, BA VISSE, DM 012, DM 309, DM 008, BA TATO 002, BA 011, BA 200 (two rows)",
+    "GOU 150 3mm: quantity written '5.5' - could be 5 or 55, left out until confirmed",
+    "DM 008: no size or quantity written"
+  ],
+  "items": [
+    {
+      "reference": "GOU 151 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "6mm": 8
+      }
+    },
+    {
+      "reference": "GOU 151 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "5mm": 2
+      }
+    },
+    {
+      "reference": "GOU 150 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "5mm": 9
+      }
+    },
+    {
+      "reference": "GOU 150 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "6mm": 5
+      }
+    },
+    {
+      "reference": "BA 013 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "58": 22,
+        "53": 2,
+        "54": 2
+      }
+    },
+    {
+      "reference": "BA 019 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "58": 10
+      }
+    },
+    {
+      "reference": "BA 016 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "58": 10
+      }
+    },
+    {
+      "reference": "BA 017 TO",
+      "photo": "2026-10-07 sheet",
+      "sizes": {
+        "58": 7
+      }
+    }
+  ]
+}
