@@ -11,6 +11,7 @@ const router = require('../routes/workflow');
 const route = router.stack.find((layer: any) => layer.route?.path === '/cases/:id/transition');
 const transition = route.route.stack.at(-1).handle;
 const id = '507f1f77bcf86cd799439011';
+const leanable = (value: any) => Object.assign(Promise.resolve(value), { lean: async () => value });
 const response = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() });
 describe('administrator stage corrections', () => {
   let task: any;
@@ -76,14 +77,14 @@ describe('administrator stage corrections', () => {
   test.each([true, false])('does not close an unconfirmed validation task after diversion (override %s)', async adminMove => {
     task.requestType='order_validation'; task.orderId=id; task.status='packing'; task.isBlocked=false;
     req.body={ adminMove, status:'completed', note:'Correction' };
-    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'pending'}))} as any);
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(()=>leanable(({validationStatus:'pending'})))} as any);
     const res=response(); await transition(req,res);
     expect(res.status).toHaveBeenCalledWith(409); expect(task.save).not.toHaveBeenCalled();
   });
   test('returns a diverted pending validation task to its validation queue', async () => {
     task.requestType='order_validation'; task.orderId=id; task.status='boss_review'; req.body.status='awaiting_validation';
-    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'pending'}))} as any);
-    jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(async()=>[{status:'awaiting_validation'}])} as any);
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(()=>leanable(({validationStatus:'pending'})))} as any);
+    jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(()=>leanable([{status:'awaiting_validation'}]))} as any);
     jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
     const res=response(); await transition(req,res);
     expect(res.status).not.toHaveBeenCalled(); expect(task.assignedTeam).toBe('customer_service');
@@ -91,8 +92,8 @@ describe('administrator stage corrections', () => {
   });
   test('returns an already-validated order validation task to awaiting_validation and resets order validationStatus', async () => {
     task.requestType='order_validation'; task.orderId=id; task.status='completed'; req.body.status='awaiting_validation';
-    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'approved'}))} as any);
-    jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(async()=>[{status:'awaiting_validation'}])} as any);
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(()=>leanable(({validationStatus:'approved'})))} as any);
+    jest.spyOn(WorkflowCase,'find').mockReturnValue({select:jest.fn(()=>leanable([{status:'awaiting_validation'}]))} as any);
     jest.spyOn(WorkflowCase,'countDocuments').mockReturnValue({session:jest.fn(async()=>0)} as any);
     jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
     const res=response(); await transition(req,res);
@@ -101,7 +102,7 @@ describe('administrator stage corrections', () => {
   });
   test('keeps an already-validated order confirmed when its stock or printing tasks exist, so they are not created twice', async () => {
     task.requestType='order_validation'; task.orderId=id; task.status='completed'; req.body.status='awaiting_validation';
-    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(async()=>({validationStatus:'approved'}))} as any);
+    jest.spyOn(Order,'findById').mockReturnValue({select:jest.fn(()=>leanable(({validationStatus:'approved'})))} as any);
     jest.spyOn(WorkflowCase,'countDocuments').mockReturnValue({session:jest.fn(async()=>4)} as any);
     jest.spyOn(Order,'updateOne').mockResolvedValue({} as any);
     const res=response(); await transition(req,res);

@@ -6,6 +6,9 @@ jest.mock('express', () => ({ Router: () => ({
   get: jest.fn(),
   post: jest.fn(),
   put: jest.fn(),
+  delete(path: string, ...handlers: any[]) {
+    this.stack.push({ route: { path, method: 'delete', stack: handlers.map(handle => ({ handle })) } });
+  },
   patch(path: string, ...handlers: any[]) {
     this.stack.push({ route: { path, stack: handlers.map(handle => ({ handle })) } });
   },
@@ -19,7 +22,7 @@ const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const router = require('../routes/inventory');
-const route = router.stack.find((layer: any) => layer.route?.path === '/products/:id').route;
+const route = router.stack.find((layer: any) => layer.route?.path === '/products/:id' && layer.route.method !== 'delete').route;
 const handler = route.stack[route.stack.length - 1].handle;
 
 describe('existing product stock receipts (mock database)', () => {

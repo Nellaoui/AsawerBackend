@@ -37,7 +37,7 @@ describe('blocked order archive and resume', () => {
       { isBlocked: true, status: 'quality_check', history: [], save: jest.fn() },
       { isBlocked: false, status: 'stock_picking', history: [], save: jest.fn() }
     ];
-    jest.spyOn(Order, 'findById').mockReturnValue({ session: jest.fn(async () => order) } as any);
+    jest.spyOn(Order, 'findById').mockReturnValue({ session: jest.fn(async () => order), select: jest.fn(() => ({ lean: jest.fn(async () => null) })) } as any);
     jest.spyOn(WorkflowCase, 'find').mockReturnValue({ session: jest.fn(async () => cases) } as any);
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -80,7 +80,7 @@ describe('blocked order archive and resume', () => {
     cases[0].blockedReason = 'Material missing';
     (WorkflowCase.find as jest.Mock).mockImplementation((query: any) => query.archivedAt
       ? { session: jest.fn(async () => cases) }
-      : { select: jest.fn(async () => cases) });
+      : { select: jest.fn(() => Object.assign(Promise.resolve(cases), { lean: async () => cases })) });
     jest.spyOn(Order, 'updateOne').mockResolvedValue({} as any);
     const res = response();
     await resume(request(), res);

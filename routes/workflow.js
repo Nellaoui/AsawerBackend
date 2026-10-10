@@ -85,6 +85,13 @@ const safelyNotify = async (operation) => {
   }
 };
 
+// Sends a notification once the answer has gone out, so the person pressing a
+// button does not wait for it. 'close' also fires if they have already left.
+const notifyAfter = (res, operation) => {
+  if (typeof res?.once === 'function') res.once('close', () => { safelyNotify(operation); });
+  else safelyNotify(operation);
+};
+
 const isAdminUser = (user) => Boolean(user?.isAdmin || user?.role === 'admin');
 const isBossUser = (user) => user?.role === 'employee' && user?.workRole === 'boss';
 const isCustomerServiceUser = (user) => user?.role === 'employee' && user?.workRole === 'customer_service';
@@ -316,7 +323,7 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     ).length;
     if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId)) && total > 1 && done > 0 && done < total) {
       const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
-      await safelyNotify(() => notifyUser(app, {
+      safelyNotify(() => notifyUser(app, {
         userId: order.userId,
         title: `Your order is coming together: ${done} of ${total} products ready`,
         body: `Order ${label}: ${done} of ${total} products are ready. We will tell you when all of them are done.`,
@@ -333,7 +340,7 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     const order = await Order.findById(orderId).select('userId orderNumber').lean();
     if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId))) {
       const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
-      await safelyNotify(() => notifyUser(app, {
+      safelyNotify(() => notifyUser(app, {
         userId: order.userId,
         title: '🎉 Your order is ready',
         body: `Order ${label}: all your products are done and ready for you.`,
@@ -1369,7 +1376,7 @@ router.post('/tasks/:id/archive-request', operationsAuth, async (req, res) => {
     workflowCase.archiveRequest = { requestedBy: req.user.id, requestedByName, requestedAt: new Date(), reason };
     workflowCase.history.push({ actorId: req.user.id, action: 'archive_requested', note: `Reason: ${reason}` });
     await workflowCase.save();
-    await safelyNotify(async () => notifyUsers(req.app, await activeAdminIds(), {
+    notifyAfter(res, async () => notifyUsers(req.app, await activeAdminIds(), {
       title: 'Archive asked',
       body: `${requestedByName} asks to archive ${workflowCase.requestedName}: ${reason}`,
       type: 'archive_requested',
@@ -1485,8 +1492,8 @@ router.patch('/cases/:id/assignment', operationsAuth, async (req, res) => {
     });
     await workflowCase.save();
     if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
-      if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
-      if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase, previousAssignee ? 'reassigned' : 'new_task'));
+      if (previousAssignee) notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+      if (workflowCase.assignedTo) notifyAfter(res, () => notifyCaseAssignment(req.app, workflowCase, previousAssignee ? 'reassigned' : 'new_task'));
     }
     res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
   } catch (error) {
@@ -1552,7 +1559,7 @@ router.post('/cases/:id/block', operationsAuth, async (req, res) => {
     workflowCase.history.push({ actorId: req.user.id, action: 'task_blocked', note: reason });
     await workflowCase.save();
     await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
-    await safelyNotify(() => notifyOrderBlocked(req.app, workflowCase, reason));
+    notifyAfter(res, () => notifyOrderBlocked(req.app, workflowCase, reason));
     res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
   } catch (error) {
     console.error('Error blocking workflow task:', error);
@@ -1702,9 +1709,9 @@ router.post('/cases', operationsAuth, requireTeam('customer_service'), async (re
       );
     }
 
-    await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
+    notifyAfter(res, () => notifyCaseAssignment(req.app, workflowCase));
     if (status === 'needs_customer_info') {
-      await safelyNotify(() => notifyOrderBlocked(req.app, workflowCase, requirements || 'customer information is missing'));
+      notifyAfter(res, () => notifyOrderBlocked(req.app, workflowCase, requirements || 'customer information is missing'));
     }
 
     res.status(201).json(await populateCase(WorkflowCase.findById(workflowCase._id)));
@@ -1804,8 +1811,8 @@ router.patch('/cases/:id', operationsAuth, async (req, res) => {
     workflowCase.history.push({ actorId: req.user.id, action: 'details_updated', note: cleanText(req.body.note, 1000) });
     await workflowCase.save();
     if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
-      if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
-      if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase, 'reassigned'));
+      if (previousAssignee) notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+      if (workflowCase.assignedTo) notifyAfter(res, () => notifyCaseAssignment(req.app, workflowCase, 'reassigned'));
     }
     res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
   } catch (error) {
@@ -1929,11 +1936,11 @@ router.post('/cases/:id/reroute-print', operationsAuth, async (req, res) => {
       );
     }
 
-    if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+    if (previousAssignee) notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
     if (previousStatus === 'printing') {
-      await safelyNotify(() => notifyFailedPrint(req.app, workflowCase, reason));
+      notifyAfter(res, () => notifyFailedPrint(req.app, workflowCase, reason));
     } else if (workflowCase.assignedTo) {
-      await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase, 'reassigned'));
+      notifyAfter(res, () => notifyCaseAssignment(req.app, workflowCase, 'reassigned'));
     }
     await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
 
@@ -2099,7 +2106,7 @@ router.post('/cases/:id/stock-missing', operationsAuth, async (req, res) => {
       stockCaseId = workflowCase._id;
     });
 
-    await safelyNotify(() => notifyCaseAssignment(req.app, printCase));
+    notifyAfter(res, () => notifyCaseAssignment(req.app, printCase));
     await refreshOrderFulfillment(printCase.orderId, req.user.id, req.app);
     res.json({
       stockCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(stockCaseId))),
@@ -2373,11 +2380,11 @@ router.post('/cases/:id/correction', operationsAuth, async (req, res) => {
       await releaseMachineFromCase({ machineCode: previousMachineCode, workflowCase, actorId: req.user.id, outcome: workflowCase.status === 'completed' ? 'completed' : 'cancelled', reason: 'Boss correction' });
     }
     if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
-      if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
-      if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
+      if (previousAssignee) notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+      if (workflowCase.assignedTo) notifyAfter(res, () => notifyCaseAssignment(req.app, workflowCase));
     }
-    if (printCase) await safelyNotify(() => notifyCaseAssignment(req.app, printCase));
-    if (packing?.previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, packing.previousAssignee, packing.packingTask));
+    if (printCase) notifyAfter(res, () => notifyCaseAssignment(req.app, printCase));
+    if (packing?.previousAssignee) notifyAfter(res, () => notifyTaskRemoved(req.app, packing.previousAssignee, packing.packingTask));
     await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
     res.json({
       workflowCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(workflowCase._id))),
@@ -2442,7 +2449,7 @@ router.post('/cases/:id/delete', operationsAuth, async (req, res) => {
     if (fromStatus === 'printing' && previousMachineCode) {
       await releaseMachineFromCase({ machineCode: previousMachineCode, workflowCase, actorId: req.user.id, outcome: 'cancelled', reason: 'Task deleted by the boss' });
     }
-    if (previousAssignee && fromStatus !== 'completed') await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+    if (previousAssignee && fromStatus !== 'completed') notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
     await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
     res.json({ deleted: true, workflowCase: await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(workflowCase._id))) });
   } catch (error) {
@@ -2625,21 +2632,24 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
         reason: failed ? cleanText(req.body.note, 1000) : ''
       });
     }
+    // Notifications go out after the answer, so the person pressing the button does not wait for them.
+    const notices = [];
     if (!sameUserId(previousAssignee, workflowCase.assignedTo)) {
-      if (previousAssignee) await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
-      if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
+      if (previousAssignee) notices.push(() => notifyTaskRemoved(req.app, previousAssignee, workflowCase));
+      if (workflowCase.assignedTo) notices.push(() => notifyCaseAssignment(req.app, workflowCase));
     }
     if (nextStatus === 'needs_customer_info' || nextStatus === 'rejected') {
-      await safelyNotify(() => notifyOrderBlocked(req.app, workflowCase, cleanText(req.body.note, 1000)));
+      notices.push(() => notifyOrderBlocked(req.app, workflowCase, cleanText(req.body.note, 1000)));
     }
     if (['printing', 'quality_check'].includes(previousStatus) && ['ready_to_print', 'modeling'].includes(nextStatus)) {
       const failureNote = qualityReprint
         ? `Reprint ${reprintParts.map(part => `${part.code} x${part.quantity}`).join(', ')}. ${reprintReason}`
         : cleanText(req.body.note, 1000);
-      await safelyNotify(() => notifyFailedPrint(req.app, workflowCase, failureNote));
+      notices.push(() => notifyFailedPrint(req.app, workflowCase, failureNote));
     }
     await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
     res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
+    for (const notice of notices) await safelyNotify(notice);
   } catch (error) {
     console.error('Error transitioning workflow case:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to transition workflow case' });
@@ -2767,9 +2777,9 @@ router.post('/cases/:id/create-product', operationsAuth, requireTeam('boss'), as
 
     const updatedWorkflowCase = await populateCase(WorkflowCase.findById(req.params.id));
     if (previousAssignee && !sameUserId(previousAssignee, updatedWorkflowCase.assignedTo)) {
-      await safelyNotify(() => notifyTaskRemoved(req.app, previousAssignee, updatedWorkflowCase));
+      notifyAfter(res, () => notifyTaskRemoved(req.app, previousAssignee, updatedWorkflowCase));
     }
-    await safelyNotify(() => notifyCaseAssignment(req.app, updatedWorkflowCase));
+    notifyAfter(res, () => notifyCaseAssignment(req.app, updatedWorkflowCase));
 
     res.status(201).json({
       product: await Product.findById(productId).populate('catalogId', 'name'),
