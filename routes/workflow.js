@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const WorkflowCase = require('../models/WorkflowCase');
+const Machine = require('../models/Machine');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Catalog = require('../models/Catalog');
@@ -644,7 +645,10 @@ const attachOrderLines = async (cases) => {
     requestType: { $nin: ['order_validation', 'pack_order'] },
     status: { $nin: ['cancelled', 'rejected'] },
     archivedAt: null
-  }).select('orderId orderItemId productId requestedName status isBlocked reprintParts').populate('productId', 'serialNumber name imageUrl').lean();
+  }).select('orderId orderItemId productId requestedName status isBlocked reprintParts print.plateNumber print.machineId').populate('productId', 'serialNumber name imageUrl').lean();
+  // Printer names for the plate each product was printed on (Packing shows where a product came from).
+  const printerCodes = [...new Set(rows.map(row => row.print?.machineId).filter(Boolean))];
+  const printerNames = new Map((printerCodes.length ? await Machine.find({ code: { $in: printerCodes } }).select('code name').lean() : []).map(machine => [machine.code, machine.name]));
   // Size and quantity live on the order's items; the page already has them populated.
   const orderItems = new Map();
   for (const item of cases) {
@@ -671,6 +675,8 @@ const attachOrderLines = async (cases) => {
       ...item,
       orderLines: [...lines.values()].map(row => ({
         id: row._id,
+        orderItemId: row.orderItemId || null,
+        plate: row.print?.plateNumber ? { number: row.print.plateNumber, printer: printerNames.get(row.print.machineId) || row.print.machineId || '' } : null,
         name: row.requestedName,
         reference: row.productId?.serialNumber || '',
         imageUrl: row.productId?.imageUrl || '',
