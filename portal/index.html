@@ -507,7 +507,7 @@ Cancel = hidden (private)`);
       button.disabled=true;
       try{
         await api('/inventory/products/'+button.dataset.issue+'/issue',{method:'PATCH',body:JSON.stringify({open,note})});
-        await loadNeedsSetup();
+        loadNeedsSetup();
       }catch(error){show('workspaceError',error.message);button.disabled=false}
     });
 
@@ -695,11 +695,12 @@ Cancel = hidden (private)`);
       if(problem)return show('sartlaError',problem);
       $('saveSartla').disabled=true;
       try{
-        await api('/inventory/products/'+state.selected.productId+'/setup',{method:'PATCH',body:JSON.stringify({sartlaSets:sets})});
+        const selected=state.selected;
         $('sartlaDialog').close();
-        show('message',`Bracelets saved for ${state.selected.serialNumber}.`);
-        await loadInventory({live:true});
-      }catch(error){show('sartlaError',error.message)}
+        show('message',`Bracelets saved for ${selected.serialNumber}.`);
+        await api('/inventory/products/'+selected.productId+'/setup',{method:'PATCH',body:JSON.stringify({sartlaSets:sets})});
+        loadInventory({live:true});
+      }catch(error){$('sartlaDialog').showModal();show('sartlaError',error.message)}
       finally{$('saveSartla').disabled=false}
     });
     function checkedValues(container,name){return [...$(container).querySelectorAll('[data-'+name+']:checked')].map(input=>input.value)}
@@ -823,8 +824,8 @@ Cancel = hidden (private)`);
     $('productDelete').addEventListener('click',async()=>{
       const reference=$('productSerial').value;
       if(!confirm(`Delete ${reference} for good? Old orders keep its name but lose its photo.`))return;
-      try{await api('/inventory/products/'+state.fixingId,{method:'DELETE'});$('productDialog').close();show('message',`${reference} deleted.`);await Promise.all([loadInventory(),loadNeedsSetup()]);}
-      catch(error){show('productError',error.message);}
+      try{$('productDialog').close();show('message',`${reference} deleted.`);await api('/inventory/products/'+state.fixingId,{method:'DELETE'});Promise.all([loadInventory(),loadNeedsSetup()]);}
+      catch(error){$('productDialog').showModal();show('productError',error.message);}
     });
     $('newCatalog').addEventListener('click',createCatalogFromForm);
     $('productSerial').addEventListener('blur',()=>{
@@ -893,7 +894,7 @@ Cancel = hidden (private)`);
             state.pendingOrphanId=null;
           }
         }
-        await Promise.all([loadInventory({live:true}),loadNeedsSetup(),loadOrphans()]);
+        Promise.all([loadInventory({live:true}),loadNeedsSetup(),loadOrphans()]);
       }catch(error){show('productError',error.message)}
       finally{$('productSave').disabled=false}
     });
@@ -934,8 +935,9 @@ Cancel = hidden (private)`);
       if(!button)return;
       button.disabled=true;
       try{
-        await api('/inventory/orphans/'+button.dataset.orphan,{method:'PATCH',body:JSON.stringify({status:button.dataset.status})});
-        await loadOrphans();
+        const row=button.closest('li,tr,article,.orphan')||button;row.hidden=true;
+        try{await api('/inventory/orphans/'+button.dataset.orphan,{method:'PATCH',body:JSON.stringify({status:button.dataset.status})})}catch(error){row.hidden=false;throw error}
+        loadOrphans();
       }catch(error){show('workspaceError',error.message);button.disabled=false}
     });
 
@@ -960,7 +962,7 @@ Cancel = hidden (private)`);
       const name=$('moveCatalog').selectedOptions[0].textContent;
       if(!confirm(`Move ${state.picked.size} product(s) to ${name}?`))return;
       $('moveGo').disabled=true;
-      try{const r=await api('/inventory/products/move',{method:'POST',body:JSON.stringify({productIds:[...state.picked],catalogId})});state.picked.clear();show('message',`${r.moved} product(s) moved to ${r.catalogName}.`);loadInventory({live:true});renderMoveBar();}
+      try{const ids=[...state.picked];show('message',`${ids.length} product(s) moving to ${name}…`);const r=await api('/inventory/products/move',{method:'POST',body:JSON.stringify({productIds:ids,catalogId})});state.picked.clear();show('message',`${r.moved} product(s) moved to ${r.catalogName}.`);loadInventory({live:true});renderMoveBar();}
       catch(error){show('message',error.message);}
       finally{$('moveGo').disabled=false;}
     });
@@ -1060,11 +1062,12 @@ Cancel = hidden (private)`);
       if(!sizes.length){$('variantsDialog').close();return}
       $('saveSizeStock').disabled=true;
       try{
-        const data=await api(`/inventory/products/${state.selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,sizes})});
+        const selected=state.selected;
         $('variantsDialog').close();
-        show('message',data.changed.length?`Saved ${data.changed.length} size(s) for ${state.selected.serialNumber}.`:'Nothing changed.');
-        await loadInventory({live:true});
-      }catch(error){show('sizeStockError',error.message)}
+        show('message',`Saved ${sizes.length} size(s) for ${selected.serialNumber}.`);
+        await api(`/inventory/products/${selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,sizes})});
+        loadInventory({live:true});
+      }catch(error){$('variantsDialog').showModal();show('sizeStockError',error.message)}
       finally{$('saveSizeStock').disabled=false}
     });
     $('addVariant').addEventListener('click',addVariant);

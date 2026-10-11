@@ -116,7 +116,7 @@ describe('printing plates', () => {
     await remove({ params: { id: plate._id }, body: { caseId: workflowCase._id }, user: waxUser }, res);
     expect(workflowCase.print.plateId).toBeNull();
     expect(plate.status).toBe('cancelled');
-    expect(res.json).toHaveBeenCalledWith({ closed: true, plate: null });
+    expect(res.json).toHaveBeenCalledWith({ closed: true });
   });
 
   test('a product only moves to a plate of the same type (wax or resin)', async () => {

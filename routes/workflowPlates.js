@@ -163,7 +163,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       }
       if (!plate) plate = await createPlate({ productionMethod: workflowCase.productionMethod, actorId: req.user.id });
       await putOnPlate({ workflowCase, plate, actorId: req.user.id, note: `Put on Plate ${plate.number}` });
-      res.json(await listView(plate));
+      // The portal only needs the plate itself here; its product list comes with the next plate list, so no extra queries delay the answer.
+      res.json({ _id: plate._id, number: plate.number, productionMethod: plate.productionMethod, status: plate.status, createdAt: plate.createdAt });
     } catch (error) {
       respond(res, error, 'add the product to a plate');
     }
@@ -177,7 +178,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       if (String(workflowCase.print?.plateId || '') !== String(plate._id)) fail('This product is not on this plate');
       await takeOffPlate({ workflowCase, actorId: req.user.id, note: `Taken off Plate ${plate.number}` });
       const closed = await dropIfEmpty(plate);
-      res.json({ closed, plate: closed ? null : await listView(plate) });
+      res.json({ closed });
     } catch (error) {
       respond(res, error, 'remove the product from the plate');
     }
@@ -200,8 +201,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         target = await createPlate({ productionMethod: plate.productionMethod, actorId: req.user.id });
       }
       await putOnPlate({ workflowCase, plate: target, actorId: req.user.id, note: `Moved from Plate ${plate.number} to Plate ${target.number}` });
-      await dropIfEmpty(plate);
-      res.json({ moved: true, plate: await listView(target) });
+      res.json({ moved: true, plate: { _id: target._id, number: target.number } });
+      dropIfEmpty(plate).catch(error => console.error('Plate cleanup failed:', error));
     } catch (error) {
       respond(res, error, 'move the product');
     }
