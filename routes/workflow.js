@@ -2523,6 +2523,13 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       if (!reprintReason) return res.status(400).json({ message: 'Explain why these parts need reprinting' });
     }
     const startsPrintingNow = workflowCase.status === 'ready_to_print' && nextStatus === 'printing';
+    // Printing is planned on plates: add the product to a plate, then send the plate to a printer.
+    if (!adminMove && startsPrintingNow) {
+      return res.status(409).json({ message: 'Add this product to a plate, then send the plate to a printer' });
+    }
+    if (!adminMove && workflowCase.status === 'printing' && workflowCase.print?.plateId) {
+      return res.status(409).json({ message: 'This product is on a plate. Press Plate finished or Plate failed on the plate' });
+    }
     // Quality and packing finish with one click: no separate Start step.
     const finishesInOneClick = (workflowCase.status === 'quality_check' && nextStatus === 'packing')
       || (workflowCase.status === 'packing' && nextStatus === 'completed')
@@ -2792,5 +2799,7 @@ router.post('/cases/:id/create-product', operationsAuth, requireTeam('boss'), as
     if (session) await session.endSession();
   }
 });
+
+require('./workflowPlates')(router, { refreshOrderFulfillment, safelyNotify, requireOwnedCase, isUnassigned });
 
 module.exports = router;

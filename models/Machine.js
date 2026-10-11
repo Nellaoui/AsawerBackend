@@ -19,6 +19,7 @@ const machineSchema = new mongoose.Schema({
   statusSource: { type: String, enum: ['manual', 'connector'], default: 'manual' },
   networkStatus: { type: String, enum: ['unknown', 'online', 'offline'], default: 'unknown', index: true },
   currentCaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'WorkflowCase', default: null, index: true },
+  currentPlateId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plate', default: null, index: true },
   lastCheckedAt: { type: Date, default: null, index: true },
   lastSeenAt: { type: Date, default: null, index: true },
   lastStatusChangedAt: { type: Date, default: Date.now },

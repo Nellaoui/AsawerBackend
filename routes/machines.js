@@ -43,6 +43,7 @@ router.get('/', async (req, res) => {
     if (req.user?.workRole === 'resin_print') filter.productionMethod = 'resin';
     const machines = await Machine.find(filter)
       .populate('currentCaseId', 'requestedName status priority orderId productId assignedTo')
+      .populate('currentPlateId', 'number status')
       .sort({ productionMethod: 1, code: 1 });
     res.json(machines);
   } catch (error) {
@@ -72,6 +73,7 @@ router.patch('/:id/status', async (req, res) => {
     if (!STATUS_VALUES.includes(status) || status === 'busy') return res.status(400).json({ message: 'Choose Available, Failed, Maintenance, Offline or Unknown' });
     const reason = cleanText(req.body.reason, 1000);
     if (['failed', 'maintenance'].includes(status) && !reason) return res.status(400).json({ message: 'Add a reason for failed or maintenance status' });
+    if (machine.currentPlateId && status === 'available') return res.status(409).json({ message: 'Finish or fail the plate on this printer before making it available' });
     if (machine.currentCaseId && status === 'available') return res.status(409).json({ message: 'Complete or move the assigned print task before making this printer available' });
 
     const previousStatus = machine.status;

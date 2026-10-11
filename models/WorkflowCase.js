@@ -101,7 +101,9 @@ const workflowCaseSchema = new mongoose.Schema({
     machineId: { type: String, trim: true, maxlength: 120, default: '' },
     sentAt: { type: Date, default: null },
     startedAt: { type: Date, default: null },
-    completedAt: { type: Date, default: null }
+    completedAt: { type: Date, default: null },
+    plateId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plate', default: null, index: true },
+    plateNumber: { type: Number, default: null }
   },
   createdBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', required: true },
   history: [historySchema]

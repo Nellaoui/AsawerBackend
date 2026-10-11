@@ -63,6 +63,7 @@ const assignMachineToCase = async ({ machine, workflowCase, actorId }) => {
   if (!machine.enabled) throw new Error('This printer is disabled');
   if (machine.productionMethod !== workflowCase.productionMethod) throw new Error(`Choose a ${workflowCase.productionMethod} printer for this task`);
   if (['offline', 'failed', 'maintenance'].includes(machine.status)) throw new Error(`This printer is ${machine.status}`);
+  if (machine.currentPlateId) throw new Error('This printer is already printing a plate');
   if (machine.currentCaseId && String(machine.currentCaseId) !== String(workflowCase._id)) throw new Error('This printer is already assigned to another task');
 
   const previousStatus = machine.status;
@@ -82,6 +83,8 @@ const assignMachineToCase = async ({ machine, workflowCase, actorId }) => {
 const releaseMachineFromCase = async ({ machineCode, workflowCase, actorId, outcome = 'completed', reason = '' }) => {
   if (!machineCode) return null;
   const machine = await findMachine(machineCode);
+  // A printer holding a plate is freed by the plate (finished or failed), not by one product leaving it.
+  if (machine && machine.currentPlateId) return machine;
   if (!machine || (machine.currentCaseId && String(machine.currentCaseId) !== String(workflowCase._id))) return machine;
   const previousStatus = machine.status;
   machine.status = outcome === 'failed' ? 'failed' : 'available';
