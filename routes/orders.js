@@ -16,7 +16,7 @@ const { sendPushToUser } = require('../utils/pushNotification');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { planPrintTask, planStockTask } = require('../utils/orderWorkflowRoute');
-const { notifyCaseAssignment, notifyTaskRemoved } = require('../utils/workflowNotifications');
+const { notifyCaseAssignment, notifyTaskRemoved, notifyUsers, activeAdminIds } = require('../utils/workflowNotifications');
 const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalogMembership');
 const { normalizeStockSize } = require('../utils/stockReference');
 const productOptions = require('../utils/productOptions');
@@ -152,6 +152,13 @@ const transitionOrder = async (orderId, nextStatus, actorId) => {
             $set: { status: 'cancelled', assignedTeam: 'none', assignedTo: null },
             $push: { history: { actorId, action: 'order_cancelled', toStatus: 'cancelled', note: 'Parent order was cancelled' } }
           },
+          { session }
+        );
+        // Finished tasks (like the order confirmation) keep their status but say
+        // the order was cancelled, so the portal shows why the order left every stage.
+        await WorkflowCase.updateMany(
+          { orderId: order._id, status: 'completed' },
+          { $push: { history: { actorId, action: 'order_cancelled', toStatus: 'completed', note: 'The order was cancelled after this step' } } },
           { session }
         );
       } else if (nextStatus === 'shipped') {
@@ -1061,9 +1068,9 @@ const repairMissingTasks = async (orderId, actorId, app) => {
       }).select('orderItemId requestType').session(session).lean();
       const hasTask = (item, type) => existing.some(task => String(task.orderItemId) === String(item._id) && task.requestType === type);
       // A line is missing work when it needs stock picking or printing and has no such task.
-      const missing = order.items.filter(item => item.fulfillmentStatus !== 'awaiting_validation'
-        && ((Number(item.stockQuantity || 0) > 0 && !hasTask(item, 'stock_pick'))
-          || (Number(item.printQuantity || 0) > 0 && !hasTask(item, 'print_required'))));
+      // The order is approved, so every line needs its work, whatever state the line says.
+      const missing = order.items.filter(item => (Number(item.stockQuantity || 0) > 0 && !hasTask(item, 'stock_pick'))
+        || (Number(item.printQuantity || 0) > 0 && !hasTask(item, 'print_required')));
       checkedLines = order.items.length;
       if (!missing.length) return;
 
@@ -1168,10 +1175,10 @@ const sweepMissingTasks = async (app) => {
     validationCaseId: { $ne: null },
     validatedAt: { $gt: TASK_VISIBILITY_CUTOFF, $lt: new Date(Date.now() - 2 * 60 * 1000) },
     status: { $in: ['confirmed', 'picking'] },
-    operationsArchivedAt: null,
-    'items.fulfillmentStatus': { $in: ['production', 'stock_reserved'] }
+    operationsArchivedAt: null
   };
   let created = 0;
+  let checked = 0;
   let lastId = null;
   // Walk every candidate in _id order, a batch at a time, so no order is left unchecked.
   for (;;) {
@@ -1180,6 +1187,7 @@ const sweepMissingTasks = async (app) => {
       .select('_id validatedBy items.stockQuantity items.printQuantity items._id').lean();
     if (!orders.length) break;
     lastId = orders[orders.length - 1]._id;
+    checked += orders.length;
     const tasks = await WorkflowCase.find({
       orderId: { $in: orders.map(order => order._id) },
       requestType: { $in: ['stock_pick', 'print_required'] }
@@ -1199,6 +1207,7 @@ const sweepMissingTasks = async (app) => {
     }
     if (orders.length < BATCH) break;
   }
+  console.log(`🔧 Missing-task check: ${checked} confirmed order(s) looked at, ${created} task(s) created`);
   return created;
 };
 router.startMissingTaskSweep = (app) => {
@@ -1594,6 +1603,10 @@ router.put('/:id/cancel', auth, async (req, res) => {
       return res.status(409).json({ message: 'This order is already being prepared and can no longer be cancelled' });
     }
 
+    // Work already handed to the workshop: its people must hear the order stopped.
+    const openTasks = await WorkflowCase.find({ orderId: existingOrder._id, status: { $nin: ['completed', 'cancelled', 'rejected'] } })
+      .select('requestedName assignedTo').lean();
+
     const order = await transitionOrder(req.params.id, 'cancelled', req.user.id);
     if (mongoose.Types.ObjectId.isValid(order.userId)) {
       await order.populate('userId', 'name email phone');
@@ -1621,6 +1634,23 @@ router.put('/:id/cancel', auth, async (req, res) => {
     }
 
     res.json(order);
+
+    // After the answer: tell the boss and everyone who had a task on this order
+    // that it was cancelled, so nobody keeps working on it.
+    if (existingOrder.validationStatus === 'approved' || openTasks.length) {
+      const number = order.orderNumber || String(order._id);
+      const who = canManageOperations(req.user) ? (req.user.name || req.user.email || 'the shop') : 'the customer';
+      const adminIds = await activeAdminIds().catch(() => []);
+      const recipients = [...adminIds, ...openTasks.map(task => task.assignedTo).filter(Boolean)]
+        .map(String).filter(id => id !== String(req.user.id));
+      notifyUsers(req.app, recipients, {
+        title: 'Order cancelled: stop work',
+        body: `Order ${number} was cancelled by ${who}. ${openTasks.length} task(s) stopped${openTasks.length ? `: ${[...new Set(openTasks.map(task => task.requestedName))].join(', ')}` : ''}.`,
+        type: 'order_cancelled',
+        data: { orderId: String(order._id) },
+        dedupeKey: `order_cancelled:${order._id}`
+      }).catch(err => console.error('⚠️  Failed to notify the shop of a cancel:', err));
+    }
   } catch (error) {
     console.error('Error cancelling order:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Server error' });

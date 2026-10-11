@@ -68,6 +68,7 @@ const WORKFLOW_STAGE_FILTERS = {
   quality: ['quality_check'],
   packing: ['packing'],
   ready_orders: ['completed'],
+  cancelled: ['cancelled'],
   ready: ['completed']
 };
 const TEAM_BY_WORK_ROLE = Object.fromEntries(
