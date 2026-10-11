@@ -6,7 +6,7 @@ const { releaseReservedInventory } = require('./orderInventory');
 
 // Orders archived while still waiting to be confirmed stay this long in the
 // archive, then they are erased for good with their tasks and notifications.
-const ARCHIVE_PURGE_DAYS = 14;
+const ARCHIVE_PURGE_DAYS = 30;
 
 // Stock the order still held goes back first; the stock movement stays in the
 // inventory ledger so shelf counts keep adding up.

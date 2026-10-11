@@ -37,7 +37,6 @@ const archiveOrder = handler('/orders/:id/archive');
 const returnOrder = handler('/orders/:id/resume');
 const archiveTask = handler('/tasks/:id/archive');
 const returnTask = handler('/tasks/:id/resume');
-const askToArchive = handler('/tasks/:id/archive-request');
 const response = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() });
 const query = (value: any) => {
   const q: any = {};
@@ -80,19 +79,21 @@ describe('Customer Service archives an order waiting to be confirmed', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ archived: true, purgeAt: order.archivePurgeAt }));
   });
 
-  test('Customer Service cannot archive an order that is already confirmed', async () => {
-    order.validationStatus = 'approved';
-    validationCase.status = 'stock_picking';
-    const res = response();
-    await archiveOrder({ params: { id: orderId }, user: customerService, app: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(order.operationsArchivedAt).toBeNull();
-  });
-
-  test('stock employees cannot archive', async () => {
+  test('any employee can archive an incoming order and a confirmed one at once', async () => {
     const res = response();
     await archiveOrder({ params: { id: orderId }, user: stockEmployee, app: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(order.operationsArchivedAt).toBeInstanceOf(Date);
+
+    order.operationsArchivedAt = null;
+    order.validationStatus = 'approved';
+    validationCase.status = 'printing';
+    validationCase.isBlocked = false;
+    const res2 = response();
+    await archiveOrder({ params: { id: orderId }, user: stockEmployee, app: {} }, res2);
+    expect(res2.status).not.toHaveBeenCalled();
+    expect(order.operationsArchivedAt).toBeInstanceOf(Date);
+    expect(order.archivePurgeAt).toBeNull();
   });
 
   test('Customer Service can return it, and then it is no longer erased', async () => {
@@ -110,26 +111,15 @@ describe('Customer Service archives an order waiting to be confirmed', () => {
     expect(validationCase.archivePurgeAt).toBeNull();
   });
 
-  test('Customer Service cannot return an order the boss archived', async () => {
-    order.operationsArchivedAt = new Date();
-    order.archivePurgeAt = null;
-    const res = response();
-    await returnOrder({ params: { id: orderId }, user: customerService, app: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(order.operationsArchivedAt).toBeInstanceOf(Date);
-  });
-
-  test('the boss can archive a confirmed order an employee asked to archive', async () => {
+  test('the boss can archive a confirmed order', async () => {
     order.validationStatus = 'approved';
     validationCase.status = 'printing';
     validationCase.isBlocked = false;
-    validationCase.archiveRequest = { requestedAt: new Date(), reason: 'Customer changed their mind' };
     const res = response();
     await archiveOrder({ params: { id: orderId }, user: boss, app: {} }, res);
     expect(order.operationsArchivedAt).toBeInstanceOf(Date);
     // Only incoming orders are erased later.
     expect(order.archivePurgeAt).toBeNull();
-    expect(validationCase.archiveRequest).toBeUndefined();
   });
 });
 
@@ -153,26 +143,7 @@ describe('an incoming task with no order', () => {
   });
 });
 
-describe('an employee asks the boss to archive an order', () => {
-  test('the request is saved and the boss is told', async () => {
-    const task: any = { _id: caseId, orderId, status: 'stock_picking', requestedName: 'BRA 661', customerId: { name: 'Nadir' }, assignedTo: '507f1f77bcf86cd7994390bb', history: [], save: jest.fn() };
-    jest.spyOn(WorkflowCase, 'findById').mockImplementation(() => query(task));
-    jest.spyOn(User, 'findById').mockImplementation(() => query({ name: 'Karim' }));
-    const res = response();
-    await askToArchive({ params: { id: caseId }, body: { reason: 'Duplicate order' }, user: stockEmployee, app: {} }, res);
-    expect(res.status).not.toHaveBeenCalled();
-    expect(task.archiveRequest).toEqual(expect.objectContaining({ requestedBy: '507f1f77bcf86cd7994390bb', requestedByName: 'Karim', reason: 'Duplicate order' }));
-    expect(notifyUsers).toHaveBeenCalledWith({}, ['boss-user'], expect.objectContaining({ type: 'archive_requested' }));
-  });
-
-  test('a reason is required', async () => {
-    const res = response();
-    await askToArchive({ params: { id: caseId }, body: { reason: ' ' }, user: stockEmployee, app: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-});
-
-describe('archived incoming orders are erased after 14 days', () => {
+describe('archived incoming orders are erased after 30 days', () => {
   test('stock goes back, then the order, its tasks and notifications are erased', async () => {
     const now = new Date();
     const order: any = {

@@ -55,15 +55,6 @@ describe('blocked order archive and resume', () => {
     expect(session.endSession).toHaveBeenCalled();
   });
 
-  test('does not archive an order that has no blocked active task', async () => {
-    cases[0].isBlocked = false;
-    const res = response();
-    await archive(request(), res);
-    expect(res.status).toHaveBeenCalledWith(409);
-    expect(order.save).not.toHaveBeenCalled();
-    expect(cases[0].save).not.toHaveBeenCalled();
-  });
-
   test('does not add new tasks to an archived order', async () => {
     order.operationsArchivedAt = new Date();
     (Order.findById as jest.Mock).mockResolvedValue(order);

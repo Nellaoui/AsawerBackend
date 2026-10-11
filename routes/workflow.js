@@ -692,11 +692,9 @@ router.get('/cases', operationsAuth, async (req, res) => {
     const scope = ['mine', 'available', 'all'].includes(String(req.query.scope)) ? String(req.query.scope) : 'mine';
     const filter = {
       ...(isManagerUser(req.user) && req.query.includeArchived === 'true' ? {} : visibleTaskFilter()),
-      archivedAt: req.query.archived === 'true' && canViewCustomers(req.user) ? { $ne: null } : null,
+      archivedAt: req.query.archived === 'true' ? { $ne: null } : null,
       ...scopedCaseFilter(req.user, scope)
     };
-    // Customer Service only sees the incoming orders it can bring back.
-    if (req.query.archived === 'true' && !isManagerUser(req.user)) filter.archivePurgeAt = { $ne: null };
 
     if (req.query.team && isManagerUser(req.user)) filter.assignedTeam = String(req.query.team);
     if (req.query.stage) {
@@ -1222,7 +1220,6 @@ const archivePurgeDate = (now = new Date()) => new Date(now.getTime() + ARCHIVE_
 const purgeNote = purgeAt => `Erased for good on ${purgeAt.toISOString().slice(0, 10)} unless it is returned`;
 
 router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
-  if (!isManagerUser(req.user) && !isCustomerServiceUser(req.user)) return res.status(403).json({ message: 'Only the boss or Customer Service can archive orders' });
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
   let session;
   try {
@@ -1234,13 +1231,6 @@ router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
       if (order.operationsArchivedAt) { const error = new Error('Order is already archived'); error.statusCode = 409; throw error; }
       const cases = await WorkflowCase.find({ orderId: order._id }).session(session);
       const incoming = isIncomingOrder(order);
-      if (!incoming && !isManagerUser(req.user)) {
-        const error = new Error('This order is already confirmed. Use Ask to archive so the boss can archive it.'); error.statusCode = 403; throw error;
-      }
-      const active = item => !['completed', 'cancelled', 'rejected'].includes(item.status);
-      if (!incoming && !cases.some(item => active(item) && (item.isBlocked || item.archiveRequest?.requestedAt))) {
-        const error = new Error('Only an order with a blocked task or an archive request can be archived'); error.statusCode = 409; throw error;
-      }
       const now = new Date();
       purgeAt = incoming ? archivePurgeDate(now) : null;
       order.operationsArchivedAt = now;
@@ -1264,7 +1254,6 @@ router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
 });
 
 router.post('/orders/:id/resume', operationsAuth, async (req, res) => {
-  if (!isManagerUser(req.user) && !isCustomerServiceUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can resume archived orders' });
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
   let session;
   try {
@@ -1273,7 +1262,6 @@ router.post('/orders/:id/resume', operationsAuth, async (req, res) => {
       const order = await Order.findById(req.params.id).session(session);
       if (!order) { const error = new Error('Order not found'); error.statusCode = 404; throw error; }
       if (!order.operationsArchivedAt) { const error = new Error('Order is not archived'); error.statusCode = 409; throw error; }
-      if (!isManagerUser(req.user) && !order.archivePurgeAt) { const error = new Error('Only the boss can return this order'); error.statusCode = 403; throw error; }
       const now = new Date();
       const cases = await WorkflowCase.find({ orderId: order._id, archivedAt: { $ne: null } }).session(session);
       for (const item of cases) {
@@ -1310,7 +1298,6 @@ router.post('/orders/:id/resume', operationsAuth, async (req, res) => {
 // An incoming task with no order behind it is archived and returned on its own.
 router.post('/tasks/:id/archive', operationsAuth, async (req, res) => {
   try {
-    if (!isManagerUser(req.user) && !isCustomerServiceUser(req.user)) return res.status(403).json({ message: 'Only the boss or Customer Service can archive this task' });
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
@@ -1334,7 +1321,6 @@ router.post('/tasks/:id/archive', operationsAuth, async (req, res) => {
 
 router.post('/tasks/:id/resume', operationsAuth, async (req, res) => {
   try {
-    if (!isManagerUser(req.user) && !isCustomerServiceUser(req.user)) return res.status(403).json({ message: 'Only the boss or Customer Service can return this task' });
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
@@ -1356,37 +1342,6 @@ router.post('/tasks/:id/resume', operationsAuth, async (req, res) => {
   } catch (error) {
     console.error('Error returning task:', error);
     res.status(500).json({ message: 'Failed to return the task' });
-  }
-});
-
-// An employee who cannot archive an order asks the boss to archive it.
-router.post('/tasks/:id/archive-request', operationsAuth, async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
-    const reason = cleanText(req.body.reason, 500);
-    if (!reason) return res.status(400).json({ message: 'Explain why this order should be archived' });
-    const workflowCase = await WorkflowCase.findById(req.params.id);
-    if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
-    if (!canSeeCase(req.user, workflowCase)) return res.status(403).json({ message: 'This task belongs to another employee' });
-    if (workflowCase.archivedAt) return res.status(409).json({ message: 'This order is already archived' });
-    if (['completed', 'cancelled', 'rejected'].includes(workflowCase.status)) return res.status(409).json({ message: 'This task is already finished' });
-    if (workflowCase.archiveRequest?.requestedAt) return res.status(409).json({ message: 'Archiving was already asked for this order' });
-    const requester = mongoose.Types.ObjectId.isValid(String(req.user.id)) ? await User.findById(req.user.id).select('name email').lean() : null;
-    const requestedByName = requester?.name || requester?.email || req.user.email || 'An employee';
-    workflowCase.archiveRequest = { requestedBy: req.user.id, requestedByName, requestedAt: new Date(), reason };
-    workflowCase.history.push({ actorId: req.user.id, action: 'archive_requested', note: `Reason: ${reason}` });
-    await workflowCase.save();
-    notifyAfter(res, async () => notifyUsers(req.app, await activeAdminIds(), {
-      title: 'Archive asked',
-      body: `${requestedByName} asks to archive ${workflowCase.requestedName}: ${reason}`,
-      type: 'archive_requested',
-      data: { workflowCaseId: String(workflowCase._id), orderId: workflowCase.orderId ? String(workflowCase.orderId) : null },
-      dedupeKey: `archive-request:${workflowCase._id}:${workflowCase.archiveRequest.requestedAt.getTime()}`
-    }));
-    res.json(await hydrateCaseCustomers(await populateCase(WorkflowCase.findById(workflowCase._id))));
-  } catch (error) {
-    console.error('Error asking to archive:', error);
-    res.status(500).json({ message: 'Failed to send the archive request' });
   }
 });
 
