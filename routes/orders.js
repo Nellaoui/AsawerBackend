@@ -1035,6 +1035,94 @@ router.post('/:id/confirm-legacy-workflow', operationsAuth, async (req, res) => 
   }
 });
 
+// POST /:id/create-missing-tasks - A confirmed order whose lines have no stock
+// or printing task (it shows only a finished confirmation) gets them now.
+// Lines that already have a task are left alone, so it is safe to press twice.
+router.post('/:id/create-missing-tasks', operationsAuth, async (req, res) => {
+  const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
+  if (!manager) return res.status(403).json({ message: 'Only the boss can create missing tasks' });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
+
+  const session = await mongoose.startSession();
+  let createdCases = [];
+  let checkedLines = 0;
+  try {
+    await session.withTransaction(async () => {
+      createdCases = [];
+      const order = await Order.findById(req.params.id).session(session);
+      if (!order) {
+        const error = new Error('Order not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (order.validationStatus !== 'approved' || ['cancelled', 'shipped', 'delivered'].includes(order.status)) {
+        const error = new Error('Only a confirmed, open order can get missing tasks');
+        error.statusCode = 409;
+        throw error;
+      }
+      const existing = await WorkflowCase.find({
+        orderId: order._id,
+        requestType: { $in: ['stock_pick', 'print_required'] }
+      }).select('orderItemId requestType').session(session).lean();
+      const hasTask = (item, type) => existing.some(task => String(task.orderItemId) === String(item._id) && task.requestType === type);
+      // A line is missing work when it needs stock picking or printing and has no such task.
+      const missing = order.items.filter(item => item.fulfillmentStatus !== 'awaiting_validation'
+        && ((Number(item.stockQuantity || 0) > 0 && !hasTask(item, 'stock_pick'))
+          || (Number(item.printQuantity || 0) > 0 && !hasTask(item, 'print_required'))));
+      checkedLines = order.items.length;
+      if (!missing.length) return;
+
+      const products = await Product.find({ _id: { $in: order.items.map(item => item.productId) } }).session(session);
+      const productById = new Map(products.map(product => [String(product._id), product]));
+      // createFulfillmentCases makes both kinds for a line, so skip the kind that already exists.
+      const customer = await User.findById(order.userId).select('forcedProductionMethod').session(session).lean();
+      for (const item of missing) {
+        if (Number(item.printQuantity || 0) > 0 && !['wax', 'resin'].includes(item.productionMethod)) {
+          const forced = ['wax', 'resin'].includes(customer?.forcedProductionMethod) ? customer.forcedProductionMethod : null;
+          if (!forced) {
+            const error = new Error(`Choose Wax or Resin for ${item.name}, size ${item.size || '-'} first`);
+            error.statusCode = 409;
+            throw error;
+          }
+          item.productionMethod = forced;
+        }
+        const needsStock = Number(item.stockQuantity || 0) > 0 && !hasTask(item, 'stock_pick');
+        const needsPrint = Number(item.printQuantity || 0) > 0 && !hasTask(item, 'print_required');
+        // Hide the half that already exists from the shared builder.
+        const saved = { stock: item.stockQuantity, print: item.printQuantity };
+        if (!needsStock) item.stockQuantity = 0;
+        if (!needsPrint) item.printQuantity = 0;
+        const made = await createFulfillmentCases(order, productById, req.user.id, session, [item]);
+        item.stockQuantity = saved.stock;
+        item.printQuantity = saved.print;
+        createdCases.push(...made);
+        item.fulfillmentStatus = Number(item.printQuantity || 0) > 0 ? 'production' : 'stock_reserved';
+      }
+      order.fulfillmentState = 'in_progress';
+      await order.save({ session });
+      await AuditLog.create([{
+        category: 'workflow',
+        action: 'missing_tasks_created',
+        actorId: req.user.id,
+        entityType: 'Order',
+        entityId: String(order._id),
+        orderId: String(order._id),
+        details: { created: createdCases.length }
+      }], { session });
+    });
+
+    await Promise.all(createdCases
+      .filter(workflowCase => workflowCase.assignedTo)
+      .map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
+    res.json({ created: createdCases.length, checkedLines });
+  } catch (error) {
+    console.error('Error creating missing order tasks:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to create missing tasks' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 // POST /:id/validate - Customer Service approves an order before work starts.
 router.post('/:id/validate', operationsAuth, async (req, res) => {
   if (!canValidateOrders(req.user)) {
