@@ -1301,13 +1301,13 @@ router.post('/orders/:id/resume', operationsAuth, async (req, res) => {
   } finally { if (session) await session.endSession(); }
 });
 
-// An incoming task with no order behind it is archived and returned on its own.
+// An incoming task with no order behind it (or whose order no longer exists) is archived and returned on its own.
 router.post('/tasks/:id/archive', operationsAuth, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
-    if (workflowCase.orderId) return res.status(409).json({ message: 'Archive the whole order instead' });
+    if (workflowCase.orderId && await Order.exists({ _id: workflowCase.orderId })) return res.status(409).json({ message: 'Archive the whole order instead' });
     if (workflowCase.archivedAt) return res.status(409).json({ message: 'This task is already archived' });
     if (workflowCase.status !== 'awaiting_validation') return res.status(409).json({ message: 'Only a task waiting to be confirmed can be archived' });
     const now = new Date();
@@ -1330,7 +1330,7 @@ router.post('/tasks/:id/resume', operationsAuth, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
     const workflowCase = await WorkflowCase.findById(req.params.id);
     if (!workflowCase) return res.status(404).json({ message: 'Workflow case not found' });
-    if (workflowCase.orderId) return res.status(409).json({ message: 'Return the whole order instead' });
+    if (workflowCase.orderId && await Order.exists({ _id: workflowCase.orderId })) return res.status(409).json({ message: 'Return the whole order instead' });
     if (!workflowCase.archivedAt) return res.status(409).json({ message: 'This task is not archived' });
     const now = new Date();
     workflowCase.archivedAt = null;

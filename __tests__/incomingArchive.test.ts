@@ -143,6 +143,29 @@ describe('an incoming task with no order', () => {
   });
 });
 
+describe('a task whose order no longer exists', () => {
+  test('is archived and returned on its own', async () => {
+    const task: any = { _id: caseId, orderId, status: 'awaiting_validation', requestedName: 'TEST', isBlocked: false, history: [], save: jest.fn() };
+    jest.spyOn(WorkflowCase, 'findById').mockImplementation(() => query(task));
+    jest.spyOn(Order, 'exists').mockResolvedValue(null as any);
+    const res = response();
+    await archiveTask({ params: { id: caseId }, user: stockEmployee }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(task.archivedAt).toBeInstanceOf(Date);
+    await returnTask({ params: { id: caseId }, user: stockEmployee }, response());
+    expect(task.archivedAt).toBeNull();
+  });
+
+  test('is still refused when its order exists', async () => {
+    const task: any = { _id: caseId, orderId, status: 'awaiting_validation', history: [], save: jest.fn() };
+    jest.spyOn(WorkflowCase, 'findById').mockImplementation(() => query(task));
+    jest.spyOn(Order, 'exists').mockResolvedValue({ _id: orderId } as any);
+    const res = response();
+    await archiveTask({ params: { id: caseId }, user: stockEmployee }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+});
+
 describe('archived incoming orders are erased after 30 days', () => {
   test('stock goes back, then the order, its tasks and notifications are erased', async () => {
     const now = new Date();
