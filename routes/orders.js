@@ -1208,18 +1208,15 @@ router.startMissingTaskSweep = (app) => {
 };
 router.sweepMissingTasks = sweepMissingTasks;
 
-// POST /:id/validate - Customer Service approves an order before work starts.
-router.post('/:id/validate', operationsAuth, async (req, res) => {
-  if (!canValidateOrders(req.user)) {
-    return res.status(403).json({ message: 'Only Customer Service or the boss can validate an order' });
-  }
-
+// Confirms one pending order for Customer Service and creates its stock and printing tasks.
+// Throws an error with statusCode when the order cannot be confirmed.
+const validateOrderCore = async ({ orderId, user, body }) => {
   const session = await mongoose.startSession();
   let approvedOrder;
   let fulfillmentCases = [];
   try {
     await session.withTransaction(async () => {
-      const order = await Order.findById(req.params.id).session(session);
+      const order = await Order.findById(orderId).session(session);
       if (!order) {
         const error = new Error('Order not found');
         error.statusCode = 404;
@@ -1237,8 +1234,8 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
         error.statusCode = 409;
         throw error;
       }
-      const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
-      if (!manager && String(validationCase.assignedTo || '') !== String(req.user.id)) {
+      const manager = user?.isAdmin || user?.role === 'admin' || user?.workRole === 'boss';
+      if (!manager && String(validationCase.assignedTo || '') !== String(user.id)) {
         const error = new Error('This validation is assigned to another Customer Service employee');
         error.statusCode = 403;
         throw error;
@@ -1255,14 +1252,15 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
       const productIds = [...new Set(order.items.map(item => String(item.productId)))];
       const products = await Product.find({ _id: { $in: productIds } }).session(session);
       const productById = new Map(products.map(product => [String(product._id), product]));
-      const submittedRoutes = new Map((Array.isArray(req.body.items) ? req.body.items : [])
+      const bulkMethod = ['wax', 'resin'].includes(body.productionMethod) ? body.productionMethod : '';
+      const submittedRoutes = new Map((Array.isArray(body.items) ? body.items : [])
         .map(item => [String(item.itemId || ''), String(item.productionMethod || '')]));
 
       // Customer Service may confirm references one at a time. Only items still
       // waiting are confirmed; `itemIds` narrows that to the ones sent.
       const waitingItems = order.items.filter(item => item.fulfillmentStatus === 'awaiting_validation');
       const pendingItems = waitingItems.length ? waitingItems : order.items;
-      const requestedIds = Array.isArray(req.body.itemIds) ? new Set(req.body.itemIds.map(String)) : null;
+      const requestedIds = Array.isArray(body.itemIds) ? new Set(body.itemIds.map(String)) : null;
       const confirmItems = requestedIds ? pendingItems.filter(item => requestedIds.has(String(item._id))) : pendingItems;
       if (!confirmItems.length) {
         const error = new Error('These items are already confirmed');
@@ -1286,7 +1284,7 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
           const forcedMethod = ['wax', 'resin'].includes(customer.forcedProductionMethod)
             ? customer.forcedProductionMethod
             : null;
-          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id)) || item.productionMethod;
+          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id)) || bulkMethod || item.productionMethod;
           if (!['wax', 'resin'].includes(chosenMethod)) {
             const error = new Error(`Choose Wax or Resin for ${product.serialNumber}, size ${item.size || '-'}`);
             error.statusCode = 409;
@@ -1299,13 +1297,13 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
           const forcedMethod = ['wax', 'resin'].includes(customer.forcedProductionMethod)
             ? customer.forcedProductionMethod
             : null;
-          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id));
+          const chosenMethod = forcedMethod || submittedRoutes.get(String(item._id)) || bulkMethod;
           if (['wax', 'resin'].includes(chosenMethod)) item.productionMethod = chosenMethod;
         }
         item.fulfillmentStatus = item.printQuantity > 0 ? 'production' : 'stock_reserved';
       }
 
-      fulfillmentCases = await createFulfillmentCases(order, productById, req.user.id, session, confirmItems);
+      fulfillmentCases = await createFulfillmentCases(order, productById, user.id, session, confirmItems);
       const now = new Date();
       if (!validationCase.startedAt) validationCase.startedAt = now;
       const stillWaiting = order.items.filter(item => item.fulfillmentStatus === 'awaiting_validation');
@@ -1313,7 +1311,7 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
         // Part of the order is confirmed: its items move on now, the rest stay
         // with Customer Service on the same validation task.
         validationCase.history.push({
-          actorId: req.user.id,
+          actorId: user.id,
           action: 'items_validated',
           fromStatus: 'awaiting_validation',
           toStatus: 'awaiting_validation',
@@ -1328,45 +1326,85 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
       validationCase.status = 'completed';
       validationCase.completedAt = now;
       validationCase.history.push({
-        actorId: req.user.id,
+        actorId: user.id,
         action: 'order_validated',
         fromStatus: 'awaiting_validation',
         toStatus: 'completed',
-        note: String(req.body.note || 'Customer, references, sizes, quantities and production routes confirmed').slice(0, 1000),
+        note: String(body.note || 'Customer, references, sizes, quantities and production routes confirmed').slice(0, 1000),
         queueMinutes: Math.max(Math.round(((validationCase.startedAt || now) - (validationCase.stageQueuedAt || validationCase.createdAt)) / 60000), 0),
         workMinutes: validationCase.startedAt ? Math.max(Math.round((now - validationCase.startedAt) / 60000), 0) : null
       });
       await validationCase.save({ session });
 
       order.validationStatus = 'approved';
-      order.validatedBy = req.user.id;
+      order.validatedBy = user.id;
       order.validatedAt = now;
-      order.validationNote = String(req.body.note || '').slice(0, 1000);
+      order.validationNote = String(body.note || '').slice(0, 1000);
       order.status = 'confirmed';
       order.fulfillmentState = fulfillmentCases.length ? 'in_progress' : 'ready';
       await order.save({ session });
       approvedOrder = order;
     });
-
-    await Promise.all(fulfillmentCases
-      .filter(workflowCase => workflowCase.assignedTo)
-      .map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
-    if (approvedOrder.validationStatus === 'approved') await sendPushToUser(
-      User,
-      approvedOrder.userId,
-      '✅ Order confirmed',
-      `Order ${approvedOrder.orderNumber || approvedOrder._id} passed Customer Service validation`,
-      { type: 'order', orderId: String(approvedOrder._id), status: 'confirmed' }
-    ).catch(error => console.error('Order validation push failed:', error));
-
-    await approvedOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
-    res.json(approvedOrder);
-  } catch (error) {
-    console.error('Error validating order:', error);
-    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to validate order' });
   } finally {
     await session.endSession();
   }
+  return { approvedOrder, fulfillmentCases };
+};
+
+const notifyValidatedOrder = async (app, { approvedOrder, fulfillmentCases }) => {
+  await Promise.all(fulfillmentCases
+    .filter(workflowCase => workflowCase.assignedTo)
+    .map(workflowCase => safelyNotify(() => notifyCaseAssignment(app, workflowCase))));
+  if (approvedOrder.validationStatus === 'approved') await sendPushToUser(
+    User,
+    approvedOrder.userId,
+    '✅ Order confirmed',
+    `Order ${approvedOrder.orderNumber || approvedOrder._id} passed Customer Service validation`,
+    { type: 'order', orderId: String(approvedOrder._id), status: 'confirmed' }
+  ).catch(error => console.error('Order validation push failed:', error));
+};
+
+// POST /:id/validate - Customer Service approves an order before work starts.
+router.post('/:id/validate', operationsAuth, async (req, res) => {
+  if (!canValidateOrders(req.user)) {
+    return res.status(403).json({ message: 'Only Customer Service or the boss can validate an order' });
+  }
+  try {
+    const result = await validateOrderCore({ orderId: req.params.id, user: req.user, body: req.body });
+    await notifyValidatedOrder(req.app, result);
+    await result.approvedOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
+    res.json(result.approvedOrder);
+  } catch (error) {
+    console.error('Error validating order:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to validate order' });
+  }
+});
+
+// POST /validate-many - confirm several pending orders at once, every product to one route.
+// An order that cannot be confirmed is reported with its reason; the others still go through.
+router.post('/validate-many', operationsAuth, async (req, res) => {
+  if (!canValidateOrders(req.user)) {
+    return res.status(403).json({ message: 'Only Customer Service or the boss can validate an order' });
+  }
+  const orderIds = [...new Set((Array.isArray(req.body.orderIds) ? req.body.orderIds : []).map(String))];
+  if (!orderIds.length || orderIds.length > 100) return res.status(400).json({ message: 'Choose between 1 and 100 orders' });
+  if (!['wax', 'resin'].includes(req.body.productionMethod)) return res.status(400).json({ message: 'Choose Wax or Resin' });
+  const outcomes = await Promise.all(orderIds.map(async orderId => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(orderId)) throw Object.assign(new Error('Order not found'), { statusCode: 404 });
+      const result = await validateOrderCore({ orderId, user: req.user, body: { productionMethod: req.body.productionMethod, note: req.body.note } });
+      return { orderId, ok: true, result };
+    } catch (error) {
+      if (!error.statusCode) console.error('Error validating order:', error);
+      return { orderId, ok: false, message: error.statusCode ? error.message : 'Failed to validate order' };
+    }
+  }));
+  res.json({
+    confirmed: outcomes.filter(item => item.ok).map(item => item.orderId),
+    failed: outcomes.filter(item => !item.ok).map(({ orderId, message }) => ({ orderId, message }))
+  });
+  // Notifications go after the answer so the button stays instant.
+  outcomes.filter(item => item.ok).forEach(item => notifyValidatedOrder(req.app, item.result).catch(error => console.error('Order validation notifications failed:', error)));
 });
 
 // GET / - List all orders (admin only)
