@@ -134,12 +134,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         filter.productionMethod = user.workRole === 'wax_print' ? 'wax' : 'resin';
       }
       const plates = await Plate.find(filter).sort({ number: 1 });
-      const views = [];
-      for (const plate of plates) {
-        if (await dropIfEmpty(plate)) continue;
-        views.push(await listView(plate));
-      }
-      res.json(views);
+      const views = await Promise.all(plates.map(async plate => ((await dropIfEmpty(plate)) ? null : listView(plate))));
+      res.json(views.filter(Boolean));
     } catch (error) {
       respond(res, error, 'load the plates');
     }
@@ -227,6 +223,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       if (stale) fail(`${stale.requestedName} can not be printed now. Take it off the plate first.`);
       const now = new Date();
       const team = teamForStatus('printing', plate.productionMethod);
+      const saves = [];
       for (const workflowCase of cases) {
         const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
         workflowCase.status = 'printing';
@@ -239,21 +236,25 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
           actorId: req.user.id, action: 'status_changed', fromStatus: 'ready_to_print', toStatus: 'printing',
           note: `Plate ${plate.number} sent to ${machine.name || machine.code}`, queueMinutes
         });
-        await workflowCase.save();
+        saves.push(workflowCase.save());
       }
       plate.status = 'printing';
       plate.machineCode = machine.code;
       plate.sentAt = now;
-      await plate.save();
+      saves.push(plate.save());
       machine.status = 'busy';
       machine.statusReason = '';
       machine.statusSource = 'manual';
       machine.currentPlateId = plate._id;
       machine.lastStatusChangedAt = now;
       machine.updatedBy = req.user.id;
-      await machine.save();
-      await auditMachine({ action: 'plate_assigned', actorId: req.user.id, machine, details: { plateId: String(plate._id), plateNumber: plate.number, products: cases.length } });
+      saves.push(machine.save());
+      // The cases, the plate and the printer are separate documents, so they are saved together.
+      await Promise.all(saves);
       res.json(await listView(plate));
+      // The audit line is written after the answer so the person does not wait for it.
+      Promise.resolve(auditMachine({ action: 'plate_assigned', actorId: req.user.id, machine, details: { plateId: String(plate._id), plateNumber: plate.number, products: cases.length } }))
+        .catch(error => console.error('Plate audit failed:', error));
     } catch (error) {
       respond(res, error, 'send the plate to the printer');
     }
@@ -286,6 +287,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       const now = new Date();
       const team = teamForStatus('quality_check', plate.productionMethod);
       const assignee = cases.length ? await findTeamAssignee(team) : null;
+      const saves = [];
       for (const workflowCase of cases) {
         const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
         const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
@@ -302,15 +304,16 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
           actorId: req.user.id, action: 'status_changed', fromStatus: 'printing', toStatus: 'quality_check',
           note: `Plate ${plate.number} finished`, queueMinutes, workMinutes
         });
-        await workflowCase.save();
+        saves.push(workflowCase.save());
       }
       plate.status = 'finished';
       plate.finishedAt = now;
-      await plate.save();
-      await releasePrinter({ plate, actorId: req.user.id, failed: false, reason: '' });
-      for (const orderId of new Set(cases.map(item => String(item.orderId || '')).filter(Boolean))) {
-        await refreshOrderFulfillment(orderId, req.user.id, req.app);
-      }
+      saves.push(plate.save());
+      await Promise.all(saves);
+      await Promise.all([
+        releasePrinter({ plate, actorId: req.user.id, failed: false, reason: '' }),
+        ...[...new Set(cases.map(item => String(item.orderId || '')).filter(Boolean))].map(orderId => refreshOrderFulfillment(orderId, req.user.id, req.app))
+      ]);
       res.json({ finished: true, moved: cases.length });
       for (const workflowCase of cases) if (workflowCase.assignedTo) await safelyNotify(() => notifyCaseAssignment(req.app, workflowCase));
     } catch (error) {
@@ -327,6 +330,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       const cases = await plateCases(plate, { status: 'printing' });
       const now = new Date();
       const team = teamForStatus('ready_to_print', plate.productionMethod);
+      const saves = [];
       for (const workflowCase of cases) {
         const queueMinutes = minutesBetween(workflowCase.stageQueuedAt || workflowCase.createdAt, workflowCase.startedAt || now);
         const workMinutes = workflowCase.startedAt ? minutesBetween(workflowCase.startedAt, now) : null;
@@ -340,16 +344,17 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
           actorId: req.user.id, action: 'status_changed', fromStatus: 'printing', toStatus: 'ready_to_print',
           note: `Plate ${plate.number} failed: ${reason}`.slice(0, 1000), queueMinutes, workMinutes
         });
-        await workflowCase.save();
+        saves.push(workflowCase.save());
       }
       plate.status = 'failed';
       plate.failedReason = reason;
       plate.finishedAt = now;
-      await plate.save();
-      await releasePrinter({ plate, actorId: req.user.id, failed: true, reason });
-      for (const orderId of new Set(cases.map(item => String(item.orderId || '')).filter(Boolean))) {
-        await refreshOrderFulfillment(orderId, req.user.id, req.app);
-      }
+      saves.push(plate.save());
+      await Promise.all(saves);
+      await Promise.all([
+        releasePrinter({ plate, actorId: req.user.id, failed: true, reason }),
+        ...[...new Set(cases.map(item => String(item.orderId || '')).filter(Boolean))].map(orderId => refreshOrderFulfillment(orderId, req.user.id, req.app))
+      ]);
       res.json({ failed: true, returned: cases.length });
       for (const workflowCase of cases) await safelyNotify(() => notifyFailedPrint(req.app, workflowCase, `Plate ${plate.number}: ${reason}`));
     } catch (error) {
