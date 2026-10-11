@@ -79,6 +79,7 @@ db.once('open', () => {
   startInactivityNotifier(app);
   startBackupScheduler();
   startArchivePurge();
+  require('./routes/orders').startMissingTaskSweep(app);
 });
 
 // We'll create an HTTP server and attach Socket.IO so routes can use io via app.get('io')

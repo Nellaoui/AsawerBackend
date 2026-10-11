@@ -1035,21 +1035,16 @@ router.post('/:id/confirm-legacy-workflow', operationsAuth, async (req, res) => 
   }
 });
 
-// POST /:id/create-missing-tasks - A confirmed order whose lines have no stock
-// or printing task (it shows only a finished confirmation) gets them now.
-// Lines that already have a task are left alone, so it is safe to press twice.
-router.post('/:id/create-missing-tasks', operationsAuth, async (req, res) => {
-  const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
-  if (!manager) return res.status(403).json({ message: 'Only the boss can create missing tasks' });
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
-
+// Gives a confirmed order the stock and printing tasks its lines are missing.
+// Lines that already have a task are left alone, so it is safe to run twice.
+const repairMissingTasks = async (orderId, actorId, app) => {
   const session = await mongoose.startSession();
   let createdCases = [];
   let checkedLines = 0;
   try {
     await session.withTransaction(async () => {
       createdCases = [];
-      const order = await Order.findById(req.params.id).session(session);
+      const order = await Order.findById(orderId).session(session);
       if (!order) {
         const error = new Error('Order not found');
         error.statusCode = 404;
@@ -1092,7 +1087,7 @@ router.post('/:id/create-missing-tasks', operationsAuth, async (req, res) => {
         const saved = { stock: item.stockQuantity, print: item.printQuantity };
         if (!needsStock) item.stockQuantity = 0;
         if (!needsPrint) item.printQuantity = 0;
-        const made = await createFulfillmentCases(order, productById, req.user.id, session, [item]);
+        const made = await createFulfillmentCases(order, productById, actorId, session, [item]);
         item.stockQuantity = saved.stock;
         item.printQuantity = saved.print;
         createdCases.push(...made);
@@ -1103,25 +1098,115 @@ router.post('/:id/create-missing-tasks', operationsAuth, async (req, res) => {
       await AuditLog.create([{
         category: 'workflow',
         action: 'missing_tasks_created',
-        actorId: req.user.id,
+        actorId: actorId,
         entityType: 'Order',
         entityId: String(order._id),
         orderId: String(order._id),
         details: { created: createdCases.length }
       }], { session });
     });
-
     await Promise.all(createdCases
       .filter(workflowCase => workflowCase.assignedTo)
-      .map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
-    res.json({ created: createdCases.length, checkedLines });
-  } catch (error) {
-    console.error('Error creating missing order tasks:', error);
-    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to create missing tasks' });
+      .map(workflowCase => safelyNotify(() => notifyCaseAssignment(app, workflowCase))));
+    return { created: createdCases.length, checkedLines };
   } finally {
     await session.endSession();
   }
+};
+
+// POST /:id/create-missing-tasks - the boss can also run the repair by hand.
+router.post('/:id/create-missing-tasks', operationsAuth, async (req, res) => {
+  const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
+  if (!manager) return res.status(403).json({ message: 'Only the boss can create missing tasks' });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
+  try {
+    res.json(await repairMissingTasks(req.params.id, req.user.id, req.app));
+  } catch (error) {
+    console.error('Error creating missing order tasks:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to create missing tasks' });
+  }
 });
+
+// GET /:id/trail - Boss: every task of an order (even cancelled ones) and the
+// audit lines saved for it, oldest first, to see what happened to the order.
+router.get('/:id/trail', operationsAuth, async (req, res) => {
+  const manager = req.user?.isAdmin || req.user?.role === 'admin' || req.user?.workRole === 'boss';
+  if (!manager) return res.status(403).json({ message: 'Only the boss can see an order trail' });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
+  try {
+    const [tasks, audit] = await Promise.all([
+      WorkflowCase.find({ orderId: req.params.id }).select('requestedName requestType status assignedTeam createdAt archivedAt').sort({ createdAt: 1 }).lean(),
+      AuditLog.find({ orderId: String(req.params.id) }).sort({ createdAt: 1 }).limit(400).lean()
+    ]);
+    const nameById = new Map(tasks.map(task => [String(task._id), task.requestedName]));
+    res.json({
+      tasks: tasks.map(task => ({ id: String(task._id), name: task.requestedName, type: task.requestType, status: task.status, team: task.assignedTeam, createdAt: task.createdAt, archivedAt: task.archivedAt })),
+      events: audit.map(entry => ({
+        at: entry.createdAt,
+        action: entry.action,
+        task: nameById.get(String(entry.entityId)) || (entry.details?.requestedName || null),
+        from: entry.details?.fromStatus || null,
+        to: entry.details?.toStatus || null,
+        by: entry.actorId ? String(entry.actorId) : null,
+        note: entry.details?.note || null
+      }))
+    });
+  } catch (error) {
+    console.error('Error loading order trail:', error);
+    res.status(500).json({ message: 'Failed to load the order trail' });
+  }
+});
+
+// Safety net: a confirmed order must never sit without its work. Every few
+// minutes, confirmed open orders whose lines have no stock/printing task get them.
+const MISSING_TASK_SWEEP_MS = 5 * 60 * 1000;
+const sweepMissingTasks = async (app) => {
+  const { TASK_VISIBILITY_CUTOFF } = require('../utils/workflowVisibility');
+  const BATCH = 200;
+  const base = {
+    validationStatus: 'approved',
+    validationCaseId: { $ne: null },
+    validatedAt: { $gt: TASK_VISIBILITY_CUTOFF, $lt: new Date(Date.now() - 2 * 60 * 1000) },
+    status: { $in: ['confirmed', 'picking'] },
+    operationsArchivedAt: null,
+    'items.fulfillmentStatus': { $in: ['production', 'stock_reserved'] }
+  };
+  let created = 0;
+  let lastId = null;
+  // Walk every candidate in _id order, a batch at a time, so no order is left unchecked.
+  for (;;) {
+    const orders = await Order.find(lastId ? { ...base, _id: { $gt: lastId } } : base)
+      .sort({ _id: 1 }).limit(BATCH)
+      .select('_id validatedBy items.stockQuantity items.printQuantity items._id').lean();
+    if (!orders.length) break;
+    lastId = orders[orders.length - 1]._id;
+    const tasks = await WorkflowCase.find({
+      orderId: { $in: orders.map(order => order._id) },
+      requestType: { $in: ['stock_pick', 'print_required'] }
+    }).select('orderId orderItemId requestType').lean();
+    const taskKeys = new Set(tasks.map(task => `${task.orderId}:${task.orderItemId}:${task.requestType}`));
+    for (const order of orders) {
+      const complete = order.items.every(item => (Number(item.stockQuantity || 0) <= 0 || taskKeys.has(`${order._id}:${item._id}:stock_pick`))
+        && (Number(item.printQuantity || 0) <= 0 || taskKeys.has(`${order._id}:${item._id}:print_required`)));
+      if (complete) continue;
+      try {
+        const result = await repairMissingTasks(order._id, order.validatedBy || 'system', app);
+        created += result.created;
+        if (result.created) console.log(`🔧 Created ${result.created} missing task(s) for confirmed order ${order._id}`);
+      } catch (error) {
+        console.error(`❌ Could not create missing tasks for order ${order._id}:`, error.message);
+      }
+    }
+    if (orders.length < BATCH) break;
+  }
+  return created;
+};
+router.startMissingTaskSweep = (app) => {
+  const run = () => sweepMissingTasks(app).catch(error => console.error('❌ Missing-task sweep failed:', error));
+  setTimeout(run, 60 * 1000).unref?.();
+  setInterval(run, MISSING_TASK_SWEEP_MS).unref?.();
+};
+router.sweepMissingTasks = sweepMissingTasks;
 
 // POST /:id/validate - Customer Service approves an order before work starts.
 router.post('/:id/validate', operationsAuth, async (req, res) => {
