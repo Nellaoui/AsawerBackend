@@ -720,7 +720,7 @@ Cancel = hidden (private)`);
       $('productSave').textContent=mode==='fix'?'Save product':'Create product';
       $('productDelete').hidden=!(mode==='fix'&&state.fixingId&&state.canManageStock);
       $('productSerial').value=prefill.serialNumber||'';
-      $('productSerial').readOnly=mode==='fix';
+      state.originalSerial=prefill.serialNumber||'';
       $('productName').value=prefill.name||prefill.serialNumber||'';
       setTypeValue(prefill.type);
       $('productCatalog').value=catalogChoiceFor(prefill.catalogId);
@@ -864,7 +864,10 @@ Cancel = hidden (private)`);
       $('productSave').disabled=true;
       try{
         if(state.productMode==='fix'){
+          const serial=$('productSerial').value.trim();
+          if(!serial)return show('productError','Reference cannot be empty.');
           const body={name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
+          if(serial!==state.originalSerial)body.serialNumber=serial;
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
           $('productDialog').close();

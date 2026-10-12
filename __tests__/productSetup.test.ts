@@ -20,7 +20,7 @@ jest.mock('../models/SizePreset', () => ({ find: () => ({ lean: async () => [] }
 jest.mock('../models/InventoryMovement', () => ({ create: jest.fn() }));
 jest.mock('../models/Order', () => ({}));
 jest.mock('../models/WorkflowCase', () => ({}));
-jest.mock('../models/StockVariant', () => ({ aggregate: jest.fn(), create: jest.fn() }));
+jest.mock('../models/StockVariant', () => ({ aggregate: jest.fn(), create: jest.fn(), updateMany: jest.fn() }));
 jest.mock('../models/StockOrphan', () => ({ find: jest.fn(), aggregate: jest.fn() }));
 jest.mock('../middlewares/auth', () => ({ operationsAuth: jest.fn() }));
 jest.mock('../utils/workflowAssignment', () => ({ findTeamAssignee: jest.fn() }));
@@ -192,6 +192,36 @@ describe('completing a flagged product from the portal', () => {
 
     expect(response.status).toHaveBeenCalledWith(400);
     expect(product.name).toBe('Bague 150');
+  });
+
+  test('a reference can be corrected and counted stock follows it', async () => {
+    const chain: any = { select: () => chain, limit: () => chain, lean: async () => [] };
+    Product.find.mockReturnValue(chain);
+    await setupHandler(request({ serialNumber: 'bra-151' }), response);
+
+    expect(product.serialNumber).toBe('BRA 151');
+    expect(product.save).toHaveBeenCalled();
+    expect(StockVariant.updateMany).toHaveBeenCalledWith(
+      { primaryProductId: PRODUCT_ID, productIds: { $size: 1 } },
+      { $set: expect.objectContaining({ displayReference: 'BRA 151' }) }
+    );
+  });
+
+  test('a reference held by another product still in the shop is refused', async () => {
+    const chain: any = { select: () => chain, limit: () => chain, lean: async () => [{ _id: 'other', serialNumber: 'BRA 151' }] };
+    Product.find.mockReturnValue(chain);
+    await setupHandler(request({ serialNumber: 'BRA151' }), response);
+
+    expect(response.status).toHaveBeenCalledWith(409);
+    expect(product.serialNumber).toBe('BA 150 5mm');
+    expect(product.save).not.toHaveBeenCalled();
+  });
+
+  test('an empty reference is rejected', async () => {
+    await setupHandler(request({ serialNumber: '  ' }), response);
+
+    expect(response.status).toHaveBeenCalledWith(400);
+    expect(product.serialNumber).toBe('BA 150 5mm');
   });
 
   test('a missing product answers 404', async () => {

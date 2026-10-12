@@ -690,6 +690,36 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
       product.name = name;
     }
 
+    // A reference can be corrected here. It follows the same rule as creating
+    // a product: stored in one spelling, and refused when another product that
+    // is still in the shop already holds it.
+    let referenceChanged = false;
+    if (req.body?.serialNumber !== undefined) {
+      const serialNumber = normalizeProductReference(req.body.serialNumber);
+      if (!serialNumber) return res.status(400).json({ message: 'Reference cannot be empty' });
+      const canonical = canonicalProductReference(serialNumber);
+      referenceChanged = canonical !== canonicalProductReference(product.serialNumber);
+      if (referenceChanged || serialNumber !== product.serialNumber) {
+        if (referenceChanged) {
+          const parts = serialNumber.match(/^([A-Za-z]+)\s*([0-9]+)/);
+          const others = parts
+            ? await Product.find({ _id: { $ne: product._id }, serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i'), removedFromShop: { $ne: true } })
+              .select('_id serialNumber catalogId').limit(50).lean()
+            : await Product.find({ _id: { $ne: product._id }, serialNumber, removedFromShop: { $ne: true } })
+              .select('_id serialNumber catalogId').limit(50).lean();
+          const duplicate = others.find((row) => canonicalProductReference(row.serialNumber) === canonical);
+          if (duplicate) {
+            const where = duplicate.catalogId ? await Catalog.findById(duplicate.catalogId).select('name').lean() : null;
+            return res.status(409).json({
+              message: `"${duplicate.serialNumber}" already exists${where?.name ? ` in ${where.name}` : ''}. Choose another reference.`
+            });
+          }
+        }
+        product.serialNumber = serialNumber;
+        if (product.canonicalReference) product.canonicalReference = canonical;
+      }
+    }
+
     if (req.body?.type !== undefined) {
       const type = String(req.body.type).trim();
       if (!type) return res.status(400).json({ message: 'Type cannot be empty' });
@@ -778,6 +808,22 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         resolvedBy: req.user.id,
         resolvedAt: new Date()
       };
+    }
+
+    // Counted stock is keyed by reference, so the sizes that belong only to
+    // this product move to the new reference with it.
+    if (referenceChanged) {
+      try {
+        await StockVariant.updateMany(
+          { primaryProductId: product._id, productIds: { $size: 1 } },
+          { $set: { canonicalReference: canonicalProductReference(product.serialNumber), displayReference: product.serialNumber } }
+        );
+      } catch (error) {
+        if (error?.code === 11000) {
+          return res.status(409).json({ message: 'Counted stock already exists under that reference. Choose another reference.' });
+        }
+        throw error;
+      }
     }
 
     await product.save();
