@@ -181,6 +181,16 @@ const orderSchema = new mongoose.Schema({
     maxlength: 1000,
     default: ''
   },
+  // After validation a customer can only ask to cancel; the owner or the boss decides.
+  cancelRequest: {
+    status: { type: String, enum: ['none', 'pending', 'approved', 'rejected'], default: 'none', index: true },
+    requestedAt: { type: Date, default: null },
+    requestedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+    reason: { type: String, trim: true, maxlength: 500, default: '' },
+    decidedAt: { type: Date, default: null },
+    decidedBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+    decisionNote: { type: String, trim: true, maxlength: 500, default: '' }
+  },
   inventoryReservedAt: {
     type: Date,
     default: null

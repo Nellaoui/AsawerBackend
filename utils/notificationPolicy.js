@@ -3,12 +3,16 @@
 // allowed to approve phone changes also get those requests and the customer
 // activity report (only they are ever sent them). The boss is told when an
 // employee asks to archive an order (only bosses and admins are sent those).
+// Everyone with a task on an order hears when it is cancelled, and the boss
+// hears when a customer asks to cancel a validated order.
 const EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES = [
   'new_task',
   'reassigned',
   'phone_change_request',
   'customer_inactive',
-  'archive_requested'
+  'archive_requested',
+  'order_cancelled',
+  'cancel_requested'
 ];
 
 const employeeActionableTypes = new Set(EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES);

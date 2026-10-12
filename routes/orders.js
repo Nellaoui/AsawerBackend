@@ -17,6 +17,7 @@ const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { planPrintTask, planStockTask } = require('../utils/orderWorkflowRoute');
 const { notifyCaseAssignment, notifyTaskRemoved, notifyUsers, activeAdminIds } = require('../utils/workflowNotifications');
+const { isManagerAccount } = require('../utils/customerPhones');
 const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalogMembership');
 const { normalizeStockSize } = require('../utils/stockReference');
 const productOptions = require('../utils/productOptions');
@@ -45,6 +46,14 @@ const ORDER_TRANSITIONS = {
 const canManageOperations = (user) => Boolean(
   user?.isAdmin || ['admin', 'employee'].includes(user?.role)
 );
+
+// The owner, an admin or the boss decides on customer cancel requests.
+const managerAuth = (req, res, next) => operationsAuth(req, res, () => {
+  if (!isManagerAccount(req.user)) {
+    return res.status(403).json({ message: 'Only the owner or the boss can decide on cancel requests.' });
+  }
+  return next();
+});
 
 const canViewAllOrders = (user) => Boolean(
   user?.isAdmin
@@ -1484,6 +1493,47 @@ router.get('/my', auth, async (req, res) => {
 });
 
 // GET /:id - Get order details
+// GET /cancel-requests - customer cancel requests waiting for a decision,
+// with how far each order already went in the workshop.
+router.get('/cancel-requests', managerAuth, async (req, res) => {
+  try {
+    const orders = await Order.find({ 'cancelRequest.status': 'pending' })
+      .sort({ 'cancelRequest.requestedAt': 1 })
+      .select('orderNumber status items.quantity totalAmount cancelRequest createdAt userId')
+      .lean();
+    // userId can be a test-token string, so look customers up only by real ids.
+    const customerIds = orders.map(order => order.userId).filter(id => mongoose.Types.ObjectId.isValid(id));
+    const customers = new Map((customerIds.length ? await User.find({ _id: { $in: customerIds } }).select('name email phone').lean() : [])
+      .map(user => [String(user._id), user]));
+    const customerOf = order => {
+      const user = customers.get(String(order.userId));
+      return { name: user?.name || '', email: user?.email || String(order.userId || ''), phone: user?.phone || '' };
+    };
+    const tasks = orders.length ? await WorkflowCase.find({
+      orderId: { $in: orders.map(order => order._id) },
+      requestType: 'print_required',
+      status: { $in: ['printing', 'quality_check', 'packing', 'completed'] }
+    }).select('orderId').lean() : [];
+    const printed = {};
+    tasks.forEach(task => { printed[String(task.orderId)] = (printed[String(task.orderId)] || 0) + 1; });
+    res.json(orders.map(order => ({
+      id: order._id,
+      orderNumber: order.orderNumber || '',
+      status: order.status,
+      pieces: (order.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      totalAmount: order.totalAmount,
+      createdAt: order.createdAt,
+      customer: customerOf(order),
+      reason: order.cancelRequest?.reason || '',
+      requestedAt: order.cancelRequest?.requestedAt || null,
+      printedProducts: printed[String(order._id)] || 0
+    })));
+  } catch (error) {
+    console.error('Error loading cancel requests:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.get('/:id', auth, async (req, res) => {
   try {
     let query = Order.findById(req.params.id)
@@ -1589,7 +1639,58 @@ router.put('/:id/status', operationsAuth, async (req, res) => {
   }
 });
 
-// PUT /:id/cancel - Cancel order (authenticated users)
+// Statuses in which a validated order can still be stopped.
+const CANCELLABLE_AFTER_VALIDATION = ['confirmed', 'picking', 'packed'];
+
+const populateOrder = async (order) => {
+  if (mongoose.Types.ObjectId.isValid(order.userId)) {
+    await order.populate('userId', 'name email phone');
+  }
+  await order.populate('catalogId', 'name description');
+  await order.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type stock reservedStock');
+  return order;
+};
+
+const pushToCustomer = (order, title, body, status) => sendPushToUser(
+  User,
+  order.userId?._id || order.userId,
+  title,
+  body,
+  { type: 'order', orderId: order._id.toString(), status }
+).catch(err => console.error('⚠️  Failed to send order push:', err));
+
+// Cancels the order and its tasks. Returns the order and the work to run after
+// the answer: telling the customer, the boss and everyone who had a task on it.
+const cancelOrderNow = async (req, existingOrder, { customerTitle, customerBody }) => {
+  // Work already handed to the workshop: its people must hear the order stopped.
+  const openTasks = await WorkflowCase.find({ orderId: existingOrder._id, status: { $nin: ['completed', 'cancelled', 'rejected'] } })
+    .select('requestedName assignedTo').lean();
+
+  const order = await populateOrder(await transitionOrder(existingOrder._id, 'cancelled', req.user.id));
+  console.log(`Order ${order._id} cancelled by user ${req.user.email}`);
+
+  const after = async () => {
+    await pushToCustomer(order, customerTitle, customerBody, 'cancelled');
+    if (existingOrder.validationStatus !== 'approved' && !openTasks.length) return;
+    const number = order.orderNumber || String(order._id);
+    const who = canManageOperations(req.user) ? (req.user.name || req.user.email || 'the shop') : 'the customer';
+    const adminIds = await activeAdminIds().catch(() => []);
+    const recipients = [...adminIds, ...openTasks.map(task => task.assignedTo).filter(Boolean)]
+      .map(String).filter(id => id !== String(req.user.id));
+    await notifyUsers(req.app, recipients, {
+      title: 'Order cancelled: stop work',
+      body: `Order ${number} was cancelled by ${who}. ${openTasks.length} task(s) stopped${openTasks.length ? `: ${[...new Set(openTasks.map(task => task.requestedName))].join(', ')}` : ''}.`,
+      type: 'order_cancelled',
+      data: { orderId: String(order._id) },
+      dedupeKey: `order_cancelled:${order._id}`
+    }).catch(err => console.error('⚠️  Failed to notify the shop of a cancel:', err));
+  };
+  return { order, after };
+};
+
+// PUT /:id/cancel - Cancel order (authenticated users).
+// Staff cancel at once. A customer cancels at once only while the order still
+// waits for validation; after that the press sends a cancel request instead.
 router.put('/:id/cancel', auth, async (req, res) => {
   try {
     const existingOrder = await Order.findById(req.params.id);
@@ -1598,66 +1699,112 @@ router.put('/:id/cancel', auth, async (req, res) => {
       return res.status(404).json({ message: 'Order not found' });
     }
 
+    const staff = canManageOperations(req.user);
     const ownerId = String(existingOrder.userId?._id || existingOrder.userId);
-    if (!canManageOperations(req.user) && ownerId !== String(req.user.id)) {
+    if (!staff && ownerId !== String(req.user.id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    if (!canManageOperations(req.user) && !['pending', 'confirmed'].includes(existingOrder.status)) {
-      return res.status(409).json({ message: 'This order is already being prepared and can no longer be cancelled' });
-    }
-
-    // Work already handed to the workshop: its people must hear the order stopped.
-    const openTasks = await WorkflowCase.find({ orderId: existingOrder._id, status: { $nin: ['completed', 'cancelled', 'rejected'] } })
-      .select('requestedName assignedTo').lean();
-
-    const order = await transitionOrder(req.params.id, 'cancelled', req.user.id);
-    if (mongoose.Types.ObjectId.isValid(order.userId)) {
-      await order.populate('userId', 'name email phone');
-    }
-    await order.populate('catalogId', 'name description');
-    await order.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type stock reservedStock');
-
-    console.log(`Order ${order._id} cancelled by user ${req.user.email}`);
-
-    // 🔔 Send push notification on order cancel
-    try {
-      await sendPushToUser(
-        User,
-        order.userId?._id || order.userId,
-        'Order Cancelled',
-        'Your order has been cancelled',
-        {
-          type: 'order',
-          orderId: order._id.toString(),
-          status: 'cancelled'
-        }
+    if (!staff && existingOrder.status !== 'pending') {
+      if (!CANCELLABLE_AFTER_VALIDATION.includes(existingOrder.status)) {
+        return res.status(409).json({ message: 'This order can no longer be cancelled' });
+      }
+      const reason = String(req.body?.reason || '').trim().slice(0, 500);
+      let order = await Order.findOneAndUpdate(
+        { _id: existingOrder._id, status: { $in: CANCELLABLE_AFTER_VALIDATION }, 'cancelRequest.status': { $ne: 'pending' } },
+        { $set: { cancelRequest: { status: 'pending', requestedAt: new Date(), requestedBy: req.user.id, reason } } },
+        { new: true }
       );
-    } catch (err) {
-      console.error('⚠️  Failed to send cancel push:', err);
-    }
+      const alreadyAsked = !order;
+      if (alreadyAsked) {
+        order = await Order.findById(existingOrder._id);
+        if (order?.cancelRequest?.status !== 'pending') {
+          return res.status(409).json({ message: 'This order can no longer be cancelled' });
+        }
+      }
+      await populateOrder(order);
+      res.json(order);
+      if (alreadyAsked) return;
 
-    res.json(order);
-
-    // After the answer: tell the boss and everyone who had a task on this order
-    // that it was cancelled, so nobody keeps working on it.
-    if (existingOrder.validationStatus === 'approved' || openTasks.length) {
       const number = order.orderNumber || String(order._id);
-      const who = canManageOperations(req.user) ? (req.user.name || req.user.email || 'the shop') : 'the customer';
+      const customer = order.userId?.name || order.userId?.email || 'A customer';
       const adminIds = await activeAdminIds().catch(() => []);
-      const recipients = [...adminIds, ...openTasks.map(task => task.assignedTo).filter(Boolean)]
-        .map(String).filter(id => id !== String(req.user.id));
-      notifyUsers(req.app, recipients, {
-        title: 'Order cancelled: stop work',
-        body: `Order ${number} was cancelled by ${who}. ${openTasks.length} task(s) stopped${openTasks.length ? `: ${[...new Set(openTasks.map(task => task.requestedName))].join(', ')}` : ''}.`,
-        type: 'order_cancelled',
+      notifyUsers(req.app, adminIds, {
+        title: 'Cancel request',
+        body: `${customer} asks to cancel order ${number}.${reason ? ` Reason: ${reason}` : ''} Approve or refuse it in Menu -> Customers.`,
+        type: 'cancel_requested',
         data: { orderId: String(order._id) },
-        dedupeKey: `order_cancelled:${order._id}`
-      }).catch(err => console.error('⚠️  Failed to notify the shop of a cancel:', err));
+        dedupeKey: `cancel_requested:${order._id}:${order.cancelRequest.requestedAt.getTime()}`
+      }).catch(err => console.error('⚠️  Failed to send cancel request:', err));
+      return;
     }
+
+    if (staff && !['pending', ...CANCELLABLE_AFTER_VALIDATION].includes(existingOrder.status)) {
+      return res.status(409).json({ message: 'This order can no longer be cancelled' });
+    }
+
+    const { order, after } = await cancelOrderNow(req, existingOrder, {
+      customerTitle: 'Order Cancelled',
+      customerBody: 'Your order has been cancelled'
+    });
+    res.json(order);
+    after();
   } catch (error) {
     console.error('Error cancelling order:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Server error' });
+  }
+});
+
+// POST /:id/cancel-request/approve - the customer's cancel request is accepted.
+router.post('/:id/cancel-request/approve', managerAuth, async (req, res) => {
+  try {
+    const existingOrder = await Order.findById(req.params.id);
+    if (!existingOrder) return res.status(404).json({ message: 'Order not found' });
+    if (existingOrder.cancelRequest?.status !== 'pending') {
+      return res.status(409).json({ message: 'This cancel request was already handled' });
+    }
+    const { order, after } = await cancelOrderNow(req, existingOrder, {
+      customerTitle: 'Order Cancelled',
+      customerBody: 'Your cancel request was accepted. Your order is cancelled.'
+    });
+    await Order.updateOne({ _id: order._id }, { $set: {
+      'cancelRequest.status': 'approved',
+      'cancelRequest.decidedAt': new Date(),
+      'cancelRequest.decidedBy': req.user.id,
+      'cancelRequest.decisionNote': String(req.body?.note || '').trim().slice(0, 500)
+    } });
+    order.cancelRequest.status = 'approved';
+    res.json(order);
+    after();
+  } catch (error) {
+    console.error('Error approving cancel request:', error);
+    res.status(error.statusCode || 500).json({ message: error.message || 'Server error' });
+  }
+});
+
+// POST /:id/cancel-request/reject - the order goes on; the customer is told why.
+router.post('/:id/cancel-request/reject', managerAuth, async (req, res) => {
+  try {
+    const note = String(req.body?.note || '').trim().slice(0, 500);
+    const order = await Order.findOneAndUpdate(
+      { _id: req.params.id, 'cancelRequest.status': 'pending' },
+      { $set: {
+        'cancelRequest.status': 'rejected',
+        'cancelRequest.decidedAt': new Date(),
+        'cancelRequest.decidedBy': req.user.id,
+        'cancelRequest.decisionNote': note
+      } },
+      { new: true }
+    );
+    if (!order) {
+      const exists = await Order.exists({ _id: req.params.id });
+      return res.status(exists ? 409 : 404).json({ message: exists ? 'This cancel request was already handled' : 'Order not found' });
+    }
+    res.json(order);
+    pushToCustomer(order, 'Cancel request refused', `Your order goes on.${note ? ` ${note}` : ''}`, order.status);
+  } catch (error) {
+    console.error('Error refusing cancel request:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
