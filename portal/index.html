@@ -772,7 +772,7 @@ Cancel = hidden (private)`);
       state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
-        sizes:product.availableSizes||[],heights:product.availableHeights||[],clasps:product.availableClasps||[],clasp:product.clasp,
+        sizes:(product.availableSizes&&product.availableSizes.length?product.availableSizes:[...new Set((product.stockVariants||[]).filter(v=>!v.clasp).map(v=>v.size))]),heights:product.availableHeights||[],clasps:product.availableClasps||[],clasp:product.clasp,
         price:product.price,printMethod:product.printMethod,sartlaSets:product.sartlaSets||[],
         fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
         note:product.setupIssue&&product.setupIssue.note
@@ -873,7 +873,7 @@ Cancel = hidden (private)`);
       const sizeRows=[...$('productSizeRows').querySelectorAll('.size-entry')].map(row=>({size:row.querySelector('[data-product-size]').value.trim(),quantity:Number(row.querySelector('[data-product-quantity]').value)}));
       const chosenSizes=sizeRows.filter(row=>row.size);
       const type=selectedType(),mode=sizeMode(type);
-      if(mode==='custom'&&Options.normalizeType(type)==='gourmette'&&!chosenSizes.length)return show('productError','Add at least one size for a gourmette.');
+      if(state.productMode!=='fix'&&mode==='custom'&&Options.normalizeType(type)==='gourmette'&&!chosenSizes.length)return show('productError','Add at least one size for a gourmette.');
       if(chosenSizes.length>50)return show('productError','Add no more than 50 sizes.');
       if(new Set(chosenSizes.map(row=>row.size.toLowerCase().replace(/\s+/g,' '))).size!==chosenSizes.length)return show('productError','Each size should appear only once.');
       if(sizeRows.some(row=>!Number.isSafeInteger(row.quantity)||row.quantity<0||(!row.size&&row.quantity>0)))return show('productError','Each size needs a valid whole-number quantity.');
