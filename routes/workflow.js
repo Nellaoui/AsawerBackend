@@ -204,7 +204,7 @@ const normalizeDimensions = (input = {}, fallback = {}) => {
 const populateCase = (query) => query
   .populate({
     path: 'orderId',
-    select: 'orderNumber status totalAmount notes createdAt userId items validationStatus validationCaseId validatedAt operationsArchivedAt archivePurgeAt',
+    select: 'orderNumber status totalAmount notes createdAt userId urgent items validationStatus validationCaseId validatedAt operationsArchivedAt archivePurgeAt',
     populate: [
       { path: 'items.productId', select: 'name serialNumber imageUrl printMethod stockLocation' },
       { path: 'userId', select: 'name email phone forcedProductionMethod' }
@@ -1225,6 +1225,46 @@ router.get('/system-safety', operationsAuth, async (req, res) => {
 const isIncomingOrder = order => order.validationStatus === 'pending' && order.status !== 'cancelled';
 const archivePurgeDate = (now = new Date()) => new Date(now.getTime() + ARCHIVE_PURGE_DAYS * 24 * 60 * 60 * 1000);
 const purgeNote = purgeAt => `Erased for good on ${purgeAt.toISOString().slice(0, 10)} unless it is returned`;
+
+// Customer service and the boss mark an order Urgent (or take it off). Every open
+// task of the order jumps to the top of its stage; the answer goes out right after
+// the save and the team is told afterwards.
+router.post('/orders/:id/urgent', operationsAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
+  if (!(isManagerUser(req.user) || isCustomerServiceUser(req.user))) return res.status(403).json({ message: 'Only Customer Service or the boss can mark an order urgent' });
+  if (typeof req.body.urgent !== 'boolean') return res.status(400).json({ message: 'Say whether the order is urgent' });
+  try {
+    const on = req.body.urgent;
+    const order = await Order.findById(req.params.id).select('orderNumber status urgent');
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status === 'cancelled') return res.status(409).json({ message: 'This order is cancelled' });
+    const now = new Date();
+    const byName = req.user.name || req.user.email || '';
+    const open = { orderId: order._id, status: { $nin: ['completed', 'cancelled', 'rejected'] } };
+    const history = { actorId: req.user.id, action: on ? 'order_urgent' : 'order_not_urgent', note: on ? 'Marked urgent: do this first' : 'No longer urgent', createdAt: now };
+    const [, openTasks] = await Promise.all([
+      Order.updateOne({ _id: order._id }, { $set: { urgent: on ? { on: true, by: req.user.id, byName, at: now } : { on: false, by: null, byName: '', at: null } } }),
+      WorkflowCase.find(open).select('assignedTo requestedName').lean()
+    ]);
+    await WorkflowCase.updateMany(on ? open : { ...open, priority: 'urgent' }, { $set: { priority: on ? 'urgent' : 'normal' }, $push: { history } });
+    res.json({ orderId: String(order._id), urgent: { on, byName: on ? byName : '', at: on ? now : null } });
+    if (on) {
+      notifyAfter(res, async () => {
+        const recipients = [...new Set(openTasks.map(task => task.assignedTo).filter(Boolean).map(String))].filter(id => id !== String(req.user.id));
+        await notifyUsers(req.app, recipients, {
+          title: 'Urgent order: do it first',
+          body: `Order ${order.orderNumber || String(order._id)} is urgent (asked by ${byName || 'Customer Service'}). Do it before the others.`,
+          type: 'order_urgent',
+          data: { orderId: String(order._id) },
+          dedupeKey: `order_urgent:${order._id}:${now.getTime()}`
+        });
+      });
+    }
+  } catch (error) {
+    console.error('Error changing order urgency:', error);
+    res.status(500).json({ message: 'Failed to change urgency' });
+  }
+});
 
 router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });

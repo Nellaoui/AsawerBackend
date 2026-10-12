@@ -4,7 +4,8 @@
 // activity report (only they are ever sent them). The boss is told when an
 // employee asks to archive an order (only bosses and admins are sent those).
 // Everyone with a task on an order hears when it is cancelled, and the boss
-// hears when a customer asks to cancel a validated order.
+// hears when a customer asks to cancel a validated order. Everyone with a task
+// on an order hears when Customer Service marks it Urgent.
 const EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES = [
   'new_task',
   'reassigned',
@@ -12,7 +13,8 @@ const EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES = [
   'customer_inactive',
   'archive_requested',
   'order_cancelled',
-  'cancel_requested'
+  'cancel_requested',
+  'order_urgent'
 ];
 
 const employeeActionableTypes = new Set(EMPLOYEE_ACTIONABLE_NOTIFICATION_TYPES);

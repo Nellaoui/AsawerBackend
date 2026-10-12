@@ -114,6 +114,13 @@ workflowCaseSchema.index({ assignedTeam: 1, assignedTo: 1, status: 1, priority: 
 workflowCaseSchema.index({ orderId: 1, createdAt: 1 });
 workflowCaseSchema.index({ customerId: 1, status: 1, createdAt: -1 });
 
+// A task made for an Urgent order is born urgent, wherever in the code it is created.
+workflowCaseSchema.pre('save', async function() {
+  if (!this.isNew || !this.orderId || this.priority === 'urgent') return;
+  const Order = mongoose.model('Order');
+  if (await Order.exists({ _id: this.orderId, 'urgent.on': true })) this.priority = 'urgent';
+});
+
 workflowCaseSchema.pre('save', async function() {
   if (!this.isModified('history')) return;
   let previousCount = 0;

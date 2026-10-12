@@ -181,6 +181,13 @@ const orderSchema = new mongoose.Schema({
     maxlength: 1000,
     default: ''
   },
+  // Customer service or the boss can mark an order Urgent: it goes to the top of every stage.
+  urgent: {
+    on: { type: Boolean, default: false, index: true },
+    by: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+    byName: { type: String, trim: true, maxlength: 120, default: '' },
+    at: { type: Date, default: null }
+  },
   // After validation a customer can only ask to cancel; the owner or the boss decides.
   cancelRequest: {
     status: { type: String, enum: ['none', 'pending', 'approved', 'rejected'], default: 'none', index: true },
