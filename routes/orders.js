@@ -21,6 +21,7 @@ const { catalogIncludesProduct, catalogProductIdSet } = require('../utils/catalo
 const { normalizeStockSize } = require('../utils/stockReference');
 const productOptions = require('../utils/productOptions');
 const Sartla = require('../utils/sartla');
+const { progressForOrders } = require('../utils/customerProgress');
 
 const safelyNotify = async (operation) => {
   try {
@@ -1474,7 +1475,8 @@ router.get('/my', auth, async (req, res) => {
     if (limit) options.limit = parseInt(limit);
 
     const orders = await Order.findByUser(req.user.id, options);
-    res.json(orders.map(withoutSartlaParts));
+    const progress = await progressForOrders(WorkflowCase, orders);
+    res.json(orders.map(order => ({ ...withoutSartlaParts(order), progress: progress.get(String(order._id)) })));
   } catch (error) {
     console.error('Error fetching user orders:', error);
     res.status(500).json({ message: 'Server error' });
@@ -1516,7 +1518,9 @@ router.get('/:id', auth, async (req, res) => {
       }))
     };
 
-    res.json(canManageOperations(req.user) ? orderWithSizes : withoutSartlaParts(orderWithSizes));
+    const progress = (await progressForOrders(WorkflowCase, [order])).get(String(order._id));
+    const shown = canManageOperations(req.user) ? orderWithSizes : withoutSartlaParts(orderWithSizes);
+    res.json({ ...shown, progress });
   } catch (error) {
     console.error('Error fetching order:', error);
     res.status(500).json({ message: 'Server error' });

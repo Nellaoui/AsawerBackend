@@ -1,3 +1,4 @@
+const { notifyOrderChange } = require('../utils/liveUpdates');
 const mongoose = require('mongoose');
 const { CASE_STATUSES, CASE_TYPES, PRODUCTION_METHODS } = require('../utils/workflowRules');
 
@@ -151,6 +152,12 @@ workflowCaseSchema.post('save', async function(workflowCase, next) {
         },
         createdAt: entry.createdAt || new Date()
       })), { session: workflowCase.$session() || undefined });
+    }
+    // Tell the customer's app that the order moved on (no data, just a hint to re-fetch).
+    if (entries.length && workflowCase.orderId) {
+      mongoose.model('Order').findById(workflowCase.orderId).select('userId').lean()
+        .then(order => order && notifyOrderChange(order.userId && (order.userId._id || order.userId)))
+        .catch(() => {});
     }
     next();
   } catch (error) {
