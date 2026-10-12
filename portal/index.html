@@ -241,7 +241,7 @@
       </div>
       <div id="productHeightsBlock" hidden>
         <span class="field-label">Heights this product comes in</span>
-        <p class="muted" style="margin:0">Tick each height it is made in. If none is ticked, customers are not asked for a height.</p>
+        <p class="muted" style="margin:0">Add each height it is made in; press × to remove one. If none is added, customers are not asked for a height.</p>
         <div id="productHeights" class="chip-row"></div>
         <div class="size-entry" style="grid-template-columns:minmax(110px,1fr) auto;margin-top:8px"><label class="field">Add another height (mm)<input id="newHeight" type="number" min="0.5" step="0.5" inputmode="decimal" placeholder="e.g. 5"></label><button id="addHeight" class="button secondary small" type="button">+ Add height</button></div>
         <p id="heightError" class="error" aria-live="assertive"></p>
@@ -576,19 +576,30 @@ Cancel = hidden (private)`);
     function chip(name,value,label,checked){
       return '<label class="chip"><input type="checkbox" data-'+name+' value="'+escapeHtml(value)+'"'+(checked?' checked':'')+'>'+escapeHtml(label)+'</label>';
     }
+    // The product's own heights are removable chips; Size Presets heights not on the product are one-tap suggestions.
+    function heightChip(h){
+      return '<span class="chip"><input type="checkbox" data-height value="'+escapeHtml(h)+'" checked hidden>'+escapeHtml(h)+' mm <button type="button" class="button secondary small" data-remove-height="'+escapeHtml(h)+'" aria-label="Remove '+escapeHtml(h)+' mm" style="padding:0 7px;min-height:0">×</button></span>';
+    }
     function renderHeights(selected=[]){
       const show=Options.typeHasHeights(selectedType());
       $('productHeightsBlock').hidden=!show;
       if(!show)return;
+      const chosen=Options.cleanList(selected);
       const preset=Options.presetHeights(selectedType(),state.sizePresets);
-      const options=Options.cleanList([...(preset.length?preset:['3','4','5','6']),...selected]);
-      $('productHeights').innerHTML=options.map(h=>chip('height',h,h+' mm',selected.includes(h))).join('');
+      const suggestions=Options.cleanList(preset.length?preset:['3','4','5','6']).filter(h=>!chosen.includes(h));
+      $('productHeights').innerHTML=chosen.map(heightChip).join('')+suggestions.map(h=>'<button type="button" class="chip" data-suggest-height="'+escapeHtml(h)+'">+ '+escapeHtml(h)+' mm</button>').join('');
     }
+    $('productHeights').addEventListener('click',event=>{
+      const remove=event.target.closest('[data-remove-height]'),suggest=event.target.closest('[data-suggest-height]');
+      const now=checkedValues('productHeights','height');
+      if(remove)renderHeights(now.filter(h=>h!==remove.dataset.removeHeight));
+      else if(suggest)renderHeights([...now,suggest.dataset.suggestHeight]);
+    });
     // A height that is not in Size Presets: shown ticked at once, saved with the product.
     function addProductHeight(){
-      const input=$('newHeight'),value=input.value.trim(),error=$('heightError');
-      if(!value||!(parseFloat(value)>0)){error.textContent='Enter a height in mm, for example 5.';return}
-      error.textContent='';
+      const input=$('newHeight'),value=input.value.trim();
+      if(!value||!(parseFloat(value)>0)){show('heightError','Enter a height in mm, for example 5.');return}
+      show('heightError');
       renderHeights(Options.cleanList([...checkedValues('productHeights','height'),value]));
       input.value='';
     }
