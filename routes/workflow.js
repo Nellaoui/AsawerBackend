@@ -649,7 +649,7 @@ const attachOrderLines = async (cases) => {
   }).select('orderId orderItemId productId requestedName status isBlocked reprintParts print.plateNumber print.machineId').populate('productId', 'serialNumber name imageUrl').lean();
   // Printer names for the plate each product was printed on (Packing shows where a product came from).
   const printerCodes = [...new Set(rows.map(row => row.print?.machineId).filter(Boolean))];
-  const printerNames = new Map((printerCodes.length ? await Machine.find({ code: { $in: printerCodes } }).select('code name').lean() : []).map(machine => [machine.code, machine.name]));
+  const printerNames = new Map((printerCodes.length ? await Machine.find({ code: { $in: printerCodes } }).select('code name label').lean() : []).map(machine => [machine.code, machine.label ? `${machine.label} · ${machine.name}` : machine.name]));
   // Size and quantity live on the order's items; the page already has them populated.
   const orderItems = new Map();
   for (const item of cases) {

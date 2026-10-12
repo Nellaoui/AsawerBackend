@@ -147,6 +147,26 @@ describe('printing plates', () => {
     expect(machine).toMatchObject({ status: 'busy', currentPlateId: plate._id });
   });
 
+  test('a printer marked failed can still be chosen, an offline one can not', async () => {
+    const plate = makePlate(14);
+    const cases = [makeCase(1, { print: { plateId: plate._id, plateNumber: 14 } })];
+    const failed: any = { code: 'W2', name: 'Wax 2', enabled: true, productionMethod: 'wax', status: 'failed', statusReason: 'old jam', currentCaseId: null, currentPlateId: null, save: jest.fn() };
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    jest.spyOn(WorkflowCase, 'find').mockImplementation(((filter: any) => filter['print.plateId'] && !filter.status ? Promise.resolve(cases) : { populate: () => ({ populate: async () => cases }) }) as any);
+    (findMachine as jest.Mock).mockResolvedValue(failed);
+    let res = response();
+    await send({ params: { id: plate._id }, body: { machineId: 'W2' }, user: waxUser }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(failed).toMatchObject({ status: 'busy', statusReason: '', currentPlateId: plate._id });
+
+    const second = makePlate(15);
+    jest.spyOn(Plate, 'findById').mockResolvedValue(second as any);
+    (findMachine as jest.Mock).mockResolvedValue({ code: 'W3', enabled: true, productionMethod: 'wax', status: 'offline', currentPlateId: null });
+    res = response();
+    await send({ params: { id: second._id }, body: { machineId: 'W3' }, user: waxUser }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+
   test('a busy printer is refused', async () => {
     const plate = makePlate(14);
     (findMachine as jest.Mock).mockResolvedValue({ code: 'W2', enabled: true, productionMethod: 'wax', status: 'busy', currentPlateId: oid(70) });

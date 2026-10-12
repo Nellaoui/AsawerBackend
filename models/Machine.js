@@ -6,6 +6,7 @@ const PRODUCTION_METHODS = ['wax', 'resin'];
 const machineSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true, trim: true, uppercase: true, maxlength: 40, index: true },
   name: { type: String, required: true, trim: true, maxlength: 160 },
+  label: { type: String, trim: true, maxlength: 12, default: '' },
   manufacturer: { type: String, required: true, trim: true, maxlength: 120 },
   model: { type: String, required: true, trim: true, maxlength: 120 },
   serialNumber: { type: String, required: true, unique: true, trim: true, maxlength: 120, index: true },

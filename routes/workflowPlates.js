@@ -9,7 +9,8 @@ const { notifyCaseAssignment, notifyFailedPrint } = require('../utils/workflowNo
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 
 const REMINDER_MINUTES = 120;
-const BAD_PRINTER_STATUSES = ['offline', 'failed', 'maintenance'];
+// A printer marked failed can still be chosen: the person knows whether it works again.
+const BAD_PRINTER_STATUSES = ['offline', 'maintenance'];
 
 const cleanText = (value, max) => String(value || '').trim().slice(0, max);
 const minutesBetween = (start, end = new Date()) => (start ? Math.max(Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000), 0) : null);

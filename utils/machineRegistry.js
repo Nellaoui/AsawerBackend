@@ -3,32 +3,37 @@ const AuditLog = require('../models/AuditLog');
 
 const DEFAULT_MACHINES = [
   {
-    code: 'WAX-FF-01', name: 'WaxJet 510 · 086', manufacturer: 'FlashForge', model: 'WaxJet510',
+    code: 'WAX-FF-01', label: 'M1', name: 'WaxJet 510 · 086', manufacturer: 'FlashForge', model: 'WaxJet510',
     serialNumber: 'W51E9300086', macAddress: '00:E0:4C:9A:22:F1', ipAddress: '192.168.1.103', productionMethod: 'wax',
     software: { firmware: '0.0.2.73.6-I', imageSlicer: '1.11.5', script: '0.0.2.73-6' }
   },
   {
-    code: 'WAX-FF-02', name: 'W510 · 082', manufacturer: 'FlashForge', model: 'W510',
+    code: 'WAX-FF-02', label: 'M2', name: 'W510 · 082', manufacturer: 'FlashForge', model: 'W510',
     serialNumber: 'W51E9300082', macAddress: '00:E0:4C:9A:17:1F', ipAddress: '192.168.1.227', productionMethod: 'wax',
     software: { firmware: '0.0.2.73.6-I', imageSlicer: '1.10.2', script: '0.0.2.72-4' }
   },
   {
-    code: 'WAX-FF-03', name: 'WaxJet 510 · 075', manufacturer: 'FlashForge', model: 'WaxJet510',
+    code: 'WAX-FF-03', label: 'M3', name: 'WaxJet 510 · 075', manufacturer: 'FlashForge', model: 'WaxJet510',
     serialNumber: 'W51E9300075', macAddress: '00:E0:4C:9A:24:6B', ipAddress: '192.168.1.123', productionMethod: 'wax',
     software: { firmware: '0.0.2.73.6-I', imageSlicer: '1.11.5', script: '0.0.2.73-6' }
   },
   {
-    code: 'WAX-3DS-01', name: 'ProJet MJP 2500W', manufacturer: '3D Systems', model: 'ProJet MJP 2500W',
+    code: 'WAX-FF-04', label: 'M4', name: 'FlashForge 410', manufacturer: 'FlashForge', model: '410',
+    serialNumber: 'FF410-192.168.1.61', macAddress: '', ipAddress: '192.168.1.61', productionMethod: 'wax',
+    notes: 'Serial number not known yet.', software: {}
+  },
+  {
+    code: 'WAX-3DS-01', label: 'M5', name: 'ProJet MJP 2500W', manufacturer: '3D Systems', model: 'ProJet MJP 2500W',
     serialNumber: '3010F475311', macAddress: '00:04:5F:46:27:64', ipAddress: '192.168.1.62', productionMethod: 'wax',
     software: { release: '4.1.21', printJobManager: '1.9.11034', imageSlicer: '1.0.0.20240207A', printEngine: '02.09.32', ui: '3.075', connect3D: '1.0.38.0' }
   },
   {
-    code: 'RESIN-RS-01', name: 'Rapid Shape S50+ · 766', manufacturer: 'Rapid Shape', model: 'S50+',
+    code: 'RESIN-RS-01', label: 'M1', name: 'Rapid Shape S50+ · 766', manufacturer: 'Rapid Shape', model: 'S50+',
     serialNumber: '222R142766', macAddress: 'DC:2C:6E:21:D2:33', ipAddress: '192.168.1.28', productionMethod: 'resin',
     software: { lightEngine: '1.0.2', pc: '22.2.1', ioBoard: '1.0.0' }
   },
   {
-    code: 'RESIN-RS-02', name: 'Rapid Shape S50+ · 774', manufacturer: 'Rapid Shape', model: 'S50+',
+    code: 'RESIN-RS-02', label: 'M2', name: 'Rapid Shape S50+ · 774', manufacturer: 'Rapid Shape', model: 'S50+',
     serialNumber: '224R157774', macAddress: 'DC:2C:6E:21:D6:D2', ipAddress: '192.168.1.26', productionMethod: 'resin',
     software: { lightEngine: '1.0.2', pc: '22.2.1', ioBoard: '1.0.0' }
   }
@@ -46,7 +51,11 @@ const auditMachine = async ({ action, actorId = null, machine, details = {} }) =
 const ensureDefaultMachines = async () => {
   for (const definition of DEFAULT_MACHINES) {
     const existing = await Machine.findOne({ $or: [{ code: definition.code }, { serialNumber: definition.serialNumber }] });
-    if (existing) continue;
+    if (existing) {
+      // Printers registered before the M numbers existed get theirs now.
+      if (!existing.label && definition.label) { existing.label = definition.label; await existing.save(); }
+      continue;
+    }
     const machine = await Machine.create(definition);
     await auditMachine({ action: 'machine_registered', machine, details: { ipAddress: machine.ipAddress, productionMethod: machine.productionMethod } });
   }
