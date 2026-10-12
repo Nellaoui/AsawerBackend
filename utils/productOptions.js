@@ -46,6 +46,16 @@
     return out.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   };
 
+  // FR and FRN are fixed to the product, so they share the product's own stock.
+  // Every other clasp is counted on its own, with its own sizes.
+  const PRODUCT_FIXED_CLASPS = ['FR', 'FRN'];
+  /** The clasp a stock row is kept under: '' for the product's own stock. */
+  const stockClaspFor = (type, clasp) => {
+    const value = String(clasp == null ? '' : clasp).trim();
+    if (!typeHasClasps(type) || !CLASP_TYPES.includes(value) || PRODUCT_FIXED_CLASPS.includes(value)) return '';
+    return value;
+  };
+
   /** Known clasp types only, in display order. */
   const cleanClasps = (values) => {
     const wanted = new Set((Array.isArray(values) ? values : []).map((v) => String(v == null ? '' : v).trim()));
@@ -78,6 +88,6 @@
   return {
     PRESET_SIZE_TYPES, NO_SIZE_TYPES, ONE_SIZE, CLASP_TYPES, CLASP_LABELS,
     normalizeType, presetKey, typeHasSizes, typeHasHeights, typeHasClasps, usesPresetSizes,
-    cleanList, cleanClasps, presetSizes, presetHeights, productOptionsFor,
+    PRODUCT_FIXED_CLASPS, stockClaspFor, cleanList, cleanClasps, presetSizes, presetHeights, productOptionsFor,
   };
 });

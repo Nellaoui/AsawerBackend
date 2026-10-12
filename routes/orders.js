@@ -473,7 +473,10 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             throw error;
           }
 
-          const sizeCandidates = productVariants.filter(variant => variant.sizeKey === sizeKey);
+          // FR and FRN stay with the product's own stock; any other clasp of a
+          // collier or gourmette is looked up by its own size rows.
+          const claspKey = productOptions.stockClaspFor(product.type, line.clasp);
+          const sizeCandidates = productVariants.filter(variant => variant.sizeKey === sizeKey && (variant.clasp || '') === claspKey);
           // A customer-level route is authoritative for every printable item in
           // their orders. Otherwise the product classification chooses the queue.
           const preferredMethod = forcedProductionMethod
@@ -502,7 +505,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             : (product.fulfillmentPolicy || 'stock_then_print');
           let available = selectedVariant
             ? Math.max(selectedVariant.onHandQuantity - selectedVariant.reservedQuantity, 0)
-            : (productVariants.length || isSartla ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
+            : (productVariants.length || isSartla || claspKey ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
           let stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
           let printQuantity = quantity - stockQuantity;
 

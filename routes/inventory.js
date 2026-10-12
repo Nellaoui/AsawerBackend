@@ -112,6 +112,8 @@ const serializeProduct = (product, stockVariants = []) => {
       reference: variant.displayReference,
       printMethod: variant.printMethod,
       size: variant.size,
+      clasp: variant.clasp || '',
+      productIds: (variant.productIds || []).map(String),
       onHandQuantity: Number(variant.onHandQuantity || 0),
       reservedQuantity: Number(variant.reservedQuantity || 0),
       availableQuantity: Math.max(Number(variant.onHandQuantity || 0) - Number(variant.reservedQuantity || 0), 0),
@@ -126,6 +128,8 @@ const serializeVariant = (variant) => ({
   reference: variant.displayReference,
   printMethod: variant.printMethod,
   size: variant.size,
+  clasp: variant.clasp || '',
+  productIds: (variant.productIds || []).map(String),
   onHandQuantity: Number(variant.onHandQuantity || 0),
   reservedQuantity: Number(variant.reservedQuantity || 0),
   availableQuantity: Math.max(Number(variant.onHandQuantity || 0) - Number(variant.reservedQuantity || 0), 0),
@@ -198,8 +202,22 @@ router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
       }
     }
 
+    // Clasp stock can be shared by several products; send their names so the
+    // portal can show who shares it, even when they are on another page.
+    const claspIds = new Set();
+    for (const variant of variants) if (variant.clasp) for (const id of variant.productIds || []) claspIds.add(String(id));
+    const linkedNames = claspIds.size
+      ? new Map((await Product.find({ _id: { $in: [...claspIds] } }).select('name serialNumber').lean()).map(item => [String(item._id), { id: String(item._id), name: item.name, serialNumber: item.serialNumber }]))
+      : new Map();
+    const serialized = products.map(product => serializeProduct(product, variantsByProduct.get(String(product._id)) || []));
+    for (const item of serialized) {
+      for (const variant of item.stockVariants) {
+        if (variant.clasp) variant.linkedProducts = variant.productIds.map(id => linkedNames.get(id)).filter(Boolean);
+      }
+    }
+
     res.json({
-      products: products.map(product => serializeProduct(product, variantsByProduct.get(String(product._id)) || [])),
+      products: serialized,
       summary: totals[0] || {
         products: 0,
         availableUnits: 0,
@@ -884,9 +902,11 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
     const product = await Product.findById(req.params.id);
     if (!product) return res.status(404).json({ message: 'Product not found' });
     const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
+    const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
     const variant = await StockVariant.create({
       canonicalReference,
       displayReference: product.serialNumber,
+      clasp,
       productIds: [product._id],
       primaryProductId: product._id,
       printMethod,
@@ -898,7 +918,7 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
       notes: 'Created manually in the stock portal'
     });
     // A sartla's stock sizes carry the bracelet count (5.4 x5); its customer sizes stay the bracelet sizes.
-    if (!Sartla.isSartlaType(product.type)) {
+    if (!clasp && !Sartla.isSartlaType(product.type)) {
       product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
         .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
       await product.save();
@@ -907,7 +927,7 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
     await recomputeProductStock([product._id]);
     res.status(201).json(serializeVariant(variant));
   } catch (error) {
-    if (error?.code === 11000) return res.status(409).json({ message: 'That size already exists for this printing method' });
+    if (error?.code === 11000) return res.status(409).json({ message: 'That size already exists for this printing method and clasp' });
     console.error('Error adding stock size:', error);
     res.status(500).json({ message: 'Failed to add stock size' });
   }
@@ -920,6 +940,8 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
   const printMethod = String(req.body.printMethod || '').toLowerCase();
   if (!['wax', 'resin'].includes(printMethod)) return res.status(400).json({ message: 'Choose Wax or Resin' });
   const rows = Array.isArray(req.body.sizes) ? req.body.sizes : [];
+  const sharedIds = Array.isArray(req.body.productIds) ? req.body.productIds.map(String) : [];
+  if (sharedIds.some(id => !mongoose.Types.ObjectId.isValid(id)) || sharedIds.length > 60) return res.status(400).json({ message: 'Invalid product list' });
   if (!rows.length || rows.length > 60) return res.status(400).json({ message: 'Send between 1 and 60 sizes' });
   const cleaned = [];
   for (const row of rows) {
@@ -940,9 +962,22 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
       const product = await Product.findById(req.params.id).session(session);
       if (!product) throw Object.assign(new Error('Product not found'), { status: 404 });
       const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
+      const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
+      // A clasp count can serve several colliers/gourmettes; only those ticked are linked.
+      let linkedIds = [product._id];
+      const removedIds = new Set();
+      if (clasp && sharedIds.length) {
+        const others = await Product.find({ _id: { $in: sharedIds, $ne: product._id } }).select('type').session(session).lean();
+        linkedIds = [product._id, ...others.filter(other => productOptions.typeHasClasps(other.type)).map(other => other._id)];
+      }
+      // A product that shares this clasp must offer it to customers too.
+      if (clasp && linkedIds.length > 1) {
+        await Product.updateMany({ _id: { $in: linkedIds } }, { $addToSet: { availableClasps: clasp } }, { session });
+      }
       for (const row of cleaned) {
-        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey }).session(session)
-          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey }).session(session);
+        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey, clasp }).session(session)
+          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey, clasp }).session(session);
+        let linksChanged = false;
         const before = Number(variant?.onHandQuantity || 0);
         if (variant && row.quantity < Number(variant.reservedQuantity || 0)) {
           throw Object.assign(new Error(`Size ${row.size}: ${variant.reservedQuantity} unit(s) are reserved for orders`), { status: 409 });
@@ -952,7 +987,8 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
           variant = new StockVariant({
             canonicalReference,
             displayReference: product.serialNumber,
-            productIds: [product._id],
+            clasp,
+            productIds: linkedIds,
             primaryProductId: product._id,
             printMethod,
             size: row.size,
@@ -962,10 +998,17 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
             sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin',
             notes: 'Created in the stock portal'
           });
-        } else if (!variant.productIds.some(id => String(id) === String(product._id))) {
-          variant.productIds.push(product._id);
+        } else {
+          if (!variant.productIds.some(id => String(id) === String(product._id))) variant.productIds.push(product._id);
+          if (clasp && Array.isArray(req.body.productIds)) {
+            // The ticked products are exactly the ones that share this count.
+            for (const id of variant.productIds) if (!linkedIds.some(kept => String(kept) === String(id))) removedIds.add(String(id));
+            const sameLinks = variant.productIds.length === linkedIds.length && linkedIds.every(id => variant.productIds.some(existing => String(existing) === String(id)));
+            if (!sameLinks) { variant.productIds = linkedIds; linksChanged = true; }
+            if (!linkedIds.some(id => String(id) === String(variant.primaryProductId))) variant.primaryProductId = product._id;
+          }
         }
-        if (before === row.quantity && !variant.isNew) continue;
+        if (before === row.quantity && !variant.isNew && !linksChanged) continue;
         variant.onHandQuantity = row.quantity;
         await variant.save({ session });
         changed.push({ size: row.size, before, after: row.quantity });
@@ -976,15 +1019,15 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
           quantity: row.quantity - before,
           stockBefore: before,
           stockAfter: row.quantity,
-          notes: `Size ${row.size} (${printMethod}): set in stock portal`
+          notes: `Size ${row.size}${clasp ? ` · clasp ${clasp}` : ''} (${printMethod}): set in stock portal`
         }], { session });
       }
-      if (!Sartla.isSartlaType(product.type)) {
+      if (!clasp && !Sartla.isSartlaType(product.type)) {
         product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), ...cleaned.map(row => row.size)])]
           .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
         await product.save({ session });
       }
-      await recomputeProductStock([product._id], session);
+      await recomputeProductStock([...linkedIds, ...removedIds], session);
     });
     res.json({ changed });
   } catch (error) {

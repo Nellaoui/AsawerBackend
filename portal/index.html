@@ -51,6 +51,7 @@
     .positive { color:var(--green); } .negative { color:var(--red); }
     .badge { display:inline-flex; align-items:center; gap:5px; margin-top:6px; padding:3px 8px; border-radius:999px; background:#17365d66; color:#bfdbfe; font-size:11px; font-weight:800; }
     .badge.draft { background:#713f1266; color:#fde68a; }
+    .share-chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.share-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:#1d2633;border:1px solid #2f3b4d;font-weight:600;font-size:.85rem}.share-chip button{background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 2px}
     .variant-table { min-width:0; }
     .variant-table th:first-child,.variant-table td:first-child { position:static; background:transparent; }
     .variant-table th:first-child { background:#171e28; }
@@ -329,6 +330,8 @@
     <div class="modal-body">
       <div id="sizeStockError" class="error" aria-live="assertive"></div>
       <label>Production method<select id="sizeStockMethod"><option value="wax">Wax</option><option value="resin">Resin</option></select></label>
+      <label id="sizeStockClaspWrap" hidden>Clasp<select id="sizeStockClasp"></select></label>
+      <fieldset id="claspShare" hidden style="border:1px solid var(--line,#2a3442);border-radius:10px;margin:10px 0;padding:8px 12px"><legend class="muted">This clasp stock is used by</legend><div id="claspShareList" class="share-chips"></div><input id="claspSearch" type="search" placeholder="Add a product: type its reference or name" autocomplete="off" aria-label="Add a product to this clasp stock"><div id="claspResults" class="share-chips"></div><p class="muted" style="margin:6px 0 0">A product added here will also offer this clasp to customers.</p></fieldset>
       <div class="table-wrap"><table class="variant-table"><thead><tr><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
       <p class="muted">Use − and + or type how many pieces are on the shelf for each size, then save. Use + Add size for a size that is not listed.</p>
     </div>
@@ -1015,8 +1018,41 @@ Cancel = hidden (private)`);
     // Minus switches off at the lowest allowed number (0, or the reserved pieces).
     function syncSteppers(root){for(const input of root.querySelectorAll('.stepper input')){const min=Number(input.min||0),value=Number(input.value);input.closest('.stepper').querySelector('[data-step="-1"]').disabled=input.disabled||input.readOnly||(Number.isFinite(value)&&value<=min)}}
     const sizeKeyOf=size=>String(size||'').trim().replace(',','.').toUpperCase().replace(/\s+/g,' ').replace(/\.0+$/,'');
-    function sizeRowsFor(product,method){
-      const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method);
+    const claspLabel=c=>(window.ProductOptions.CLASP_LABELS||{})[c]||c;
+    const ownClaspChoices=product=>{
+      const set=new Set((product.availableClasps||[]).filter(c=>!ProductOptions.PRODUCT_FIXED_CLASPS.includes(c)));
+      for(const v of product.stockVariants||[])if(v.clasp)set.add(v.clasp);
+      return ProductOptions.CLASP_TYPES.filter(c=>set.has(c));
+    };
+    // Products that share the clasp stock being edited: id -> {name, serialNumber}.
+    let claspLinks=new Map(),claspLinks0='',claspSearchTimer=0,claspSearchId=0;
+    const linkKey=()=>[...claspLinks.keys()].sort().join(',');
+    function renderClaspLinks(){
+      const product=state.selected;
+      $('claspShareList').innerHTML=[...claspLinks].map(([id,p])=>`<span class="share-chip">${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}${id===product.productId?'':`<button type="button" data-unshare="${escapeHtml(id)}" aria-label="Remove ${escapeHtml(p.serialNumber)}">×</button>`}</span>`).join('');
+    }
+    function renderClaspShare(){
+      const clasp=$('sizeStockClasp').value,product=state.selected;
+      $('claspShare').hidden=!clasp;
+      $('claspResults').innerHTML='';$('claspSearch').value='';
+      if(!clasp)return;
+      claspLinks0='';
+      claspLinks=new Map([[product.productId,{name:product.name,serialNumber:product.serialNumber}]]);
+      for(const v of product.stockVariants||[])if((v.clasp||'')===clasp)for(const p of v.linkedProducts||[])claspLinks.set(String(p.id),{name:p.name,serialNumber:p.serialNumber});
+      renderClaspLinks();claspLinks0=linkKey();
+    }
+    async function searchClaspProducts(){
+      const text=$('claspSearch').value.trim(),id=++claspSearchId;
+      if(!text){$('claspResults').innerHTML='';return}
+      try{
+        const data=await api(`/inventory?${new URLSearchParams({search:text,limit:'12'})}`);
+        if(id!==claspSearchId)return;
+        const found=data.products.filter(p=>ProductOptions.typeHasClasps(p.type)&&!claspLinks.has(p.productId));
+        $('claspResults').innerHTML=found.map(p=>`<button type="button" class="button secondary small" data-share-add="${escapeHtml(p.productId)}" data-name="${escapeHtml(p.name)}" data-ref="${escapeHtml(p.serialNumber)}">+ ${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}</button>`).join('')||'<span class="muted">No collier or gourmette found.</span>';
+      }catch(error){if(id===claspSearchId)$('claspResults').innerHTML='<span class="muted">'+escapeHtml(error.message)+'</span>'}
+    }
+    function sizeRowsFor(product,method,clasp=''){
+      const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method&&(v.clasp||'')===clasp);
       // Finished sartlas are counted per size and per number of bracelets: 5.4 x5.
       const baseSizes=(product.availableSizes||[]).map(String);
       const listed=isSartla(product.type)
@@ -1032,7 +1068,8 @@ Cancel = hidden (private)`);
       return `<tr data-size-row data-size="${escapeHtml(row.size)}" data-original="${isNew?'':row.onHand}" data-reserved="${row.reserved}"><td>${sizeCell}</td><td>${stepperHtml(`<input data-size-qty type="number" min="${row.reserved}" step="1" inputmode="numeric" value="${row.onHand}" aria-label="On hand for size ${escapeHtml(row.size||'new')}">`,`for size ${escapeHtml(row.size||'new')}`)}</td><td style="color:var(--blue);font-weight:700">${row.reserved}</td><td><span data-size-available class="stock ${row.onHand-row.reserved<=0?'out':''}">${Math.max(row.onHand-row.reserved,0)}</span></td></tr>`;
     }
     function renderSizeRows(){
-      const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value);
+      const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value,$('sizeStockClasp').value);
+      renderClaspShare();
       $('variantsBody').innerHTML=rows.map(row=>sizeRowHtml(row)).join('')||'<tr data-empty><td colspan="4" class="muted">No sizes yet. Use + Add size.</td></tr>';
       syncSteppers($('variantsBody'));
     }
@@ -1041,6 +1078,9 @@ Cancel = hidden (private)`);
       $('variantsProduct').textContent=`${product.name} · ${product.serialNumber}`;
       const methods=(product.stockVariants||[]).map(v=>v.printMethod);
       $('sizeStockMethod').value=['wax','resin'].includes(product.printMethod)?product.printMethod:(methods[0]||'wax');
+      const choices=ProductOptions.typeHasClasps(product.type)?ownClaspChoices(product):[];
+      $('sizeStockClaspWrap').hidden=!choices.length;
+      $('sizeStockClasp').innerHTML='<option value="">Own stock (FR, FRN or no clasp)</option>'+choices.map(c=>`<option value="${c}">${escapeHtml(claspLabel(c))}</option>`).join('');
       renderSizeRows(); $('variantsDialog').showModal();
     }
     function addVariant() {
@@ -1082,7 +1122,7 @@ Cancel = hidden (private)`);
         const quantity=Number(raw);
         if(!size){if(raw&&quantity>0)return show('sizeStockError','Type the size for every new row.');continue}
         if(!Number.isSafeInteger(quantity)||quantity<0)return show('sizeStockError',`Size ${size}: enter a whole number, 0 or more.`);
-        if(row.dataset.original!==''&&Number(row.dataset.original)===quantity)continue;
+        if(!(!$('claspShare').hidden&&linkKey()!==claspLinks0)&&row.dataset.original!==''&&Number(row.dataset.original)===quantity)continue;
         sizes.push({size,quantity});
       }
       if(!sizes.length){$('variantsDialog').close();return}
@@ -1091,12 +1131,16 @@ Cancel = hidden (private)`);
         const selected=state.selected;
         $('variantsDialog').close();
         show('message',`Saved ${sizes.length} size(s) for ${selected.serialNumber}.`);
-        await api(`/inventory/products/${selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,sizes})});
+        await api(`/inventory/products/${selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,clasp:$('sizeStockClasp').value,productIds:[...claspLinks.keys()],sizes})});
         loadInventory({live:true});
       }catch(error){$('variantsDialog').showModal();show('sizeStockError',error.message)}
       finally{$('saveSizeStock').disabled=false}
     });
     $('addVariant').addEventListener('click',addVariant);
+    $('sizeStockClasp').addEventListener('change',renderSizeRows);
+    $('claspSearch').addEventListener('input',()=>{clearTimeout(claspSearchTimer);claspSearchTimer=setTimeout(searchClaspProducts,250)});
+    $('claspResults').addEventListener('click',event=>{const b=event.target.closest('[data-share-add]');if(!b)return;claspLinks.set(b.dataset.shareAdd,{name:b.dataset.name,serialNumber:b.dataset.ref});renderClaspLinks();b.remove()});
+    $('claspShareList').addEventListener('click',event=>{const b=event.target.closest('[data-unshare]');if(!b)return;claspLinks.delete(b.dataset.unshare);renderClaspLinks()});
     $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
     $('damageForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const quantity=Number($('damageQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1)return show('damageError','Enter a positive whole-number quantity.');if(!confirm(`Report ${quantity} damaged unit(s) of ${p.name} and create its replacement task?`))return;const button=event.submitter;button.disabled=true;try{const data=await api(`/inventory/products/${p.productId}/damage`,{method:'POST',body:JSON.stringify({quantity,orderId:$('damageOrder').value.trim()||null,notes:$('damageNotes').value.trim()})});$('damageDialog').close();show('message',`${p.name}: damage recorded and replacement case #${String(data.workflowCase._id).slice(-6).toUpperCase()} created.`);loadInventory({live:true});}catch(error){show('damageError',error.message)}finally{button.disabled=false}});
     restoreSession();

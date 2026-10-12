@@ -45,3 +45,29 @@ describe('productOptionsFor', () => {
     expect(options.CLASP_LABELS.FR).toBe('FR');
   });
 });
+
+describe('stockClaspFor', () => {
+  it('keeps FR, FRN and no clasp on the product own stock', () => {
+    for (const clasp of ['FR', 'FRN', '', undefined, 'unknown']) {
+      expect(options.stockClaspFor('Collier', clasp)).toBe('');
+    }
+  });
+
+  it('counts every other clasp of a collier or gourmette on its own', () => {
+    expect(options.stockClaspFor('Collier', 'MO_SIMPLE')).toBe('MO_SIMPLE');
+    expect(options.stockClaspFor('gourmette', 'SIMPLE')).toBe('SIMPLE');
+  });
+
+  it('ignores a clasp on types that have none', () => {
+    expect(options.stockClaspFor('Bague', 'MO_SIMPLE')).toBe('');
+  });
+});
+
+describe('StockVariant clasp', () => {
+  it('allows one row per clasp for the same size', () => {
+    const StockVariant = require('../models/StockVariant');
+    const unique = StockVariant.schema.indexes().find(([, o]: any) => o.unique);
+    expect(unique[0]).toEqual({ canonicalReference: 1, printMethod: 1, sizeKey: 1, clasp: 1 });
+    expect(StockVariant.schema.path('clasp').options.default).toBe('');
+  });
+});
