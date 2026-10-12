@@ -75,7 +75,7 @@ const ALLOWED_TRANSITIONS = {
   ready_to_print: ['printing', 'modeling', 'cancelled'],
   printing: ['quality_check', 'ready_to_print', 'cancelled'],
   quality_check: ['packing', 'ready_to_print', 'modeling', 'cancelled'],
-  packing: ['completed', 'cancelled'],
+  packing: ['completed', 'ready_to_print', 'cancelled'],
   completed: [],
   rejected: [],
   cancelled: []
@@ -120,9 +120,13 @@ const validateTransition = (workflowCase, nextStatus) => {
     if (workflowCase.customerApproval === 'rejected') return 'The customer rejected this design or quote';
   }
 
+  if (workflowCase.status === 'packing' && nextStatus === 'ready_to_print' && workflowCase.requestType === 'pack_order') {
+    return 'The packing task of an order cannot be reprinted. Send the product itself back to printing';
+  }
+
   if (nextStatus === 'ready_to_print') {
     if (!['wax', 'resin'].includes(workflowCase.productionMethod)) return 'Choose wax or resin before printing';
-    const isReprint = ['printing', 'quality_check'].includes(workflowCase.status);
+    const isReprint = ['printing', 'quality_check', 'packing'].includes(workflowCase.status);
     if (!isReprint && !latestModelVersion(workflowCase)?.isPrintReady) return 'The latest 3D model version must be marked print ready';
     if (!isReprint && !['approved', 'not_required'].includes(workflowCase.customerApproval)) return 'Customer approval is required before printing';
   }

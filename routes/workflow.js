@@ -2475,7 +2475,8 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     }
     const transitionError = adminMove ? null : validateTransition(workflowCase, nextStatus);
     if (transitionError) return res.status(409).json({ message: transitionError });
-    const qualityReprint = !adminMove && workflowCase.status === 'quality_check' && nextStatus === 'ready_to_print';
+    // Quality and Packing can both send exact parts back to printing.
+    const qualityReprint = !adminMove && ['quality_check', 'packing'].includes(workflowCase.status) && nextStatus === 'ready_to_print';
     let reprintParts = null;
     let reprintReason = '';
     if (qualityReprint) {
@@ -2610,7 +2611,7 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
     if (nextStatus === 'needs_customer_info' || nextStatus === 'rejected') {
       notices.push(() => notifyOrderBlocked(req.app, workflowCase, cleanText(req.body.note, 1000)));
     }
-    if (['printing', 'quality_check'].includes(previousStatus) && ['ready_to_print', 'modeling'].includes(nextStatus)) {
+    if (['printing', 'quality_check', 'packing'].includes(previousStatus) && ['ready_to_print', 'modeling'].includes(nextStatus)) {
       const failureNote = qualityReprint
         ? `Reprint ${reprintParts.map(part => `${part.code} x${part.quantity}`).join(', ')}. ${reprintReason}`
         : cleanText(req.body.note, 1000);

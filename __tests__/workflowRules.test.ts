@@ -61,6 +61,14 @@ describe('order exception workflow rules', () => {
     expect(validateTransition(qualityCase, 'packing')).toBeNull();
   });
 
+  test('lets Packing send a product back to printing, but not the order packing task', () => {
+    const packingLine = makeCase({ status: 'packing', productionMethod: 'wax', requestType: 'print_required' });
+    expect(validateTransition(packingLine, 'ready_to_print')).toBeNull();
+    expect(validateTransition(packingLine, 'completed')).toBeNull();
+    const packOrder = makeCase({ status: 'packing', productionMethod: 'wax', requestType: 'pack_order' });
+    expect(validateTransition(packOrder, 'ready_to_print')).toMatch(/cannot be reprinted/i);
+  });
+
   test('accepts exact reprint parts and quantities, and rejects ambiguous requests', () => {
     expect(normalizeReprintParts([{ code: 'a', quantity: 2 }, { code: 'D', quantity: 1 }]))
       .toEqual([{ code: 'A', quantity: 2 }, { code: 'D', quantity: 1 }]);
