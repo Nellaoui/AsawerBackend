@@ -218,7 +218,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       if (!machine.enabled) fail('This printer is disabled');
       if (machine.productionMethod !== plate.productionMethod) fail(`Choose a ${plate.productionMethod} printer for this plate`);
       if (BAD_PRINTER_STATUSES.includes(machine.status)) fail(`This printer is ${machine.status}`);
-      if (machine.currentCaseId || machine.currentPlateId) fail('This printer is already busy');
+      // Only a plate on the printer makes it busy. An old one-by-one print task, left from before plates, does not lock it.
+      if (machine.currentPlateId) fail('This printer is already busy');
       const cases = await plateCases(plate);
       if (!cases.length) fail('Put at least one product on the plate first');
       const stale = cases.find(item => item.status !== 'ready_to_print' || item.isBlocked || item.archivedAt);
@@ -248,6 +249,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       machine.statusReason = '';
       machine.statusSource = 'manual';
       machine.currentPlateId = plate._id;
+      machine.currentCaseId = null;
       machine.lastStatusChangedAt = now;
       machine.updatedBy = req.user.id;
       saves.push(machine.save());

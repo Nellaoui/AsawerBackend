@@ -33,3 +33,30 @@ describe('machine registry', () => {
     expect(validation?.errors.status).toBeDefined();
   });
 });
+
+describe('making a printer available', () => {
+  const router = require('../routes/machines');
+  const route = router.stack.find((layer: any) => layer.route?.path === '/:id/status' && layer.route.methods.patch);
+  const patch = route.route.stack[route.route.stack.length - 1].handle;
+  const id = '507f1f77bcf86cd799439011';
+  const response = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn() });
+  const boss = { id: 'boss', role: 'employee', workRole: 'boss' };
+  afterEach(() => jest.restoreAllMocks());
+
+  test('an old print task left on the printer no longer blocks it, but a plate does', async () => {
+    const AuditLog = require('../models/AuditLog');
+    jest.spyOn(AuditLog, 'create').mockResolvedValue({} as any);
+    const old: any = { _id: id, code: 'R1', productionMethod: 'resin', status: 'failed', currentCaseId: '507f1f77bcf86cd799439022', currentPlateId: null, save: jest.fn() };
+    jest.spyOn(Machine, 'findById').mockResolvedValue(old);
+    let res = response();
+    await patch({ params: { id }, body: { status: 'available' }, user: boss }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(old).toMatchObject({ status: 'available', currentCaseId: null });
+
+    const onPlate: any = { _id: id, code: 'R2', productionMethod: 'resin', status: 'busy', currentCaseId: null, currentPlateId: '507f1f77bcf86cd799439033', save: jest.fn() };
+    jest.spyOn(Machine, 'findById').mockResolvedValue(onPlate);
+    res = response();
+    await patch({ params: { id }, body: { status: 'available' }, user: boss }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+});

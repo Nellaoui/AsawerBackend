@@ -74,7 +74,9 @@ router.patch('/:id/status', async (req, res) => {
     const reason = cleanText(req.body.reason, 1000);
     if (['failed', 'maintenance'].includes(status) && !reason) return res.status(400).json({ message: 'Add a reason for failed or maintenance status' });
     if (machine.currentPlateId && status === 'available') return res.status(409).json({ message: 'Finish or fail the plate on this printer before making it available' });
-    if (machine.currentCaseId && status === 'available') return res.status(409).json({ message: 'Complete or move the assigned print task before making this printer available' });
+    // An old one-by-one print task left on the printer (from before plates) does not lock it: the person knows it is free, so the link is dropped.
+    const droppedCaseId = status === 'available' && machine.currentCaseId ? machine.currentCaseId : null;
+    if (droppedCaseId) machine.currentCaseId = null;
 
     const previousStatus = machine.status;
     const previousReason = machine.statusReason;
@@ -84,7 +86,7 @@ router.patch('/:id/status', async (req, res) => {
     machine.lastStatusChangedAt = new Date();
     machine.updatedBy = req.user.id;
     await machine.save();
-    await auditMachine({ action: 'machine_status_changed', actorId: req.user.id, machine, details: { previousStatus, status, previousReason, reason } });
+    await auditMachine({ action: 'machine_status_changed', actorId: req.user.id, machine, details: { previousStatus, status, previousReason, reason, droppedCaseId: droppedCaseId ? String(droppedCaseId) : undefined } });
     res.json(machine);
   } catch (error) {
     console.error('Failed to update machine:', error);

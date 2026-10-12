@@ -167,6 +167,19 @@ describe('printing plates', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
+  test('an old one-by-one print task does not lock a printer, only a plate does', async () => {
+    const plate = makePlate(14);
+    const cases = [makeCase(1, { print: { plateId: plate._id, plateNumber: 14 } })];
+    const machine: any = { code: 'W2', name: 'Wax 2', enabled: true, productionMethod: 'wax', status: 'busy', currentCaseId: oid(71), currentPlateId: null, save: jest.fn() };
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    (findMachine as jest.Mock).mockResolvedValue(machine);
+    jest.spyOn(WorkflowCase, 'find').mockImplementation(((filter: any) => filter['print.plateId'] && !filter.status ? Promise.resolve(cases) : { populate: () => ({ populate: async () => cases }) }) as any);
+    const res = response();
+    await send({ params: { id: plate._id }, body: { machineId: 'W2' }, user: waxUser }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(machine).toMatchObject({ currentPlateId: plate._id, currentCaseId: null, status: 'busy' });
+  });
+
   test('a busy printer is refused', async () => {
     const plate = makePlate(14);
     (findMachine as jest.Mock).mockResolvedValue({ code: 'W2', enabled: true, productionMethod: 'wax', status: 'busy', currentPlateId: oid(70) });
