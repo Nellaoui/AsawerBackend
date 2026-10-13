@@ -1290,6 +1290,50 @@ const validateOrderCore = async ({ orderId, user, body }) => {
         throw error;
       }
 
+      // Customer Service may drop the printing part of a line ("Don't print"): the pieces
+      // from stock stay, the quantity and the total go down, and a line with
+      // nothing in stock is removed. Nothing is printing yet, so nothing else changes.
+      const skipPrintIds = new Set((Array.isArray(body.skipPrintItemIds) ? body.skipPrintItemIds : []).map(String));
+      const droppedPrint = [];
+      if (skipPrintIds.size) {
+        for (const item of confirmItems) {
+          if (!skipPrintIds.has(String(item._id))) continue;
+          const removed = Number(item.printQuantity || 0);
+          if (removed <= 0) {
+            const error = new Error(`${item.name} has nothing to print`);
+            error.statusCode = 409;
+            throw error;
+          }
+          if (item.braceletCount || Number(item.assembleQuantity || 0) > 0 || item.partOfItemId) {
+            const error = new Error(`${item.name}: the printing part of a sartla cannot be dropped here`);
+            error.statusCode = 409;
+            throw error;
+          }
+          droppedPrint.push({ item, removed, serial: productById.get(String(item.productId))?.serialNumber || item.name, size: item.size || '-' });
+        }
+        if (droppedPrint.length !== skipPrintIds.size) {
+          const error = new Error('Some products to drop are not waiting for confirmation');
+          error.statusCode = 409;
+          throw error;
+        }
+        const removedLines = droppedPrint.filter(({ item, removed }) => Number(item.quantity) - removed <= 0).length;
+        if (removedLines >= order.items.length) {
+          const error = new Error('Nothing in this order is in stock. Cancel the order instead of dropping every product.');
+          error.statusCode = 409;
+          throw error;
+        }
+        for (const { item, removed } of droppedPrint) {
+          order.totalAmount = Math.max(Number(order.totalAmount || 0) - Number(item.price || 0) * removed, 0);
+          item.quantity = Number(item.quantity) - removed;
+          item.printQuantity = 0;
+          if (item.quantity <= 0) {
+            order.items.splice(order.items.indexOf(item), 1);
+            confirmItems.splice(confirmItems.indexOf(item), 1);
+          }
+        }
+        if (typeof order.markModified === 'function') order.markModified('items');
+      }
+
       for (const item of confirmItems) {
         const product = productById.get(String(item.productId));
         if (!product || !String(product.serialNumber || '').trim()) {
@@ -1328,6 +1372,15 @@ const validateOrderCore = async ({ orderId, user, body }) => {
       fulfillmentCases = await createFulfillmentCases(order, productById, user.id, session, confirmItems);
       const now = new Date();
       if (!validationCase.startedAt) validationCase.startedAt = now;
+      if (droppedPrint.length) {
+        validationCase.history.push({
+          actorId: user.id,
+          action: 'print_dropped',
+          fromStatus: 'awaiting_validation',
+          toStatus: 'awaiting_validation',
+          note: `Customer Service did not send to print: ${droppedPrint.map(({ serial, size, removed }) => `${serial} size ${size} x${removed}`).join(', ')}. Order quantity and total lowered.`.slice(0, 1000)
+        });
+      }
       const stillWaiting = order.items.filter(item => item.fulfillmentStatus === 'awaiting_validation');
       if (stillWaiting.length) {
         // Part of the order is confirmed: its items move on now, the rest stay
