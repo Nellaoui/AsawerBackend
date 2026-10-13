@@ -817,7 +817,7 @@ router.get('/cases', operationsAuth, async (req, res) => {
 
     // A page holds whole orders, not product tasks: one order with many
     // products used to fill a page and push every other order to later pages.
-    let rows = await WorkflowCase.find(filter).sort(taskSort).select(mineDone ? '_id orderId history' : '_id orderId').lean();
+    let rows = await WorkflowCase.find(filter).sort(taskSort).select(mineDone ? '_id orderId history' : '_id orderId priority status reprintParts').lean();
     const myDoneAt = new Map();
     if (mineDone) {
       for (const row of rows) {
@@ -832,7 +832,12 @@ router.get('/cases', operationsAuth, async (req, res) => {
       if (!orderGroups.has(key)) orderGroups.set(key, []);
       orderGroups.get(key).push(row._id);
     }
-    const pageIds = [...orderGroups.values()].slice((page - 1) * limit, page * limit).flat();
+    // Products sent back for reprint come right after urgent orders on every
+    // page, so a reprint on a later page is not hidden behind new orders.
+    const rankByRow = new Map(rows.map(row => [String(row._id), row.priority === 'urgent' ? 0 : (row.status === 'ready_to_print' && (row.reprintParts || []).length) ? 1 : 2]));
+    const groupRank = ids => Math.min(...ids.map(id => rankByRow.get(String(id)) ?? 2));
+    const orderedGroups = mineDone ? [...orderGroups.values()] : [...orderGroups.values()].map((ids, index) => ({ ids, index, rank: groupRank(ids) })).sort((a, b) => a.rank - b.rank || a.index - b.index).map(entry => entry.ids);
+    const pageIds = orderedGroups.slice((page - 1) * limit, page * limit).flat();
     const caseDocuments = pageIds.length
       ? await populateCase(WorkflowCase.find({ _id: { $in: pageIds } }).sort(taskSort))
       : [];
