@@ -282,10 +282,12 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
   };
 
   // The printer is done: every product of the plate goes to Quality together.
-  router.post('/plates/:id/finish', operationsAuth, async (req, res) => {
+  // "Already printed" does the same for a plate that was never sent to a printer: its products are ready_to_print and no printer is released.
+  const finishPlate = (plateStatus, caseStatus, noteText) => async (req, res) => {
     try {
-      const plate = await loadPlate(req, 'printing');
-      const cases = await plateCases(plate, { status: 'printing' });
+      const plate = await loadPlate(req, plateStatus);
+      const cases = await plateCases(plate, { status: caseStatus });
+      if (plateStatus === 'open' && !cases.length) fail('This plate has no products to send');
       const stuck = cases.find(item => item.isBlocked || item.archivedAt);
       if (stuck) fail(`Resume ${stuck.requestedName} before finishing the plate`);
       const now = new Date();
@@ -305,8 +307,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         workflowCase.startedAt = null;
         workflowCase.print.completedAt = now;
         workflowCase.history.push({
-          actorId: req.user.id, action: 'status_changed', fromStatus: 'printing', toStatus: 'quality_check',
-          note: `Plate ${plate.number} finished`, queueMinutes, workMinutes
+          actorId: req.user.id, action: 'status_changed', fromStatus: caseStatus, toStatus: 'quality_check',
+          note: `Plate ${plate.number} ${noteText}`, queueMinutes, workMinutes
         });
         saves.push(workflowCase.save());
       }
@@ -323,7 +325,9 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
     } catch (error) {
       respond(res, error, 'finish the plate');
     }
-  });
+  };
+  router.post('/plates/:id/finish', operationsAuth, finishPlate('printing', 'printing', 'finished'));
+  router.post('/plates/:id/printed', operationsAuth, finishPlate('open', 'ready_to_print', 'already printed'));
 
   // The print failed: every product goes back to To print, ready for a new plate.
   router.post('/plates/:id/fail', operationsAuth, async (req, res) => {

@@ -19,6 +19,7 @@ const remove = handler('/plates/:id/remove', 'post');
 const move = handler('/plates/:id/move', 'post');
 const send = handler('/plates/:id/send', 'post');
 const finish = handler('/plates/:id/finish', 'post');
+const printed = handler('/plates/:id/printed', 'post');
 const failPlate = handler('/plates/:id/fail', 'post');
 const transition = handler('/cases/:id/transition', 'post');
 
@@ -207,6 +208,29 @@ describe('printing plates', () => {
     }
     expect(plate.status).toBe('finished');
     expect(machine).toMatchObject({ status: 'available', currentPlateId: null });
+  });
+
+  test('an unsent plate marked already printed sends its products to Quality without a printer', async () => {
+    const plate = makePlate(15);
+    const cases = [1, 2].map(n => makeCase(n, { orderId: null, print: { plateId: plate._id, plateNumber: 15 } }));
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    jest.spyOn(WorkflowCase, 'find').mockResolvedValue(cases as any);
+    const res = response();
+    await printed({ params: { id: plate._id }, body: {}, user: waxUser, app: {} }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    for (const workflowCase of cases) {
+      expect(workflowCase).toMatchObject({ status: 'quality_check', assignedTeam: 'quality' });
+      expect(workflowCase.history.at(-1)).toMatchObject({ fromStatus: 'ready_to_print', note: 'Plate 15 already printed' });
+    }
+    expect(plate.status).toBe('finished');
+  });
+
+  test('already printed is refused for a plate that is printing', async () => {
+    const plate = makePlate(16, { status: 'printing', machineCode: 'W2' });
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    const res = response();
+    await printed({ params: { id: plate._id }, body: {}, user: waxUser, app: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
   });
 
   test('a failed plate needs a reason and returns every product to To print', async () => {
