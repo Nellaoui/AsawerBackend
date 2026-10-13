@@ -67,6 +67,20 @@ const takeOffPlate = async ({ workflowCase, actorId, note }) => {
   await workflowCase.save();
 };
 
+// An archived product can still be printed, but only after the person confirms. Printing it resumes it.
+const archivedPrompt = (res, cases, confirmed) => {
+  const archived = cases.filter(item => item.archivedAt);
+  if (!archived.length || confirmed === true) return false;
+  const names = archived.map(item => item.requestedName);
+  res.status(409).json({ message: `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} archived. Do you still want to print ${names.length === 1 ? 'it' : 'them'}?`, archivedNames: names });
+  return true;
+};
+
+const resumeArchived = (cases, actorId, note) => cases.filter(item => item.archivedAt).forEach(item => {
+  item.archivedAt = null;
+  item.history.push({ actorId, action: 'resumed', fromStatus: item.status, toStatus: item.status, note });
+});
+
 const plateLine = workflowCase => {
   const order = workflowCase.orderId && typeof workflowCase.orderId === 'object' ? workflowCase.orderId : null;
   const orderItem = order?.items?.find?.(item => String(item._id) === String(workflowCase.orderItemId));
@@ -80,7 +94,8 @@ const plateLine = workflowCase => {
     quantity: workflowCase.quantity,
     orderNumber: order?.orderNumber || '',
     status: workflowCase.status,
-    isBlocked: Boolean(workflowCase.isBlocked)
+    isBlocked: Boolean(workflowCase.isBlocked),
+    archived: Boolean(workflowCase.archivedAt)
   };
 };
 
@@ -220,10 +235,16 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       if (BAD_PRINTER_STATUSES.includes(machine.status)) fail(`This printer is ${machine.status}`);
       // Only a plate on the printer makes it busy. An old one-by-one print task, left from before plates, does not lock it.
       if (machine.currentPlateId) fail('This printer is already busy');
-      const cases = await plateCases(plate);
+      const linked = await plateCases(plate);
+      // Products already in another step are taken off by themselves; they never stop the plate.
+      const hidden = linked.filter(item => item.status !== 'ready_to_print');
+      const cases = linked.filter(item => !hidden.includes(item));
+      const stale = cases.find(item => item.isBlocked);
+      if (stale) fail(`${stale.requestedName} is blocked. Take it off the plate first.`);
       if (!cases.length) fail('Put at least one product on the plate first');
-      const stale = cases.find(item => item.status !== 'ready_to_print' || item.isBlocked || item.archivedAt);
-      if (stale) fail(`${stale.requestedName} can not be printed now. Take it off the plate first.`);
+      if (archivedPrompt(res, cases, req.body.allowArchived)) return;
+      resumeArchived(cases, req.user.id, `Printed on Plate ${plate.number} after confirmation`);
+      await Promise.all(hidden.map(item => takeOffPlate({ workflowCase: item, actorId: req.user.id, note: `Taken off Plate ${plate.number} (no longer waiting to print)` })));
       const now = new Date();
       const team = teamForStatus('printing', plate.productionMethod);
       const saves = [];
@@ -288,6 +309,10 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       const plate = await loadPlate(req, plateStatus);
       const cases = await plateCases(plate, { status: caseStatus });
       if (plateStatus === 'open' && !cases.length) fail('This plate has no products to send');
+      if (plateStatus === 'open') {
+        if (archivedPrompt(res, cases, req.body.allowArchived)) return;
+        resumeArchived(cases, req.user.id, `Plate ${plate.number} already printed, confirmed`);
+      }
       const stuck = cases.find(item => item.isBlocked || item.archivedAt);
       if (stuck) fail(`Resume ${stuck.requestedName} before finishing the plate`);
       const now = new Date();

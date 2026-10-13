@@ -168,6 +168,28 @@ describe('printing plates', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
+  test('an archived product asks first, then prints and is resumed', async () => {
+    const plate = makePlate(17);
+    const live = makeCase(1, { print: { plateId: plate._id, plateNumber: 17 } });
+    const archived = makeCase(2, { archivedAt: new Date(), print: { plateId: plate._id, plateNumber: 17 } });
+    const machine: any = { code: 'W2', name: 'Wax 2', enabled: true, productionMethod: 'wax', status: 'available', currentCaseId: null, currentPlateId: null, save: jest.fn() };
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    jest.spyOn(WorkflowCase, 'find').mockImplementation(((filter: any) => filter['print.plateId'] && !filter.status ? Promise.resolve([live, archived]) : { populate: () => ({ populate: async () => [live, archived] }) }) as any);
+    (findMachine as jest.Mock).mockResolvedValue(machine);
+    let res = response();
+    await send({ params: { id: plate._id }, body: { machineId: 'W2' }, user: waxUser }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0].archivedNames).toEqual(['Product 2']);
+    expect(plate.status).toBe('open');
+    expect(archived.archivedAt).not.toBeNull();
+    res = response();
+    await send({ params: { id: plate._id }, body: { machineId: 'W2', allowArchived: true }, user: waxUser }, res);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(archived).toMatchObject({ status: 'printing', archivedAt: null });
+    expect(live.status).toBe('printing');
+    expect(plate.status).toBe('printing');
+  });
+
   test('an old one-by-one print task does not lock a printer, only a plate does', async () => {
     const plate = makePlate(14);
     const cases = [makeCase(1, { print: { plateId: plate._id, plateNumber: 14 } })];
