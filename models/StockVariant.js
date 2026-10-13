@@ -105,6 +105,27 @@ StockVariant.dropLegacyIndex = async () => {
     if (error?.codeName !== 'IndexNotFound' && error?.code !== 27 && error?.code !== 26) throw error;
   }
   await StockVariant.createIndexes();
+  // Rows made before clasps existed have no clasp field: give them '' so every query finds them.
+  const legacy = await StockVariant.find({ clasp: { $exists: false } }).lean();
+  for (const row of legacy) {
+    try {
+      await StockVariant.updateOne({ _id: row._id }, { $set: { clasp: '' } });
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      // The portal could not see this row and made a twin with the same size. Keep the
+      // old row (it holds the reserved units) and the count that was typed last.
+      const twin = await StockVariant.findOne({
+        canonicalReference: row.canonicalReference, printMethod: row.printMethod, sizeKey: row.sizeKey, clasp: ''
+      }).lean();
+      if (!twin) throw error;
+      const productIds = [...new Set([...row.productIds, ...twin.productIds].map(String))];
+      const typedLast = twin.updatedAt > row.updatedAt;
+      await StockVariant.deleteOne({ _id: twin._id });
+      await StockVariant.updateOne({ _id: row._id }, {
+        $set: { clasp: '', productIds, ...(typedLast ? { onHandQuantity: Math.max(twin.onHandQuantity, row.reservedQuantity || 0) } : {}) }
+      });
+    }
+  }
 };
 
 module.exports = StockVariant;

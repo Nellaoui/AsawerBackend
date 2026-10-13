@@ -975,8 +975,10 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
         await Product.updateMany({ _id: { $in: linkedIds } }, { $addToSet: { availableClasps: clasp } }, { session });
       }
       for (const row of cleaned) {
-        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey, clasp }).session(session)
-          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey, clasp }).session(session);
+        // Rows made before clasps existed have no clasp field at all; they are the product's own stock.
+        const claspMatch = clasp || { $in: ['', null] };
+        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey, clasp: claspMatch }).session(session)
+          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey, clasp: claspMatch }).session(session);
         let linksChanged = false;
         const before = Number(variant?.onHandQuantity || 0);
         if (variant && row.quantity < Number(variant.reservedQuantity || 0)) {
