@@ -100,7 +100,8 @@ const isCustomerServiceUser = (user) => user?.role === 'employee' && user?.workR
 const isManagerUser = (user) => isAdminUser(user) || isBossUser(user);
 const canViewCustomers = (user) => isManagerUser(user) || isCustomerServiceUser(user);
 const isPrintingUser = (user) => user?.role === 'employee' && ['wax_print', 'resin_print'].includes(user?.workRole);
-const canFilterCasesByCustomer = (user) => canViewCustomers(user) || isPrintingUser(user);
+const isQualityPackingUser = (user) => user?.role === 'employee' && ['quality', 'packing'].includes(user?.workRole);
+const canFilterCasesByCustomer = (user) => canViewCustomers(user) || isPrintingUser(user) || isQualityPackingUser(user);
 const mixedIdValues = (value) => {
   const text = String(value || '');
   const values = text ? [text] : [];
@@ -480,10 +481,10 @@ router.get('/customers', operationsAuth, async (req, res) => {
   }
 });
 
-// Printing staff see customers for their own active print tasks only.
+// Printing, Quality and Packing staff see customers for their own active tasks only.
 router.get('/print-customers', operationsAuth, async (req, res) => {
   try {
-    if (!isPrintingUser(req.user)) return res.status(403).json({ message: 'Printing team access required' });
+    if (!isPrintingUser(req.user) && !isQualityPackingUser(req.user)) return res.status(403).json({ message: 'Printing, Quality or Packing team access required' });
     const cases = await WorkflowCase.find({
       ...visibleUnarchivedFilter(),
       assignedTo: req.user.id,
