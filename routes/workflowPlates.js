@@ -81,6 +81,22 @@ const resumeArchived = (cases, actorId, note) => cases.filter(item => item.archi
   item.history.push({ actorId, action: 'resumed', fromStatus: item.status, toStatus: item.status, note });
 });
 
+// A paused (blocked) product on a plate is shown to the person first. If they confirm, it is resumed and the plate goes on.
+const pausedPrompt = (res, cases, confirmed) => {
+  const paused = cases.filter(item => item.isBlocked);
+  if (!paused.length || confirmed === true) return false;
+  const names = paused.map(item => item.requestedName);
+  res.status(409).json({ message: `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} paused. Do you still want to send the plate to Quality?`, pausedNames: names });
+  return true;
+};
+
+const resumePaused = (cases, actorId, note) => cases.filter(item => item.isBlocked).forEach(item => {
+  item.isBlocked = false;
+  item.blockedReason = '';
+  item.blockedAt = null;
+  item.history.push({ actorId, action: 'resumed', fromStatus: item.status, toStatus: item.status, note });
+});
+
 const plateLine = workflowCase => {
   const order = workflowCase.orderId && typeof workflowCase.orderId === 'object' ? workflowCase.orderId : null;
   const orderItem = order?.items?.find?.(item => String(item._id) === String(workflowCase.orderItemId));
@@ -313,8 +329,12 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         if (archivedPrompt(res, cases, req.body.allowArchived)) return;
         resumeArchived(cases, req.user.id, `Plate ${plate.number} already printed, confirmed`);
       }
-      const stuck = cases.find(item => item.isBlocked || item.archivedAt);
-      if (stuck) fail(`Resume ${stuck.requestedName} before finishing the plate`);
+      if (plateStatus === 'printing') {
+        if (archivedPrompt(res, cases, req.body.allowArchived)) return;
+        resumeArchived(cases, req.user.id, `Plate ${plate.number} finished, confirmed`);
+      }
+      if (pausedPrompt(res, cases, req.body.allowPaused)) return;
+      resumePaused(cases, req.user.id, `Plate ${plate.number} ${noteText}, confirmed`);
       const now = new Date();
       const team = teamForStatus('quality_check', plate.productionMethod);
       const assignee = cases.length ? await findTeamAssignee(team) : null;

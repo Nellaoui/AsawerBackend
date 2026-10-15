@@ -232,6 +232,26 @@ describe('printing plates', () => {
     expect(machine).toMatchObject({ status: 'available', currentPlateId: null });
   });
 
+  test('finishing a plate with a paused product asks first, then resumes it and sends the plate to Quality', async () => {
+    const plate = makePlate(17, { status: 'printing', machineCode: 'W2' });
+    const cases = [makeCase(1, { orderId: null, status: 'printing', print: { plateId: plate._id, plateNumber: 17, machineId: 'W2' } }),
+      makeCase(2, { orderId: null, status: 'printing', isBlocked: true, blockedReason: 'check', print: { plateId: plate._id, plateNumber: 17, machineId: 'W2' } })];
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    (findMachine as jest.Mock).mockResolvedValue({ code: 'W2', currentPlateId: plate._id, status: 'busy', save: jest.fn() });
+    jest.spyOn(WorkflowCase, 'find').mockResolvedValue(cases as any);
+    jest.spyOn(WorkflowCase, 'findById').mockResolvedValue(null as any);
+    const asked = response();
+    await finish({ params: { id: plate._id }, body: {}, user: waxUser, app: {} }, asked);
+    expect(asked.status).toHaveBeenCalledWith(409);
+    expect(plate.status).toBe('printing');
+    expect(cases[0].status).toBe('printing');
+    const confirmed = response();
+    await finish({ params: { id: plate._id }, body: { allowPaused: true }, user: waxUser, app: {} }, confirmed);
+    expect(confirmed.status).not.toHaveBeenCalled();
+    expect(cases[1]).toMatchObject({ status: 'quality_check', isBlocked: false, blockedReason: '' });
+    expect(plate.status).toBe('finished');
+  });
+
   test('an unsent plate marked already printed sends its products to Quality without a printer', async () => {
     const plate = makePlate(15);
     const cases = [1, 2].map(n => makeCase(n, { orderId: null, print: { plateId: plate._id, plateNumber: 15 } }));
