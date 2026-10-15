@@ -307,6 +307,25 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
   return createdCases;
 };
 
+// The same customer sending the same cart again within minutes is almost always a double press
+// or a retry (13 identical orders arrived within 3 minutes on 2026-10-06). The server refuses it.
+const DUPLICATE_ORDER_WINDOW_MS = 3 * 60 * 1000;
+const orderLinesKey = lines => (lines || [])
+  .filter(line => !line.partOfItemId)
+  .map(line => [line.productId?._id || line.productId, Number(line.quantity), line.size, line.clasp, line.height, line.braceletCount].map(value => String(value ?? '')).join('|'))
+  .sort()
+  .join(';');
+const findRecentDuplicateOrder = async (userId, items) => {
+  const wanted = orderLinesKey(items);
+  const recent = await Order.find({
+    userId,
+    status: { $ne: 'cancelled' },
+    createdAt: { $gte: new Date(Date.now() - DUPLICATE_ORDER_WINDOW_MS) }
+  }).select('orderNumber items createdAt').lean();
+  return recent.find(order => orderLinesKey(order.items) === wanted) || null;
+};
+router.findRecentDuplicateOrder = findRecentDuplicateOrder;
+
 // POST / - Create order (authenticated users)
 router.post('/', auth, validateOrderData, async (req, res) => {
   try {
@@ -320,6 +339,13 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       await existingOrder.populate('catalogId', 'name description');
       await existingOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
       return res.status(200).json(withoutSartlaParts(existingOrder));
+    }
+    const duplicateOrder = await findRecentDuplicateOrder(req.user.id, items);
+    if (duplicateOrder) {
+      return res.status(409).json({
+        message: `You already sent this same order a moment ago${duplicateOrder.orderNumber ? ` (${duplicateOrder.orderNumber})` : ''}. Check My orders. If you really want it twice, wait 3 minutes and send it again.`,
+        code: 'DUPLICATE_ORDER'
+      });
     }
     const orderNumber = `ASW-${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Casablanca' }).format(new Date()).replaceAll('-', '')}-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
     const orderingUser = await User.findById(req.user.id).select('forcedProductionMethod').lean();
