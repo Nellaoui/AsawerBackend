@@ -4,7 +4,7 @@ const options = require('../utils/productOptions');
 const presets = {
   bague: { availableSizes: ['52', '50'] },
   collier: { availableSizes: ['45', '40'], applyToAll: true },
-  gourmette: { availableSizes: ['18'], availableHeights: ['5', '4'] },
+  gourmette: { availableSizes: ['18'] },
 };
 
 describe('productOptionsFor', () => {
@@ -25,17 +25,17 @@ describe('productOptionsFor', () => {
     expect(options.productOptionsFor('pendantif', { availableSizes: ['3'] }).availableSizes).toEqual([]);
   });
 
-  it('keeps heights for collier too, with its own preset list', () => {
+  it('no longer has any height option', () => {
     const col = options.productOptionsFor('Collier', { availableHeights: ['6', '4'], availableClasps: ['FR'] });
-    expect(col.availableHeights).toEqual(['4', '6']);
-    expect(options.presetHeights('collier', { collier: { availableHeights: ['3'] } })).toEqual(['3']);
+    expect(col).toEqual({ availableSizes: [], availableClasps: ['FR'] });
+    expect(options.presetHeights).toBeUndefined();
+    expect(options.typeHasHeights).toBeUndefined();
   });
 
-  it('keeps heights only for gourmette and collier, and clasps only for gourmette and collier', () => {
-    const gou = options.productOptionsFor('Gourmette', { availableSizes: ['19', '18'], availableHeights: ['5', '4'], availableClasps: ['SIMPLE', 'FR', 'XX'] }, presets);
-    expect(gou).toEqual({ availableSizes: ['18', '19'], availableHeights: ['4', '5'], availableClasps: ['FR', 'SIMPLE'] });
-    const bague = options.productOptionsFor('bague', { availableHeights: ['4'], availableClasps: ['FR'] }, presets);
-    expect(bague.availableHeights).toEqual([]);
+  it('keeps clasps only for gourmette and collier', () => {
+    const gou = options.productOptionsFor('Gourmette', { availableSizes: ['19', '18'], availableClasps: ['SIMPLE', 'FR', 'XX'] }, presets);
+    expect(gou).toEqual({ availableSizes: ['18', '19'], availableClasps: ['FR', 'SIMPLE'] });
+    const bague = options.productOptionsFor('bague', { availableClasps: ['FR'] }, presets);
     expect(bague.availableClasps).toEqual([]);
     expect(options.productOptionsFor('collier', { availableClasps: ['FR'] }).availableClasps).toEqual(['FR']);
   });

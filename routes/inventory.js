@@ -409,7 +409,7 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
     const search = String(req.query.search || '').trim();
     const filter = search ? { $or: await productSearchConditions(search) } : {};
     const products = await Product.find(filter)
-      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableHeights availableClasps clasp sartlaSets setupIssue stock')
+      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableClasps clasp sartlaSets setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)
       .lean();
@@ -496,10 +496,10 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     // same reference can be created again as a fresh product.
     const candidates = parts
       ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i'), removedFromShop: { $ne: true } })
-        .select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId')
+        .select('_id name serialNumber type imageUrl price isActive availableSizes availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId')
         .limit(50)
         .lean()
-      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableHeights availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
+      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
     const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
 
     if (duplicate) {
@@ -552,7 +552,6 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     for (const row of stockSizes) if (!sizes.some(size => normalizeStockSize(size) === row.sizeKey)) sizes.push(row.size);
     const options = productOptions.productOptionsFor(type, {
       availableSizes: sizes,
-      availableHeights: req.body?.availableHeights,
       availableClasps: req.body?.availableClasps
     }, await loadSizePresets());
 
@@ -586,7 +585,6 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       stock: startingTotal,
       reservedStock: 0,
       availableSizes: options.availableSizes,
-      availableHeights: options.availableHeights,
       availableClasps: options.availableClasps,
       sartlaSets,
       catalogId: catalog?._id,
@@ -774,13 +772,12 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
       product.printMethod = req.body.printMethod;
     }
 
-    // Sizes, heights and clasps follow the product type (see utils/productOptions).
-    const optionFields = ['availableSizes', 'availableHeights', 'availableClasps'];
+    // Sizes and clasps follow the product type (see utils/productOptions).
+    const optionFields = ['availableSizes', 'availableClasps'];
     if (req.body?.type !== undefined || optionFields.some((field) => Array.isArray(req.body?.[field]))) {
       const pick = (field) => (Array.isArray(req.body?.[field]) ? req.body[field] : product[field]);
       const options = productOptions.productOptionsFor(product.type, {
         availableSizes: pick('availableSizes'),
-        availableHeights: pick('availableHeights'),
         availableClasps: pick('availableClasps')
       }, await loadSizePresets());
       for (const field of optionFields) product[field] = options[field];
@@ -873,7 +870,6 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         fulfillmentPolicy: product.fulfillmentPolicy,
         printMethod: product.printMethod,
         availableSizes: product.availableSizes,
-        availableHeights: product.availableHeights,
         availableClasps: product.availableClasps,
         sartlaSets: product.sartlaSets,
         catalogId: product.catalogId,

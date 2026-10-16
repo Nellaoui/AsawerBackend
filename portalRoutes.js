@@ -15,7 +15,7 @@ function servePortal(page) {
   };
 }
 
-// Product size/height/clasp rules, shared with the backend routes.
+// Product size/clasp rules, shared with the backend routes.
 router.get('/product-options.js', (req, res) => {
   res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.type('application/javascript').sendFile(path.join(portalDirectory, '..', 'utils', 'productOptions.js'));

@@ -237,15 +237,9 @@
         <div class="size-heading"><span class="field-label">Sizes for this product</span><button id="addProductSize" class="button secondary small" type="button">+ Add size</button></div>
         <p id="productSizeNote" class="size-note" hidden></p>
         <div id="productSizeRows" class="size-list"></div>
+        <div id="productSizeSuggest" class="chip-row"></div>
         <datalist id="commonProductSizes"><option value="48"><option value="50"><option value="52"><option value="54"><option value="56"><option value="58"><option value="60"><option value="62"><option value="64"><option value="66"><option value="68"><option value="70"><option value="One size"></datalist>
         <p id="productSizeHelp" class="muted" style="margin:8px 0 0">Add each size separately. Stock staff can enter the starting quantity for each size.</p>
-      </div>
-      <div id="productHeightsBlock" hidden>
-        <span class="field-label">Heights this product comes in</span>
-        <p class="muted" style="margin:0">Add each height it is made in; press × to remove one. If none is added, customers are not asked for a height.</p>
-        <div id="productHeights" class="chip-row"></div>
-        <div class="size-entry" style="grid-template-columns:minmax(110px,1fr) auto;margin-top:8px"><label class="field">Add another height (mm)<input id="newHeight" type="number" min="0.5" step="0.5" inputmode="decimal" placeholder="e.g. 5"></label><button id="addHeight" class="button secondary small" type="button">+ Add height</button></div>
-        <p id="heightError" class="error" aria-live="assertive"></p>
       </div>
       <div id="productClaspsBlock" hidden>
         <span class="field-label">Clasps this product can have</span>
@@ -599,39 +593,26 @@ Cancel = hidden (private)`);
         note.textContent='';
       }
       note.hidden=!note.textContent;
+      renderSizeSuggestions();
     }
+    // Preset sizes not on the product yet are one-tap buttons; a size row's × removes it again.
+    function renderSizeSuggestions(){
+      const box=$('productSizeSuggest');
+      if(state.sizeMode!=='custom'){box.replaceChildren();return}
+      const have=typedSizes().map(sizeKeyOf);
+      const list=presetSizesFor(selectedType()).filter(size=>!have.includes(sizeKeyOf(size)));
+      box.innerHTML=list.map(size=>'<button type="button" class="chip" data-suggest-size="'+escapeHtml(size)+'">+ '+escapeHtml(size)+'</button>').join('');
+    }
+    $('productSizeSuggest').addEventListener('click',event=>{
+      const button=event.target.closest('[data-suggest-size]');if(!button)return;
+      const empty=[...$('productSizeRows').querySelectorAll('.size-entry')].find(row=>!row.querySelector('[data-product-size]').value.trim());
+      if(empty)empty.querySelector('[data-product-size]').value=button.dataset.suggestSize;else addProductSizeRow(button.dataset.suggestSize);
+      renderSizeSuggestions();
+    });
+    $('productSizeRows').addEventListener('input',renderSizeSuggestions);
     function chip(name,value,label,checked){
       return '<label class="chip"><input type="checkbox" data-'+name+' value="'+escapeHtml(value)+'"'+(checked?' checked':'')+'>'+escapeHtml(label)+'</label>';
     }
-    // The product's own heights are removable chips; Size Presets heights not on the product are one-tap suggestions.
-    function heightChip(h){
-      return '<span class="chip"><input type="checkbox" data-height value="'+escapeHtml(h)+'" checked hidden>'+escapeHtml(h)+' mm <button type="button" class="button secondary small" data-remove-height="'+escapeHtml(h)+'" aria-label="Remove '+escapeHtml(h)+' mm" style="padding:0 7px;min-height:0">×</button></span>';
-    }
-    function renderHeights(selected=[]){
-      const show=Options.typeHasHeights(selectedType());
-      $('productHeightsBlock').hidden=!show;
-      if(!show)return;
-      const chosen=Options.cleanList(selected);
-      const preset=Options.presetHeights(selectedType(),state.sizePresets);
-      const suggestions=Options.cleanList(preset.length?preset:['3','4','5','6']).filter(h=>!chosen.includes(h));
-      $('productHeights').innerHTML=chosen.map(heightChip).join('')+suggestions.map(h=>'<button type="button" class="chip" data-suggest-height="'+escapeHtml(h)+'">+ '+escapeHtml(h)+' mm</button>').join('');
-    }
-    $('productHeights').addEventListener('click',event=>{
-      const remove=event.target.closest('[data-remove-height]'),suggest=event.target.closest('[data-suggest-height]');
-      const now=checkedValues('productHeights','height');
-      if(remove)renderHeights(now.filter(h=>h!==remove.dataset.removeHeight));
-      else if(suggest)renderHeights([...now,suggest.dataset.suggestHeight]);
-    });
-    // A height that is not in Size Presets: shown ticked at once, saved with the product.
-    function addProductHeight(){
-      const input=$('newHeight'),value=input.value.trim();
-      if(!value||!(parseFloat(value)>0)){show('heightError','Enter a height in mm, for example 5.');return}
-      show('heightError');
-      renderHeights(Options.cleanList([...checkedValues('productHeights','height'),value]));
-      input.value='';
-    }
-    $('addHeight').addEventListener('click',addProductHeight);
-    $('newHeight').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addProductHeight()}});
     function renderClasps(selected=[],previous=''){
       const show=Options.typeHasClasps(selectedType());
       $('productClaspsBlock').hidden=!show;
@@ -777,7 +758,6 @@ Cancel = hidden (private)`);
       state.customSizes=prefill.sizes||[];
       state.previousClasp=prefill.clasp||'';
       renderSizeSection();
-      renderHeights(prefill.heights||[]);
       renderClasps(prefill.clasps||[],state.previousClasp);
       renderSartlaSection(prefill.sartlaSets||[]);
       $('productPrintMethod').value=prefill.fulfillmentPolicy==='stock_only'?'none':(['wax','resin'].includes(prefill.printMethod)?prefill.printMethod:'');
@@ -796,7 +776,7 @@ Cancel = hidden (private)`);
       state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
-        sizes:(product.availableSizes&&product.availableSizes.length?product.availableSizes:[...new Set((product.stockVariants||[]).filter(v=>!v.clasp).map(v=>v.size))]),heights:product.availableHeights||[],clasps:product.availableClasps||[],clasp:product.clasp,
+        sizes:(product.availableSizes&&product.availableSizes.length?product.availableSizes:[...new Set((product.stockVariants||[]).filter(v=>!v.clasp).map(v=>v.size))]),clasps:product.availableClasps||[],clasp:product.clasp,
         price:product.price,printMethod:product.printMethod,sartlaSets:product.sartlaSets||[],
         fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
         note:product.setupIssue&&product.setupIssue.note
@@ -856,14 +836,13 @@ Cancel = hidden (private)`);
     });
     $('addProduct').addEventListener('click',()=>{state.pendingOrphanId=null;openProductDialog()});
     $('addProductSize').addEventListener('click',()=>{addProductSizeRow();$('productSizeRows').lastElementChild.querySelector('[data-product-size]').focus()});
-    $('productSizeRows').addEventListener('click',event=>{if(event.target.closest('[data-remove-size]'))event.target.closest('.size-entry').remove()});
+    $('productSizeRows').addEventListener('click',event=>{if(event.target.closest('[data-remove-size]')){event.target.closest('.size-entry').remove();renderSizeSuggestions()}});
     $('productPrintMethod').addEventListener('change',updateProductMethod);
     $('productType').addEventListener('change',()=>{
       // Keep what was typed for a per-product type so switching back restores it.
       if(state.sizeMode==='custom')state.customSizes=typedSizes();
-      const heights=checkedValues('productHeights','height'),clasps=checkedValues('productClasps','clasp');
+      const clasps=checkedValues('productClasps','clasp');
       renderSizeSection();
-      renderHeights(heights);
       renderClasps(clasps,state.previousClasp);
       const sets=$('productSartlaBlock').hidden?[]:readSartlaSets('productSartlaSets');
       renderSartlaSection(sets);
@@ -905,7 +884,6 @@ Cancel = hidden (private)`);
       if(state.pendingOrphanId&&state.canManageStock&&chosenSizes.some(row=>row.quantity>0))return show('productError','This reference already has counted worksheet stock. Create the product first, then reconcile its size stock without entering it twice.');
       // Boucle/pendantif store no size (their stock row is "One size"); preset types store the preset list.
       const sizes=mode==='none'?[]:chosenSizes.map(row=>row.size);
-      const availableHeights=Options.typeHasHeights(type)?checkedValues('productHeights','height'):[];
       const availableClasps=Options.typeHasClasps(type)?checkedValues('productClasps','clasp'):[];
       const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
       // A sartla's finished stock is counted per bracelet count later, in Manage sizes.
@@ -916,7 +894,7 @@ Cancel = hidden (private)`);
         if(state.productMode==='fix'){
           const serial=$('productSerial').value.trim();
           if(!serial)return show('productError','Reference cannot be empty.');
-          const body={name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
+          const body={name,type,catalogId,availableSizes:sizes,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
           if(serial!==state.originalSerial)body.serialNumber=serial;
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
@@ -927,7 +905,7 @@ Cancel = hidden (private)`);
           if(!serialNumber)return show('productError','Reference and name are required.');
           let data;
           try{
-            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableHeights,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId&&!sartlaSets?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId&&!sartlaSets?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
           }catch(error){
             // 409: the reference is already in the catalogue, however it was
             // spelled. Switch to fixing that product rather than making a second.
@@ -1075,6 +1053,9 @@ Cancel = hidden (private)`);
         $('claspResults').innerHTML=found.map(p=>`<button type="button" class="button secondary small" data-share-add="${escapeHtml(p.productId)}" data-name="${escapeHtml(p.name)}" data-ref="${escapeHtml(p.serialNumber)}">+ ${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}</button>`).join('')||'<span class="muted">No collier or gourmette found.</span>';
       }catch(error){if(id===claspSearchId)$('claspResults').innerHTML='<span class="muted">'+escapeHtml(error.message)+'</span>'}
     }
+    // Same built-in lists as the app uses when a preset is empty or not loaded yet.
+    const DEFAULT_SIZE_LISTS={bague:Array.from({length:21},(_,i)=>String(50+i)),bracelet:Array.from({length:17},(_,i)=>((50+i)/10).toFixed(1)),gourmette:Array.from({length:8},(_,i)=>String(15+i))};
+    function presetSizesFor(type){const list=ProductOptions.presetSizes(type,state.sizePresets);return list.length?list:(DEFAULT_SIZE_LISTS[ProductOptions.presetKey(type)]||[])}
     // The sizes a customer can order, by the same rules as the app: Size Presets when the type uses them
     // (bague, bracelet, or "apply to all"), else the product's own list; a gourmette with none uses its preset.
     // Stock is counted for exactly these sizes, so the order check finds it.
@@ -1082,9 +1063,7 @@ Cancel = hidden (private)`);
       const type=ProductOptions.normalizeType(product.type);
       const own=ProductOptions.cleanList(product.availableSizes);
       if(!ProductOptions.typeHasSizes(type))return own;
-      // Same built-in lists as the app uses when a preset is empty or not loaded yet.
-      const DEFAULTS={bague:Array.from({length:21},(_,i)=>String(50+i)),bracelet:Array.from({length:17},(_,i)=>((50+i)/10).toFixed(1)),gourmette:Array.from({length:8},(_,i)=>String(15+i))};
-      const preset=()=>{const list=ProductOptions.presetSizes(type,state.sizePresets);return list.length?list:(DEFAULTS[ProductOptions.presetKey(type)]||[])};
+      const preset=()=>presetSizesFor(type);
       if(ProductOptions.usesPresetSizes(type,state.sizePresets)){const list=preset();return list.length?list:own}
       return own.length?own:(type==='gourmette'?preset():[]);
     }

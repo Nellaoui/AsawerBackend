@@ -116,25 +116,12 @@ const productSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  height: {
-    type: Number,
-    min: 0,
-    default: 0
-  },
-  showHeight: {
-    type: Boolean,
-    default: false
-  },
   size: {
     type: String,
     trim: true,
     default: null
   },
   availableSizes: [{
-    type: String,
-    trim: true
-  }],
-  availableHeights: [{
     type: String,
     trim: true
   }],

@@ -56,9 +56,9 @@ describe('size presets routes', () => {
 
   it('reports bague/bracelet as apply-to-all even for presets saved before the flag existed', async () => {
     SizePreset.find.mockReturnValue({ sort: () => Promise.resolve([
-      { type: 'bague', availableSizes: ['50'], availableHeights: [] },
-      { type: 'collier', availableSizes: ['40'], availableHeights: [], applyToAll: true },
-      { type: 'gourmette', availableSizes: ['18'], availableHeights: ['4'] },
+      { type: 'bague', availableSizes: ['50'] },
+      { type: 'collier', availableSizes: ['40'], applyToAll: true },
+      { type: 'gourmette', availableSizes: ['18'] },
     ]) });
     const res = response();
     await pick('get', '/')({}, res);

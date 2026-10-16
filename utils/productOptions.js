@@ -1,4 +1,4 @@
-// Which sizes, heights and clasps a product type can have. Used by the backend
+// Which sizes and clasps a product type can have. Used by the backend
 // routes and loaded as-is by the operations portal (window.ProductOptions), so
 // both apply the same rules. The mobile app mirrors them in
 // src/utils/productSizes.ts and src/utils/productClasps.ts.
@@ -25,7 +25,6 @@
   // The Size Presets entry a type reads its sizes from.
   const presetKey = (type) => (normalizeType(type) === 'sartla' ? 'bracelet' : normalizeType(type));
   const typeHasSizes = (type) => !NO_SIZE_TYPES.includes(normalizeType(type));
-  const typeHasHeights = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
   const typeHasClasps = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
 
   /** True when every product of this type offers the preset sizes. */
@@ -63,12 +62,9 @@
   };
 
   const presetSizes = (type, presets) => cleanList(presets && presets[presetKey(type)] && presets[presetKey(type)].availableSizes);
-  const presetHeights = (type, presets) => (typeHasHeights(type)
-    ? cleanList(presets && presets[normalizeType(type)] && presets[normalizeType(type)].availableHeights)
-    : []);
 
   /**
-   * The size, height and clasp lists to store for a product of this type.
+   * The size and clasp lists to store for a product of this type.
    * Sizes of preset types come from the presets when they are known.
    */
   const productOptionsFor = (type, input, presets) => {
@@ -80,14 +76,13 @@
     }
     return {
       availableSizes,
-      availableHeights: typeHasHeights(type) ? cleanList(body.availableHeights) : [],
       availableClasps: typeHasClasps(type) ? cleanClasps(body.availableClasps) : [],
     };
   };
 
   return {
     PRESET_SIZE_TYPES, NO_SIZE_TYPES, ONE_SIZE, CLASP_TYPES, CLASP_LABELS,
-    normalizeType, presetKey, typeHasSizes, typeHasHeights, typeHasClasps, usesPresetSizes,
-    PRODUCT_FIXED_CLASPS, stockClaspFor, cleanList, cleanClasps, presetSizes, presetHeights, productOptionsFor,
+    normalizeType, presetKey, typeHasSizes, typeHasClasps, usesPresetSizes,
+    PRODUCT_FIXED_CLASPS, stockClaspFor, cleanList, cleanClasps, presetSizes, productOptionsFor,
   };
 });

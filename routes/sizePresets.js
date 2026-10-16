@@ -12,12 +12,11 @@ const ALWAYS_APPLY_TO_ALL = ['bracelet', 'bague'];
 router.get('/', auth, async (req, res) => {
   try {
     const presets = await SizePreset.find().sort({ type: 1 });
-    // Return as a map { bracelet: { availableSizes, availableHeights, applyToAll }, ... }
+    // Return as a map { bracelet: { availableSizes, applyToAll }, ... }
     const map = {};
     for (const p of presets) {
       map[p.type] = {
         availableSizes: p.availableSizes || [],
-        availableHeights: p.availableHeights || [],
         applyToAll: ALWAYS_APPLY_TO_ALL.includes(p.type) || !!p.applyToAll,
       };
     }
@@ -36,14 +35,13 @@ router.put('/:type', adminAuth, async (req, res) => {
       return res.status(400).json({ message: `Invalid type. Must be one of: ${PRESET_TYPES.join(', ')}` });
     }
 
-    const { availableSizes, availableHeights, applyToAll } = req.body;
+    const { availableSizes, applyToAll } = req.body;
 
     const preset = await SizePreset.findOneAndUpdate(
       { type },
       {
         type,
         availableSizes: Array.isArray(availableSizes) ? availableSizes : [],
-        availableHeights: Array.isArray(availableHeights) ? availableHeights : [],
         applyToAll: ALWAYS_APPLY_TO_ALL.includes(type) || applyToAll === true,
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }

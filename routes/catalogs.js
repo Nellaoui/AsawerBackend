@@ -363,10 +363,8 @@ router.post('/:id/products', auth, async (req, res) => {
       size,
       clasp,
       showWeight,
-      height,
       relatedProducts,
       availableSizes,
-      availableHeights,
       availableClasps
     } = req.body;
 
@@ -393,12 +391,10 @@ router.post('/:id/products', auth, async (req, res) => {
       price: Number(price) || 0,
       weight: Number(req.body.weight) || 0,
       showWeight: showWeight || false,
-      height: Number(height) || 0,
       stock: Number.isFinite(Number(stock)) && Number(stock) >= 0 ? Number(stock) : 0,
       reservedStock: 0,
       size: size || null,
       availableSizes: availableSizes || [],
-      availableHeights: availableHeights || [],
       availableClasps: Array.isArray(availableClasps) ? availableClasps : [],
       sartlaSets,
       clasp: clasp || null,

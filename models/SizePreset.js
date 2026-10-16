@@ -14,10 +14,6 @@ const sizePresetSchema = new mongoose.Schema({
     type: String,
     trim: true,
   }],
-  availableHeights: [{
-    type: String,
-    trim: true,
-  }],
   // When true every product of this type offers availableSizes, ignoring its
   // own list. Always true for bague and bracelet.
   applyToAll: {

@@ -167,23 +167,22 @@ describe('completing a flagged product from the portal', () => {
     expect(product.availableSizes).toEqual(['54', '56']);
   });
 
-  test('a gourmette keeps its chosen heights and clasps, including FR', async () => {
+  test('a gourmette keeps its chosen sizes and clasps, including FR, and ignores heights', async () => {
     product.type = 'Gourmette';
     await setupHandler(request({
       availableSizes: ['19', '18'], availableHeights: ['5', '4'], availableClasps: ['SIMPLE', 'FR', 'NOPE'],
     }), response);
 
     expect(product.availableSizes).toEqual(['18', '19']);
-    expect(product.availableHeights).toEqual(['4', '5']);
+    expect(product.availableHeights).toBeUndefined();
     expect(product.availableClasps).toEqual(['FR', 'SIMPLE']);
   });
 
-  test('changing the type to boucle clears sizes, heights and clasps', async () => {
+  test('changing the type to boucle clears sizes and clasps', async () => {
     Object.assign(product, { availableSizes: ['18'], availableHeights: ['4'], availableClasps: ['FR'] });
     await setupHandler(request({ type: 'Boucle' }), response);
 
     expect(product.availableSizes).toEqual([]);
-    expect(product.availableHeights).toEqual([]);
     expect(product.availableClasps).toEqual([]);
   });
 
@@ -262,14 +261,14 @@ describe('creating a product from the portal', () => {
     name: 'Bague 150 5mm', serialNumber: 'BA 150 5mm', type: 'Bague', ...extra,
   });
 
-  test('a gourmette is created with its heights and clasps', async () => {
+  test('a gourmette is created with its sizes and clasps, without heights', async () => {
     await createHandler({ user: { id: 'employee-id' }, body: body({
       type: 'Gourmette', serialNumber: 'GOU 12', availableSizes: ['18'], availableHeights: ['4'], availableClasps: ['FR'],
     }) }, response);
 
     const created = Product.create.mock.calls[0][0];
     expect(created.availableSizes).toEqual(['18']);
-    expect(created.availableHeights).toEqual(['4']);
+    expect(created.availableHeights).toBeUndefined();
     expect(created.availableClasps).toEqual(['FR']);
   });
 

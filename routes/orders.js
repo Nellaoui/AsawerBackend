@@ -318,7 +318,7 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
 const DUPLICATE_ORDER_WINDOW_MS = 3 * 60 * 1000;
 const orderLinesKey = lines => (lines || [])
   .filter(line => !line.partOfItemId)
-  .map(line => [line.productId?._id || line.productId, Number(line.quantity), line.size, line.clasp, line.height, line.braceletCount].map(value => String(value ?? '')).join('|'))
+  .map(line => [line.productId?._id || line.productId, Number(line.quantity), line.size, line.clasp, line.braceletCount].map(value => String(value ?? '')).join('|'))
   .sort()
   .join(';');
 const findRecentDuplicateOrder = async (userId, items) => {
@@ -435,7 +435,6 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           quantity: Number(item.quantity),
           size: item.size,
           clasp: item.clasp,
-          height: item.height,
           braceletCount: item.braceletCount
         }));
 
@@ -665,7 +664,6 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             name: product.name,
             size: line.size,
             clasp: line.clasp,
-            height: line.height,
             ...(isSartla ? { braceletCount: line.braceletCount } : {}),
             ...(isPart ? { partOfItemId: line.partOfItemId, partOfName: line.partOfName } : {})
           };
@@ -1631,7 +1629,7 @@ router.get('/:id', auth, async (req, res) => {
   try {
     let query = Order.findById(req.params.id)
       .populate('catalogId', 'name description')
-      .populate('items.productId', 'name imageUrl price size serialNumber weight showWeight type clasp height');
+      .populate('items.productId', 'name imageUrl price size serialNumber weight showWeight type clasp');
     // Only populate userId when it's a valid ObjectId
     const tempOrder = await Order.findById(req.params.id).select('userId');
     if (tempOrder && mongoose.Types.ObjectId.isValid(tempOrder.userId)) {
