@@ -10,6 +10,8 @@ const plateSchema = new mongoose.Schema({
   status: { type: String, enum: PLATE_STATUSES, default: 'open', index: true },
   machineCode: { type: String, trim: true, maxlength: 120, default: '' },
   createdBy: { type: mongoose.Schema.Types.Mixed, ref: 'User', default: null },
+  // The wax employee whose plate it is. Empty on older plates and on resin plates, which any staff of the method can use.
+  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   sentAt: { type: Date, default: null },
   finishedAt: { type: Date, default: null },
   failedReason: { type: String, trim: true, maxlength: 1000, default: '' }

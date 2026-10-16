@@ -27,16 +27,21 @@ const canUsePlate = (user, method) => {
   return user.workRole === 'boss' || user.workRole === `${method}_print`;
 };
 
+// A wax plate belongs to one wax employee. A plate without an owner (older plates, resin) is open to every employee of its method.
+const isPlateOwner = (plate, userId) => !plate.ownerId || String(plate.ownerId) === String(userId);
+const ownsPlate = (user, plate) => user?.isAdmin || user?.role === 'admin' || user?.workRole === 'boss'
+  || plate.productionMethod !== 'wax' || isPlateOwner(plate, user?.id || user?._id);
+
 const nextPlateNumber = async () => {
   const last = await Plate.findOne().sort({ number: -1 }).select('number').lean();
   return (last?.number || 0) + 1;
 };
 
 // The number is automatic. Two people opening a plate at the same moment can pick the same number; the unique index refuses one and it tries the next.
-const createPlate = async ({ productionMethod, actorId }) => {
+const createPlate = async ({ productionMethod, actorId, ownerId = null }) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      return await Plate.create({ number: await nextPlateNumber(), productionMethod, createdBy: actorId });
+      return await Plate.create({ number: await nextPlateNumber(), productionMethod, createdBy: actorId, ownerId: productionMethod === 'wax' ? ownerId : null });
     } catch (error) {
       if (error?.code !== 11000) throw error;
     }
@@ -126,6 +131,7 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
     const plate = await Plate.findById(req.params.id);
     if (!plate) fail('Plate not found', 404);
     if (!canUsePlate(req.user, plate.productionMethod)) fail(`Only ${plate.productionMethod} printing staff or the boss can use this plate`, 403);
+    if (!ownsPlate(req.user, plate)) fail('This plate belongs to another wax employee', 403);
     if (status && plate.status !== status) fail(status === 'open' ? 'This plate was already sent to a printer' : 'This plate is not printing', 409);
     return plate;
   };
@@ -164,6 +170,8 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
       if (!(user?.isAdmin || user?.role === 'admin' || user?.workRole === 'boss')) {
         if (!['wax_print', 'resin_print'].includes(user?.workRole)) return res.json([]);
         filter.productionMethod = user.workRole === 'wax_print' ? 'wax' : 'resin';
+        // A wax employee sees their own plates, and older plates nobody owns.
+        if (user.workRole === 'wax_print') filter.ownerId = { $in: [mongoose.Types.ObjectId.isValid(user.id) ? user.id : null, null] };
       }
       const plates = await Plate.find(filter).sort({ number: 1 });
       const views = await Promise.all(plates.map(async plate => ((await dropIfEmpty(plate)) ? null : listView(plate))));
@@ -190,10 +198,12 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         plate = await Plate.findById(req.body.toPlateId);
         if (!plate || plate.status !== 'open') fail('That plate is not open any more');
         if (plate.productionMethod !== workflowCase.productionMethod) fail(`This is a ${plate.productionMethod} plate. Choose a ${workflowCase.productionMethod} plate for this product`);
+        if (plate.productionMethod === 'wax' && !isPlateOwner(plate, workflowCase.assignedTo)) fail('This plate belongs to another wax employee. Choose one of your own plates.');
       } else if (req.body.toPlateId !== 'new') {
-        plate = await Plate.findOne({ productionMethod: workflowCase.productionMethod, status: 'open' }).sort({ number: -1 });
+        const own = workflowCase.productionMethod === 'wax' && workflowCase.assignedTo ? { ownerId: workflowCase.assignedTo } : {};
+        plate = await Plate.findOne({ productionMethod: workflowCase.productionMethod, status: 'open', ...own }).sort({ number: -1 });
       }
-      if (!plate) plate = await createPlate({ productionMethod: workflowCase.productionMethod, actorId: req.user.id });
+      if (!plate) plate = await createPlate({ productionMethod: workflowCase.productionMethod, actorId: req.user.id, ownerId: workflowCase.assignedTo || null });
       await putOnPlate({ workflowCase, plate, actorId: req.user.id, note: `Put on Plate ${plate.number}` });
       // The portal only needs the plate itself here; its product list comes with the next plate list, so no extra queries delay the answer.
       res.json({ _id: plate._id, number: plate.number, productionMethod: plate.productionMethod, status: plate.status, createdAt: plate.createdAt });
@@ -229,8 +239,9 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         if (!target || target.status !== 'open') fail('That plate is not open any more');
         if (target.productionMethod !== plate.productionMethod) fail('A product can only move to a plate of the same type');
         if (String(target._id) === String(plate._id)) fail('The product is already on this plate');
+        if (target.productionMethod === 'wax' && !isPlateOwner(target, workflowCase.assignedTo)) fail('That plate belongs to another wax employee');
       } else {
-        target = await createPlate({ productionMethod: plate.productionMethod, actorId: req.user.id });
+        target = await createPlate({ productionMethod: plate.productionMethod, actorId: req.user.id, ownerId: plate.ownerId || workflowCase.assignedTo || null });
       }
       await putOnPlate({ workflowCase, plate: target, actorId: req.user.id, note: `Moved from Plate ${plate.number} to Plate ${target.number}` });
       res.json({ moved: true, plate: { _id: target._id, number: target.number } });

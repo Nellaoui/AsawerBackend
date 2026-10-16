@@ -222,7 +222,7 @@ const validateOrderData = (req, res, next) => {
   next();
 };
 
-const createFulfillmentCases = async (order, productById, actorId, session, items = order.items) => {
+const createFulfillmentCases = async (order, productById, actorId, session, items = order.items, waxEmployeeId = null) => {
   const createdCases = [];
   for (const orderItem of items) {
     const product = productById.get(String(orderItem.productId));
@@ -270,7 +270,13 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
 
     if (!orderItem.printQuantity) continue;
     const { status: caseStatus, assignedTeam, hasPortalModel } = planPrintTask(product, orderItem);
-    const assignedTo = await findTeamAssignee(assignedTeam, session);
+    const chosenWax = assignedTeam === 'wax_print' && waxEmployeeId ? waxEmployeeId : null;
+    const assignedTo = await findTeamAssignee(assignedTeam, session, { preferredId: chosenWax });
+    if (chosenWax && !assignedTo) {
+      const error = new Error('The chosen wax employee is not available. Choose another one.');
+      error.statusCode = 409;
+      throw error;
+    }
     const now = new Date();
     const cases = await WorkflowCase.create([{
       orderId: order._id,
@@ -1259,6 +1265,11 @@ router.sweepMissingTasks = sweepMissingTasks;
 // Confirms one pending order for Customer Service and creates its stock and printing tasks.
 // Throws an error with statusCode when the order cannot be confirmed.
 const validateOrderCore = async ({ orderId, user, body }) => {
+  // Customer Service can say which wax employee gets the wax products of this order.
+  const waxEmployeeId = body?.waxEmployeeId ? String(body.waxEmployeeId) : null;
+  if (waxEmployeeId && !mongoose.Types.ObjectId.isValid(waxEmployeeId)) {
+    throw Object.assign(new Error('Invalid wax employee'), { statusCode: 400 });
+  }
   const session = await mongoose.startSession();
   let approvedOrder;
   let fulfillmentCases = [];
@@ -1395,7 +1406,7 @@ const validateOrderCore = async ({ orderId, user, body }) => {
         item.fulfillmentStatus = item.printQuantity > 0 ? 'production' : 'stock_reserved';
       }
 
-      fulfillmentCases = await createFulfillmentCases(order, productById, user.id, session, confirmItems);
+      fulfillmentCases = await createFulfillmentCases(order, productById, user.id, session, confirmItems, waxEmployeeId);
       const now = new Date();
       if (!validationCase.startedAt) validationCase.startedAt = now;
       if (droppedPrint.length) {
@@ -1493,7 +1504,7 @@ router.post('/validate-many', operationsAuth, async (req, res) => {
   const outcomes = await Promise.all(orderIds.map(async orderId => {
     try {
       if (!mongoose.Types.ObjectId.isValid(orderId)) throw Object.assign(new Error('Order not found'), { statusCode: 404 });
-      const result = await validateOrderCore({ orderId, user: req.user, body: { productionMethod: req.body.productionMethod, note: req.body.note } });
+      const result = await validateOrderCore({ orderId, user: req.user, body: { productionMethod: req.body.productionMethod, note: req.body.note, waxEmployeeId: req.body.waxEmployeeId } });
       return { orderId, ok: true, result };
     } catch (error) {
       if (!error.statusCode) console.error('Error validating order:', error);

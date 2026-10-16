@@ -1510,6 +1510,76 @@ router.patch('/cases/:id/assignment', operationsAuth, async (req, res) => {
   }
 });
 
+// Wax printing can have several employees. These are the ones a wax product can be sent or given to.
+const waxEmployeeName = employee => employee.name || employee.email || 'Wax employee';
+
+router.get('/wax-employees', operationsAuth, async (req, res) => {
+  try {
+    if (!isManagerUser(req.user) && !isCustomerServiceUser(req.user) && req.user?.workRole !== 'wax_print') {
+      return res.status(403).json({ message: 'Only Customer Service, the boss or wax printing staff can see the wax employees' });
+    }
+    const employees = await User.find({ role: 'employee', workRole: 'wax_print', isAdmin: { $ne: true }, isActive: { $ne: false } })
+      .select('name email').sort({ name: 1, email: 1 }).lean();
+    const counts = employees.length ? await WorkflowCase.aggregate([
+      { $match: { assignedTeam: 'wax_print', assignedTo: { $in: employees.map(employee => employee._id) }, status: { $in: ['ready_to_print', 'printing'] }, archivedAt: null } },
+      { $group: { _id: '$assignedTo', count: { $sum: 1 } } }
+    ]) : [];
+    const countById = new Map(counts.map(row => [String(row._id), row.count]));
+    res.json(employees.map(employee => ({ id: String(employee._id), name: waxEmployeeName(employee), products: countById.get(String(employee._id)) || 0 })));
+  } catch (error) {
+    console.error('Error fetching wax employees:', error);
+    res.status(500).json({ message: 'Failed to fetch the wax employees' });
+  }
+});
+
+// Give waiting wax products (one, or the whole order through caseIds) to another wax employee.
+router.post('/cases/:id/give', operationsAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
+    if (!mongoose.Types.ObjectId.isValid(req.body.userId)) return res.status(400).json({ message: 'Choose a wax employee' });
+    const extraIds = Array.isArray(req.body.caseIds) ? req.body.caseIds.map(String) : [];
+    if (extraIds.some(id => !mongoose.Types.ObjectId.isValid(id))) return res.status(400).json({ message: 'Invalid case ID' });
+    const ids = [...new Set([req.params.id, ...extraIds])].slice(0, 100);
+    const employee = await User.findOne({ _id: req.body.userId, role: 'employee', workRole: 'wax_print', isAdmin: { $ne: true }, isActive: { $ne: false } }).select('name email');
+    if (!employee) return res.status(404).json({ message: 'Active wax employee not found' });
+    const cases = await WorkflowCase.find({ _id: { $in: ids } });
+    if (cases.length !== ids.length) return res.status(404).json({ message: 'Workflow case not found' });
+    const allowedGiver = isManagerUser(req.user) || isCustomerServiceUser(req.user);
+    for (const workflowCase of cases) {
+      if (!allowedGiver && !sameUserId(workflowCase.assignedTo, req.user.id)) {
+        return res.status(403).json({ message: 'You can only give your own products to another wax employee' });
+      }
+      if (workflowCase.assignedTeam !== 'wax_print' || workflowCase.status !== 'ready_to_print' || workflowCase.archivedAt) {
+        return res.status(409).json({ message: `${workflowCase.requestedName} is not waiting to be printed by wax staff` });
+      }
+      if (workflowCase.print?.plateId) {
+        return res.status(409).json({ message: `${workflowCase.requestedName} is on Plate ${workflowCase.print.plateNumber}. Take it off the plate first.` });
+      }
+    }
+    const now = new Date();
+    const moved = cases.filter(workflowCase => !sameUserId(workflowCase.assignedTo, employee._id));
+    const previous = new Map(moved.map(workflowCase => [String(workflowCase._id), workflowCase.assignedTo]));
+    moved.forEach(workflowCase => {
+      workflowCase.assignedTo = employee._id;
+      workflowCase.assignedAt = now;
+      workflowCase.startedAt = null;
+      workflowCase.history.push({ actorId: req.user.id, action: 'task_assigned', note: `Given to ${waxEmployeeName(employee)}` });
+    });
+    await Promise.all(moved.map(workflowCase => workflowCase.save()));
+    res.json({ given: moved.map(workflowCase => String(workflowCase._id)), employee: { id: String(employee._id), name: waxEmployeeName(employee) } });
+    notifyAfter(res, async () => {
+      for (const workflowCase of moved) {
+        const before = previous.get(String(workflowCase._id));
+        if (before) await notifyTaskRemoved(req.app, before, workflowCase);
+        await notifyCaseAssignment(req.app, workflowCase, before ? 'reassigned' : 'new_task');
+      }
+    });
+  } catch (error) {
+    console.error('Error giving wax products to another employee:', error);
+    res.status(500).json({ message: 'Could not give the products to another employee' });
+  }
+});
+
 router.post('/cases/:id/start', operationsAuth, async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid case ID' });
