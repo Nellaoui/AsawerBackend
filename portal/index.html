@@ -293,7 +293,7 @@
           <input id="qsSearch" type="search" placeholder="Type the reference or name" autocomplete="off" aria-label="Search the product to add stock to">
           <div id="qsResults" class="share-chips"></div>
         </div>
-        <div id="qsPicked" hidden><p class="muted" style="margin:0">1. Product</p><div class="share-chips"><strong id="qsProductName"></strong><button id="qsChange" type="button" class="button secondary small">Change</button></div></div>
+        <div id="qsPicked" hidden><p class="muted" style="margin:0">1. Product</p><div class="share-chips"><strong id="qsProductName"></strong><button id="qsChange" type="button" class="button secondary small">Change</button><button id="qsEdit" type="button" class="button secondary small">Edit sizes / catalogue</button></div></div>
         <div id="qsMethodWrap" hidden><p class="muted" style="margin:8px 0 0">Printing method</p><div id="qsMethods" class="share-chips"></div></div>
         <div id="qsClaspWrap" hidden><p class="muted" style="margin:8px 0 0">2. Clasp</p><div id="qsClasps" class="share-chips"></div></div>
         <div id="qsSizeWrap" hidden><p class="muted" style="margin:8px 0 0">3. Size</p><div id="qsSizes" class="share-chips"></div><input id="qsOtherSize" maxlength="80" placeholder="Other size (type it)" aria-label="Other size"></div>
@@ -1075,10 +1075,23 @@ Cancel = hidden (private)`);
         $('claspResults').innerHTML=found.map(p=>`<button type="button" class="button secondary small" data-share-add="${escapeHtml(p.productId)}" data-name="${escapeHtml(p.name)}" data-ref="${escapeHtml(p.serialNumber)}">+ ${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}</button>`).join('')||'<span class="muted">No collier or gourmette found.</span>';
       }catch(error){if(id===claspSearchId)$('claspResults').innerHTML='<span class="muted">'+escapeHtml(error.message)+'</span>'}
     }
+    // The sizes a customer can order, by the same rules as the app: Size Presets when the type uses them
+    // (bague, bracelet, or "apply to all"), else the product's own list; a gourmette with none uses its preset.
+    // Stock is counted for exactly these sizes, so the order check finds it.
+    function customerSizes(product){
+      const type=ProductOptions.normalizeType(product.type);
+      const own=ProductOptions.cleanList(product.availableSizes);
+      if(!ProductOptions.typeHasSizes(type))return own;
+      // Same built-in lists as the app uses when a preset is empty or not loaded yet.
+      const DEFAULTS={bague:Array.from({length:21},(_,i)=>String(50+i)),bracelet:Array.from({length:17},(_,i)=>((50+i)/10).toFixed(1)),gourmette:Array.from({length:8},(_,i)=>String(15+i))};
+      const preset=()=>{const list=ProductOptions.presetSizes(type,state.sizePresets);return list.length?list:(DEFAULTS[ProductOptions.presetKey(type)]||[])};
+      if(ProductOptions.usesPresetSizes(type,state.sizePresets)){const list=preset();return list.length?list:own}
+      return own.length?own:(type==='gourmette'?preset():[]);
+    }
     function sizeRowsFor(product,method,clasp=''){
       const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method&&(v.clasp||'')===clasp);
       // Finished sartlas are counted per size and per number of bracelets: 5.4 x5.
-      const baseSizes=(product.availableSizes||[]).map(String);
+      const baseSizes=customerSizes(product);
       const listed=isSartla(product.type)
         ?baseSizes.flatMap(size=>SartlaRules.offeredCounts(product).map(count=>SartlaRules.stockSize(size,count)))
         :baseSizes;
@@ -1228,6 +1241,8 @@ Cancel = hidden (private)`);
     $('quickStock').addEventListener('click',()=>{qsReset();$('quickStockDialog').showModal();$('qsSearch').focus()});
     $('qsClose').addEventListener('click',()=>$('quickStockDialog').close());
     $('qsChange').addEventListener('click',()=>{qsReset();$('qsSearch').focus()});
+    // Shortcut to the same Edit / catalogue window as the product list, to tick sizes or clasps.
+    $('qsEdit').addEventListener('click',()=>{const p=qsCurrent();if(!p)return;$('quickStockDialog').close();openFixDialogFor({...p,_id:p.productId,catalogId:p.catalogId&&p.catalogId._id||p.catalogId})});
     $('qsSearch').addEventListener('input',()=>{clearTimeout(qs.timer);qs.timer=setTimeout(qsSearch,250)});
     $('qsResults').addEventListener('click',event=>{const b=event.target.closest('[data-qs-product]');if(!b)return;const p=(qs.found||[]).find(x=>x.productId===b.dataset.qsProduct);if(p)qsPick(p)});
     $('qsMethods').addEventListener('click',event=>{const b=event.target.closest('[data-qs-method]');if(!b)return;qs.method=b.dataset.qsMethod;qs.size='';$('qsOtherSize').value='';qsRender()});
