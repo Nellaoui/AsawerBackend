@@ -1041,6 +1041,68 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
   }
 });
 
+// POST /api/inventory/products/:id/add-stock - Add pieces to one size (and clasp) in one step.
+// The quick "Add stock" window sends only how many pieces arrived, so two people adding at once never overwrite each other.
+router.post('/products/:id/add-stock', operationsAuth, inventoryRoleAuth, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid product ID' });
+  const size = String(req.body.size || '').trim();
+  const sizeKey = normalizeStockSize(size);
+  const printMethod = String(req.body.printMethod || '').toLowerCase();
+  const quantity = Number(req.body.quantity);
+  if (!size || !sizeKey || size.length > 80) return res.status(400).json({ message: 'Choose a size' });
+  if (!['wax', 'resin'].includes(printMethod)) return res.status(400).json({ message: 'Choose Wax or Resin' });
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100000) return res.status(400).json({ message: 'Quantity must be a whole number, 1 or more' });
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
+    const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
+    // Rows made before clasps existed have no clasp field at all; they are the product's own stock.
+    const claspMatch = clasp || { $in: ['', null] };
+    const findVariant = async () => await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey, clasp: claspMatch })
+      || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey, clasp: claspMatch });
+    let variant = await findVariant();
+    let before = 0;
+    if (variant) {
+      before = Number(variant.onHandQuantity || 0);
+      const update = { $inc: { onHandQuantity: quantity } };
+      if (!variant.productIds.some(id => String(id) === String(product._id))) update.$addToSet = { productIds: product._id };
+      variant = await StockVariant.findByIdAndUpdate(variant._id, update, { new: true });
+    } else {
+      try {
+        variant = await StockVariant.create({
+          canonicalReference, displayReference: product.serialNumber, clasp,
+          productIds: [product._id], primaryProductId: product._id, printMethod, size, sizeKey,
+          onHandQuantity: quantity, reservedQuantity: 0,
+          sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin', notes: 'Created in the stock portal'
+        });
+      } catch (error) {
+        if (error?.code !== 11000) throw error;
+        // Someone created the same row a moment ago: add to theirs.
+        variant = await findVariant();
+        if (!variant) throw error;
+        before = Number(variant.onHandQuantity || 0);
+        variant = await StockVariant.findByIdAndUpdate(variant._id, { $inc: { onHandQuantity: quantity } }, { new: true });
+      }
+    }
+    if (!clasp && !Sartla.isSartlaType(product.type) && !(product.availableSizes || []).some(item => normalizeStockSize(item) === sizeKey)) {
+      product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      await product.save();
+    }
+    const after = Number(variant.onHandQuantity || 0);
+    // Two people adding at once: take the starting count from the atomic result so the history stays in order.
+    before = after - quantity;
+    await recomputeProductStock(variant.productIds);
+    res.json(serializeVariant(variant));
+    // The history line goes after the answer.
+    await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: before, stockAfter: after, notes: `Size ${variant.size}${clasp ? ` · clasp ${clasp}` : ''} (${printMethod}): added in stock portal` });
+  } catch (error) {
+    console.error('Error adding stock:', error);
+    if (!res.headersSent) res.status(500).json({ message: 'Failed to add stock' });
+  }
+});
+
 // PATCH /api/inventory/products/:id/variants/:variantId - Adjust one exact size.
 router.patch('/products/:id/variants/:variantId', operationsAuth, inventoryRoleAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id) || !mongoose.Types.ObjectId.isValid(req.params.variantId)) return res.status(400).json({ message: 'Invalid product or size ID' });

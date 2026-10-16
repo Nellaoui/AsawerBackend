@@ -161,7 +161,7 @@
             <button id="tabProducts" class="tab" type="button" role="tab" aria-selected="true" aria-controls="productsView" data-tab="products">Products <span id="tabProductsCount" class="tab-count"></span></button>
             <button id="tabIssues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="issuesView" data-tab="issues" tabindex="-1">Products with an issue <span id="tabIssuesCount" class="tab-count issue"></span></button>
           </div>
-          <button id="addProduct" class="button small" type="button">+ Add product</button>
+          <button id="quickStock" class="button small" type="button" data-stock-only>+ Add stock</button> <button id="addProduct" class="button small" type="button">+ Add product</button>
         </div>
         <div id="productsView" role="tabpanel" aria-labelledby="tabProducts">
         <section class="panel">
@@ -281,6 +281,30 @@
     </form>
   </dialog>
   <datalist id="sartlaBracelets"></datalist>
+
+  <dialog id="quickStockDialog">
+    <form id="quickStockForm">
+      <div class="modal-head"><h2>Add stock</h2><p class="subtitle">Pick the product, the clasp and the size, then type how many pieces arrived.</p></div>
+      <div class="modal-body">
+        <div id="qsError" class="error" aria-live="assertive"></div>
+        <div id="qsOk" class="success" aria-live="polite"></div>
+        <div id="qsStep1">
+          <p class="muted" style="margin:0">1. Product</p>
+          <input id="qsSearch" type="search" placeholder="Type the reference or name" autocomplete="off" aria-label="Search the product to add stock to">
+          <div id="qsResults" class="share-chips"></div>
+        </div>
+        <div id="qsPicked" hidden><p class="muted" style="margin:0">1. Product</p><div class="share-chips"><strong id="qsProductName"></strong><button id="qsChange" type="button" class="button secondary small">Change</button></div></div>
+        <div id="qsMethodWrap" hidden><p class="muted" style="margin:8px 0 0">Printing method</p><div id="qsMethods" class="share-chips"></div></div>
+        <div id="qsClaspWrap" hidden><p class="muted" style="margin:8px 0 0">2. Clasp</p><div id="qsClasps" class="share-chips"></div></div>
+        <div id="qsSizeWrap" hidden><p class="muted" style="margin:8px 0 0">3. Size</p><div id="qsSizes" class="share-chips"></div><input id="qsOtherSize" maxlength="80" placeholder="Other size (type it)" aria-label="Other size"></div>
+        <div id="qsQtyWrap" hidden>
+          <p class="muted" style="margin:8px 0 0">4. How many pieces to add <span id="qsNow"></span></p>
+          <div class="stepper"><button type="button" class="step-btn" data-step="-1" aria-label="One less">−</button><input id="qsQty" type="number" min="1" step="1" inputmode="numeric" value="1"><button type="button" class="step-btn" data-step="1" aria-label="One more">+</button></div>
+        </div>
+      </div>
+      <div class="modal-foot"><button id="qsClose" type="button" class="button secondary">Close</button><button id="qsAdd" type="submit" class="button" disabled>Add</button></div>
+    </form>
+  </dialog>
 
   <dialog id="stockDialog">
     <form id="stockForm">
@@ -1142,6 +1166,101 @@ Cancel = hidden (private)`);
     $('claspResults').addEventListener('click',event=>{const b=event.target.closest('[data-share-add]');if(!b)return;claspLinks.set(b.dataset.shareAdd,{name:b.dataset.name,serialNumber:b.dataset.ref});renderClaspLinks();b.remove()});
     $('claspShareList').addEventListener('click',event=>{const b=event.target.closest('[data-unshare]');if(!b)return;claspLinks.delete(b.dataset.unshare);renderClaspLinks()});
     $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
+    // Quick "Add stock": product -> clasp -> size -> how many. The count goes up on screen at once and the server confirms in the background.
+    const qs={product:null,method:'',clasp:'',size:'',timer:0,searchId:0};
+    const qsStockClasp=c=>ProductOptions.PRODUCT_FIXED_CLASPS.includes(c)?'':c;
+    function qsClaspChoices(p){
+      if(!ProductOptions.typeHasClasps(p.type))return[];
+      const set=new Set(p.availableClasps||[]);
+      for(const v of p.stockVariants||[])if(v.clasp)set.add(v.clasp);
+      return ProductOptions.CLASP_TYPES.filter(c=>set.has(c));
+    }
+    const qsChip=(attr,value,label,on)=>`<button type="button" class="button ${on?'':'secondary '}small" ${attr}="${escapeHtml(value)}" aria-pressed="${on?'true':'false'}">${label}</button>`;
+    function qsMethods(p){
+      const found=[...new Set((p.stockVariants||[]).map(v=>v.printMethod).filter(m=>m==='wax'||m==='resin'))];
+      // The product's own production method always counts: orders only use stock of that method.
+      if(['wax','resin'].includes(p.printMethod)&&!found.includes(p.printMethod))found.unshift(p.printMethod);
+      return found.length?found:['wax','resin'];
+    }
+    // The list reloads in the background, so always use the freshest copy of the picked product.
+    const qsCurrent=()=>qs.product&&(state.products.find(x=>x.productId===qs.product.productId)||qs.product);
+    function qsRender(){
+      const p=qsCurrent();
+      $('qsStep1').hidden=!!p;$('qsPicked').hidden=!p;
+      for(const id of ['qsMethodWrap','qsClaspWrap','qsSizeWrap','qsQtyWrap'])$(id).hidden=true;
+      if(!p){$('qsAdd').disabled=true;return}
+      $('qsProductName').textContent=`${p.name} · ${p.serialNumber}`;
+      const methods=qsMethods(p);
+      if(!methods.includes(qs.method))qs.method=methods.includes(p.printMethod)?p.printMethod:methods[0];
+      $('qsMethodWrap').hidden=methods.length<2;
+      $('qsMethods').innerHTML=methods.map(m=>qsChip('data-qs-method',m,m==='wax'?'Wax':'Resin',m===qs.method)).join('');
+      const claspChoices=qsClaspChoices(p);
+      if(!claspChoices.includes(qs.clasp))qs.clasp='';
+      $('qsClaspWrap').hidden=!claspChoices.length;
+      $('qsClasps').innerHTML=claspChoices.map(c=>qsChip('data-qs-clasp',c,escapeHtml(claspLabel(c)),c===qs.clasp)).join('');
+      // With clasps ticked on the product, one has to be chosen before sizes show.
+      const claspReady=!claspChoices.length||qs.clasp;
+      if(!claspReady){$('qsAdd').disabled=true;return}
+      const rows=sizeRowsFor(p,qs.method,qsStockClasp(qs.clasp));
+      $('qsSizeWrap').hidden=false;
+      $('qsSizes').innerHTML=rows.map(r=>qsChip('data-qs-size',r.size,`${escapeHtml(r.size)} <span class="muted">· ${r.onHand}</span>`,sizeKeyOf(r.size)===sizeKeyOf(qs.size))).join('')||'<span class="muted">No sizes yet. Type one below.</span>';
+      const size=qsSize();
+      $('qsQtyWrap').hidden=!size;
+      const row=rows.find(r=>sizeKeyOf(r.size)===sizeKeyOf(size));
+      $('qsNow').textContent=size?`(${size}: ${row?row.onHand:0} on the shelf now)`:'';
+      syncSteppers($('qsQtyWrap'));
+      $('qsAdd').disabled=!size;
+      $('qsAdd').textContent=size?`Add ${Math.max(Number($('qsQty').value)||0,0)} → ${(row?row.onHand:0)+(Number($('qsQty').value)||0)} on the shelf`:'Add';
+    }
+    const qsSize=()=>$('qsOtherSize').value.trim()||qs.size;
+    function qsReset(){qs.product=null;qs.method='';qs.clasp='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';$('qsSearch').value='';$('qsResults').innerHTML='';show('qsError');show('qsOk');qsRender()}
+    function qsPick(p){qs.product=p;qs.clasp='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';qsRender()}
+    async function qsSearch(){
+      const text=$('qsSearch').value.trim(),id=++qs.searchId;
+      if(!text){$('qsResults').innerHTML='';return}
+      try{
+        const data=await api(`/inventory?${new URLSearchParams({search:text,limit:'10'})}`);
+        if(id!==qs.searchId)return;
+        qs.found=data.products;
+        $('qsResults').innerHTML=data.products.map(p=>`<button type="button" class="button secondary small" data-qs-product="${escapeHtml(p.productId)}">${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}</button>`).join('')||'<span class="muted">No product found.</span>';
+      }catch(error){if(id===qs.searchId)$('qsResults').innerHTML='<span class="muted">'+escapeHtml(error.message)+'</span>'}
+    }
+    $('quickStock').addEventListener('click',()=>{qsReset();$('quickStockDialog').showModal();$('qsSearch').focus()});
+    $('qsClose').addEventListener('click',()=>$('quickStockDialog').close());
+    $('qsChange').addEventListener('click',()=>{qsReset();$('qsSearch').focus()});
+    $('qsSearch').addEventListener('input',()=>{clearTimeout(qs.timer);qs.timer=setTimeout(qsSearch,250)});
+    $('qsResults').addEventListener('click',event=>{const b=event.target.closest('[data-qs-product]');if(!b)return;const p=(qs.found||[]).find(x=>x.productId===b.dataset.qsProduct);if(p)qsPick(p)});
+    $('qsMethods').addEventListener('click',event=>{const b=event.target.closest('[data-qs-method]');if(!b)return;qs.method=b.dataset.qsMethod;qs.size='';$('qsOtherSize').value='';qsRender()});
+    $('qsClasps').addEventListener('click',event=>{const b=event.target.closest('[data-qs-clasp]');if(!b)return;qs.clasp=b.dataset.qsClasp;qs.size='';$('qsOtherSize').value='';qsRender()});
+    $('qsSizes').addEventListener('click',event=>{const b=event.target.closest('[data-qs-size]');if(!b)return;qs.size=b.dataset.qsSize;$('qsOtherSize').value='';qsRender()});
+    $('qsOtherSize').addEventListener('input',()=>{if($('qsOtherSize').value.trim())qs.size='';qsRender()});
+    $('qsQty').addEventListener('input',qsRender);
+    $('qsQtyWrap').addEventListener('click',event=>{if(event.target.closest('.step-btn'))setTimeout(qsRender,0)});
+    $('quickStockForm').addEventListener('submit',event=>{
+      event.preventDefault();
+      const p=qsCurrent(),size=qsSize(),quantity=Number($('qsQty').value),clasp=qsStockClasp(qs.clasp),method=qs.method;
+      if(!p||!size)return;
+      if(!Number.isSafeInteger(quantity)||quantity<1)return show('qsError','Type how many pieces to add (1 or more).');
+      show('qsError');
+      // Instant: raise the counts now; put them back with the server's message if it refuses.
+      p.stockVariants=p.stockVariants||[];
+      let v=p.stockVariants.find(x=>x.printMethod===method&&(x.clasp||'')===clasp&&sizeKeyOf(x.size)===sizeKeyOf(size));
+      const created=!v;
+      if(created){v={size,printMethod:method,clasp,onHandQuantity:0,reservedQuantity:0};p.stockVariants.push(v)}
+      v.onHandQuantity=Number(v.onHandQuantity||0)+quantity;p.stock=Number(p.stock||0)+quantity;
+      renderProducts();
+      const label=`${p.serialNumber}${qs.clasp?' · '+claspLabel(qs.clasp):''} · ${size}`;
+      show('qsOk',`Added ${quantity} · ${label} · now ${v.onHandQuantity} on the shelf`);
+      qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';qsRender();
+      api(`/inventory/products/${p.productId}/add-stock`,{method:'POST',body:JSON.stringify({printMethod:method,clasp,size,quantity})})
+        .then(()=>loadInventory({live:true}))
+        .catch(error=>{
+          v.onHandQuantity-=quantity;p.stock-=quantity;
+          if(created){const i=p.stockVariants.indexOf(v);if(i>=0)p.stockVariants.splice(i,1)}
+          renderProducts();loadInventory({live:true});show('qsOk');show('qsError',`${label}: ${error.message}`);
+          if(qs.product)qsRender();
+        });
+    });
     $('damageForm').addEventListener('submit',async event=>{event.preventDefault();const p=state.selected;const quantity=Number($('damageQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1)return show('damageError','Enter a positive whole-number quantity.');if(!confirm(`Report ${quantity} damaged unit(s) of ${p.name} and create its replacement task?`))return;const button=event.submitter;button.disabled=true;try{const data=await api(`/inventory/products/${p.productId}/damage`,{method:'POST',body:JSON.stringify({quantity,orderId:$('damageOrder').value.trim()||null,notes:$('damageNotes').value.trim()})});$('damageDialog').close();show('message',`${p.name}: damage recorded and replacement case #${String(data.workflowCase._id).slice(-6).toUpperCase()} created.`);loadInventory({live:true});}catch(error){show('damageError',error.message)}finally{button.disabled=false}});
     restoreSession();
   </script>
