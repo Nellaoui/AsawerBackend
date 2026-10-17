@@ -11,6 +11,7 @@ const { auth } = require('../middlewares/auth');
 const Sartla = require('../utils/sartla');
 const { resolveSartlaSets } = require('../utils/sartlaSets');
 const { sendPushToUser } = require('../utils/pushNotification');
+const catalogListCache = require('../utils/catalogListCache');
 const { catalogNameKey, pickCatalogChoices } = require('../utils/catalogChoices');
 
 // Fields the catalog list screen needs to draw its cards and search products.
@@ -33,6 +34,32 @@ router.get('/', auth, async (req, res) => {
   try {
     const view = ['names', 'list'].includes(req.query.view) ? req.query.view : 'full';
     const isAdmin = req.user.role === 'admin';
+
+    // Phones ask for the trimmed list all the time, so it is built once and
+    // shared: every phone still gets only the catalogues it may see.
+    if (view === 'list' && !isAdmin) {
+      const shared = await catalogListCache.get(async () => {
+        const all = await Catalog.find({}).sort({ createdAt: -1 });
+        // Drafts (inactive products) stay hidden from customers until they are fixed.
+        await Catalog.populate(all, {
+          path: 'products',
+          match: { isActive: { $ne: false } },
+          select: LIST_PRODUCT_FIELDS
+        });
+        return all.map(catalog => {
+          const catalogObj = catalog.toObject();
+          return {
+            catalog,
+            payload: {
+              ...catalogObj,
+              catalogId: catalog._id.toString(),
+              products: withProductIds(catalogObj.products)
+            }
+          };
+        });
+      });
+      return res.json(shared.filter(entry => entry.catalog.hasUserAccess(req.user.id)).map(entry => entry.payload));
+    }
 
     // Admins see every catalog. Everyone else sees public catalogs, their own,
     // and private ones that list them. Filter before populating so hidden

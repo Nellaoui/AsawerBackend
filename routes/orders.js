@@ -33,6 +33,14 @@ const safelyNotify = async (operation) => {
   }
 };
 
+// Runs alerts and pushes once the answer has gone out, so the person who
+// pressed the button does not wait for them. 'close' also fires if they have
+// already left.
+const afterAnswer = (res, operation) => {
+  if (typeof res?.once === 'function') res.once('close', () => { safelyNotify(operation); });
+  else safelyNotify(operation);
+};
+
 const ORDER_TRANSITIONS = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['picking', 'packed', 'shipped', 'cancelled'],
@@ -733,44 +741,27 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       await session.endSession();
     }
 
+    // The customer waits only for the saved order. The wishlist, alerts and
+    // pushes follow once the answer has gone out (see afterAnswer).
     // Ordered products go to the customer's wishlist (never twice). A sartla's
     // internal bracelet lines are not products the customer chose.
-    try {
-      const orderedIds = [...new Set(order.items.filter(item => !item.partOfItemId).map(item => String(item.productId)))];
-      if (orderedIds.length) {
-        await Wishlist.bulkWrite(orderedIds.map(productId => ({
-          updateOne: {
-            filter: { userId: req.user.id, productId },
-            update: { $setOnInsert: { userId: req.user.id, productId, createdAt: new Date() } },
-            upsert: true
-          }
-        })), { ordered: false });
-      }
-    } catch (err) {
-      console.error('⚠️  Failed to add ordered products to wishlist:', err);
-    }
-
-    const assignedCases = await WorkflowCase.find({ _id: { $in: order.workflowCaseIds || [] }, assignedTo: { $ne: null } });
-    await Promise.all(assignedCases.map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
-    
-    // 🔔 Send push notification to user on order creation
-    try {
-      await sendPushToUser(
-        User,
-        req.user.id,
-        '📦 Order Received',
-        `Your order #${order._id.toString().slice(-6).toUpperCase()} has been created`,
-        {
-          type: 'order',
-          orderId: order._id.toString(),
-          status: 'pending',
-          timestamp: new Date().toISOString()
+    const addOrderedToWishlist = async () => {
+      try {
+        const orderedIds = [...new Set(order.items.filter(item => !item.partOfItemId).map(item => String(item.productId)))];
+        if (orderedIds.length) {
+          await Wishlist.bulkWrite(orderedIds.map(productId => ({
+            updateOne: {
+              filter: { userId: req.user.id, productId },
+              update: { $setOnInsert: { userId: req.user.id, productId, createdAt: new Date() } },
+              upsert: true
+            }
+          })), { ordered: false });
         }
-      );
-    } catch (err) {
-      console.error('⚠️  Failed to send order creation push:', err);
-    }
-    
+      } catch (err) {
+        console.error('⚠️  Failed to add ordered products to wishlist:', err);
+      }
+    };
+
     // Populate order with necessary fields
     let query = Order.findById(order._id)
       .populate('catalogId', 'name description')
@@ -778,7 +769,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
     if (mongoose.Types.ObjectId.isValid(order.userId)) {
       query = query.populate('userId', 'name email phone');
     }
-    const populatedOrder = await query;
+    const [populatedOrder] = await Promise.all([query, addOrderedToWishlist()]);
 
     // Ensure size is properly set in the response
     const orderWithSizes = {
@@ -790,68 +781,91 @@ router.post('/', auth, validateOrderData, async (req, res) => {
       }))
     };
 
-    // Notify all admins about the new order
-    try {
-      const admins = await User.find({
-        $or: [{ isAdmin: true }, { role: 'admin' }],
-        isActive: { $ne: false }
-      }).select('_id name email expoPushTokens');
-      const io = req.app.get('io');
-      const socketsByUser = req.app.get('socketsByUser');
+    afterAnswer(res, async () => {
+      const assignedCases = await WorkflowCase.find({ _id: { $in: order.workflowCaseIds || [] }, assignedTo: { $ne: null } });
+      await Promise.all(assignedCases.map(workflowCase => safelyNotify(() => notifyCaseAssignment(req.app, workflowCase))));
 
-      for (const admin of admins) {
-        const title = 'New order received';
-        const body = `${req.user.name || req.user.email} placed a new order (#${order._id})`;
-        // persist notification for admin
-        const notif = await Notification.create({
-          user: admin._id,
-          title,
-          body,
-          type: 'new_order',
-          data: { orderId: order._id }
-        });
-
-        // emit to connected admin sockets if any
-        if (io && socketsByUser) {
-          const userSockets = socketsByUser.get(String(admin._id));
-          if (userSockets) {
-            for (const sid of userSockets) {
-              io.to(sid).emit('notification', {
-                id: notif._id,
-                title: notif.title,
-                body: notif.body,
-                data: notif.data,
-                createdAt: notif.createdAt
-              });
-            }
-          } else {
-            // helpful debug log when no connected sockets for this admin
-            console.log(`No connected sockets for admin ${admin._id} — notification saved to DB`);
+      // 🔔 Send push notification to user on order creation
+      try {
+        await sendPushToUser(
+          User,
+          req.user.id,
+          '📦 Order Received',
+          `Your order #${order._id.toString().slice(-6).toUpperCase()} has been created`,
+          {
+            type: 'order',
+            orderId: order._id.toString(),
+            status: 'pending',
+            timestamp: new Date().toISOString()
           }
-        }
-
-        // 🔔 Send push notification to admin
-        try {
-          if (admin.expoPushTokens?.length > 0) {
-            await sendPushToUser(
-              User,
-              admin._id,
-              '🆕 New Order',
-              `Order #${order._id.toString().slice(-6).toUpperCase()} from ${req.user.name || req.user.email}`,
-              {
-                type: 'order',
-                orderId: order._id.toString(),
-                action: 'new_order'
-              }
-            );
-          }
-        } catch (err) {
-          console.error(`⚠️  Failed to send push to admin ${admin.email}:`, err);
-        }
+        );
+      } catch (err) {
+        console.error('⚠️  Failed to send order creation push:', err);
       }
-    } catch (err) {
-      console.error('Error notifying admins about new order:', err);
-    }
+
+      // Notify all admins about the new order
+      try {
+        const admins = await User.find({
+          $or: [{ isAdmin: true }, { role: 'admin' }],
+          isActive: { $ne: false }
+        }).select('_id name email expoPushTokens');
+        const io = req.app.get('io');
+        const socketsByUser = req.app.get('socketsByUser');
+
+        await Promise.all(admins.map(async admin => {
+          const title = 'New order received';
+          const body = `${req.user.name || req.user.email} placed a new order (#${order._id})`;
+          // persist notification for admin
+          const notif = await Notification.create({
+            user: admin._id,
+            title,
+            body,
+            type: 'new_order',
+            data: { orderId: order._id }
+          });
+
+          // emit to connected admin sockets if any
+          if (io && socketsByUser) {
+            const userSockets = socketsByUser.get(String(admin._id));
+            if (userSockets) {
+              for (const sid of userSockets) {
+                io.to(sid).emit('notification', {
+                  id: notif._id,
+                  title: notif.title,
+                  body: notif.body,
+                  data: notif.data,
+                  createdAt: notif.createdAt
+                });
+              }
+            } else {
+              // helpful debug log when no connected sockets for this admin
+              console.log(`No connected sockets for admin ${admin._id} — notification saved to DB`);
+            }
+          }
+
+          // 🔔 Send push notification to admin
+          try {
+            if (admin.expoPushTokens?.length > 0) {
+              await sendPushToUser(
+                User,
+                admin._id,
+                '🆕 New Order',
+                `Order #${order._id.toString().slice(-6).toUpperCase()} from ${req.user.name || req.user.email}`,
+                {
+                  type: 'order',
+                  orderId: order._id.toString(),
+                  action: 'new_order'
+                }
+              );
+            }
+          } catch (err) {
+            console.error(`⚠️  Failed to send push to admin ${admin.email}:`, err);
+          }
+        }));
+      } catch (err) {
+        console.error('Error notifying admins about new order:', err);
+      }
+    });
 
     res.status(201).json(withoutSartlaParts(orderWithSizes));
   } catch (error) {

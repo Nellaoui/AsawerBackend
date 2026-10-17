@@ -105,6 +105,17 @@ describe('live app updates', () => {
     expect(emit).toHaveBeenCalledWith('catalogs:changed', { at: expect.any(Number) });
   });
 
+  test('drops the shared phone catalogue list before telling the apps', async () => {
+    const catalogListCache = require('../utils/catalogListCache');
+    const build = jest.fn(async () => ['list']);
+    await catalogListCache.get(build);
+    await catalogListCache.get(build);
+    expect(build).toHaveBeenCalledTimes(1);
+    broadcastCatalogChange();
+    await catalogListCache.get(build);
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
   test('does nothing before the socket server is attached', () => {
     setLiveIo(null);
     notifyOrderChange('user-1');

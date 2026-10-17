@@ -48,18 +48,15 @@ router.post('/:productId', auth, async (req, res) => {
     const { productId } = req.params;
     console.log('Adding to wishlist - productId:', productId, 'userId:', req.user.id);
 
-    // Check if product exists
-    const product = await Product.findById(productId);
+    // Both reads are independent, so they go out together.
+    const [product, existingItem] = await Promise.all([
+      Product.exists({ _id: productId }),
+      Wishlist.findOne({ userId: req.user.id, productId }).select('_id').lean()
+    ]);
     console.log('Product found:', product ? 'Yes' : 'No');
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
-
-    // Check if already in wishlist
-    const existingItem = await Wishlist.findOne({
-      userId: req.user.id,
-      productId: productId
-    });
 
     if (existingItem) {
       return res.status(400).json({ message: 'Product already in wishlist' });

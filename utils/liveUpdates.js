@@ -2,6 +2,7 @@
 // data changed, so open portals reload themselves instead of waiting for
 // someone to press Refresh. The event carries no order data: each client
 // re-fetches through the normal authenticated API.
+const catalogListCache = require('./catalogListCache');
 const STAFF_ROOM = 'staff';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -48,7 +49,11 @@ const emitSoon = (room, event) => {
   }, COALESCE_MS));
 };
 
-const broadcastCatalogChange = () => emitSoon(APP_ROOM, 'catalogs:changed');
+const broadcastCatalogChange = () => {
+  // Drop the shared list first, so the refetch this event causes sees the edit.
+  catalogListCache.invalidate();
+  emitSoon(APP_ROOM, 'catalogs:changed');
+};
 
 const notifyOrderChange = userId => {
   if (userId) emitSoon(userRoom(String(userId)), 'orders:changed');
