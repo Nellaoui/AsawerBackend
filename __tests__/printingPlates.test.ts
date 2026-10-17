@@ -14,6 +14,7 @@ const { notifyFailedPrint } = require('../utils/workflowNotifications');
 const router = require('../routes/workflow');
 
 const handler = (path: string, method: string) => router.stack.find((layer: any) => layer.route?.path === path && layer.route.methods[method]).route.stack.at(-1).handle;
+const list = handler('/plates', 'get');
 const add = handler('/plates/add', 'post');
 const remove = handler('/plates/:id/remove', 'post');
 const move = handler('/plates/:id/move', 'post');
@@ -118,6 +119,21 @@ describe('printing plates', () => {
     expect(workflowCase.print.plateId).toBeNull();
     expect(plate.status).toBe('cancelled');
     expect(res.json).toHaveBeenCalledWith({ closed: true });
+  });
+
+  test('the plate list leaves a brand new empty plate alone and reopens a cancelled plate that has a waiting product', async () => {
+    const fresh = makePlate(14);
+    const stale = makePlate(15, { status: 'cancelled' });
+    jest.spyOn(WorkflowCase, 'distinct').mockResolvedValue([stale._id] as any);
+    jest.spyOn(Plate, 'updateMany').mockResolvedValue({} as any);
+    jest.spyOn(Plate, 'find').mockReturnValue({ sort: async () => [fresh] } as any);
+    jest.spyOn(WorkflowCase, 'countDocuments').mockResolvedValue(0 as any);
+    jest.spyOn(WorkflowCase, 'find').mockReturnValue({ populate: () => ({ populate: async () => [] }) } as any);
+    const res = response();
+    await list({ user: { id: 'boss', role: 'admin', isAdmin: true }, query: {} }, res);
+    expect(Plate.updateMany).toHaveBeenCalledWith({ _id: { $in: [stale._id] }, status: 'cancelled' }, { $set: { status: 'open' } });
+    expect(fresh.status).toBe('open');
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ number: 14 })]);
   });
 
   test('a product only moves to a plate of the same type (wax or resin)', async () => {

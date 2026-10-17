@@ -52,8 +52,11 @@ const createPlate = async ({ productionMethod, actorId, ownerId = null }) => {
 const plateCases = (plate, extra = {}) => WorkflowCase.find({ 'print.plateId': plate._id, ...extra });
 
 // An open plate with nothing on it is closed so it does not stay in the list.
-const dropIfEmpty = async plate => {
+// A plate is opened a moment before its first product is saved onto it, so the plate list (which every live screen refreshes) leaves a brand new plate alone.
+const NEW_PLATE_GRACE_MS = 2 * 60 * 1000;
+const dropIfEmpty = async (plate, { grace = false } = {}) => {
   if (plate.status !== 'open') return false;
+  if (grace && Date.now() - new Date(plate.createdAt).getTime() < NEW_PLATE_GRACE_MS) return false;
   if (await WorkflowCase.countDocuments({ 'print.plateId': plate._id })) return false;
   plate.status = 'cancelled';
   await plate.save();
@@ -61,6 +64,8 @@ const dropIfEmpty = async plate => {
 };
 
 const putOnPlate = async ({ workflowCase, plate, actorId, note }) => {
+  // A plate cancelled as empty a moment ago is opened again, so a product is never linked to a closed plate.
+  if (plate.status === 'cancelled') { plate.status = 'open'; await plate.save(); }
   workflowCase.print = { ...(workflowCase.print?.toObject ? workflowCase.print.toObject() : workflowCase.print || {}), plateId: plate._id, plateNumber: plate.number };
   workflowCase.history.push({ actorId, action: 'plate_assigned', fromStatus: workflowCase.status, toStatus: workflowCase.status, note });
   await workflowCase.save();
@@ -173,8 +178,11 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
         // A wax employee sees their own plates, and older plates nobody owns.
         if (user.workRole === 'wax_print') filter.ownerId = { $in: [mongoose.Types.ObjectId.isValid(user.id) ? user.id : null, null] };
       }
+      // Products waiting to print that still point to a cancelled plate: open the plate again so they show on it.
+      const waitingPlateIds = await WorkflowCase.distinct('print.plateId', { status: 'ready_to_print', 'print.plateId': { $ne: null } });
+      if (waitingPlateIds.length) await Plate.updateMany({ _id: { $in: waitingPlateIds }, status: 'cancelled' }, { $set: { status: 'open' } });
       const plates = await Plate.find(filter).sort({ number: 1 });
-      const views = await Promise.all(plates.map(async plate => ((await dropIfEmpty(plate)) ? null : listView(plate))));
+      const views = await Promise.all(plates.map(async plate => ((await dropIfEmpty(plate, { grace: true })) ? null : listView(plate))));
       res.json(views.filter(Boolean));
     } catch (error) {
       respond(res, error, 'load the plates');
