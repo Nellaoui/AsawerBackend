@@ -2733,8 +2733,16 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
         : cleanText(req.body.note, 1000);
       notices.push(() => notifyFailedPrint(req.app, workflowCase, failureNote));
     }
-    await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
+    // A task that stays open (Quality -> Packing, Printing -> Quality...) cannot change the order's
+    // closing state, so the order refresh runs after the answer. Closing a task still waits for it.
+    const closesTask = ['completed', 'cancelled', 'rejected'].includes(nextStatus);
+    if (closesTask) await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app);
     res.json(await populateCase(WorkflowCase.findById(workflowCase._id)));
+    if (!closesTask) {
+      // One retry, so a brief database hiccup does not leave the order state stale.
+      const refreshed = await safelyNotify(async () => { await refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app); return true; });
+      if (!refreshed) await safelyNotify(() => refreshOrderFulfillment(workflowCase.orderId, req.user.id, req.app));
+    }
     for (const notice of notices) await safelyNotify(notice);
   } catch (error) {
     console.error('Error transitioning workflow case:', error);
