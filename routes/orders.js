@@ -1513,9 +1513,10 @@ router.post('/:id/validate', operationsAuth, async (req, res) => {
   }
   try {
     const result = await validateOrderCore({ orderId: req.params.id, user: req.user, body: req.body });
-    await notifyValidatedOrder(req.app, result);
     await result.approvedOrder.populate('items.productId', 'name imageUrl size serialNumber weight showWeight type');
     res.json(result.approvedOrder);
+    // Notifications go after the answer so the button stays instant.
+    notifyValidatedOrder(req.app, result).catch(error => console.error('Order validation notifications failed:', error));
   } catch (error) {
     console.error('Error validating order:', error);
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to validate order' });
