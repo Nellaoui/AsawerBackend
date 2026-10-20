@@ -326,7 +326,7 @@ const createFulfillmentCases = async (order, productById, actorId, session, item
 const DUPLICATE_ORDER_WINDOW_MS = 3 * 60 * 1000;
 const orderLinesKey = lines => (lines || [])
   .filter(line => !line.partOfItemId)
-  .map(line => [line.productId?._id || line.productId, Number(line.quantity), line.size, line.clasp, line.braceletCount].map(value => String(value ?? '')).join('|'))
+  .map(line => [line.productId?._id || line.productId, Number(line.quantity), line.size, line.clasp, line.height, line.width, line.braceletCount].map(value => String(value ?? '')).join('|'))
   .sort()
   .join(';');
 const findRecentDuplicateOrder = async (userId, items) => {
@@ -443,6 +443,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           quantity: Number(item.quantity),
           size: item.size,
           clasp: item.clasp,
+          width: item.width,
           braceletCount: item.braceletCount
         }));
 
@@ -474,6 +475,22 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           }
 
           const isSartla = !isPart && Sartla.isSartlaType(product.type);
+          // A collier or gourmette with widths ticked is ordered in one of those widths.
+          const offeredWidths = isPart ? [] : (product.availableWidths || []).map(productOptions.cleanWidth).filter(Boolean);
+          if (offeredWidths.length) {
+            const wantedWidth = productOptions.cleanWidth(line.width);
+            if (!offeredWidths.includes(wantedWidth)) {
+              const error = new Error(wantedWidth
+                ? `${product.name} is not made in ${wantedWidth} mm. Choose ${offeredWidths.join(', ')} mm`
+                : `Choose a width (${offeredWidths.join(', ')} mm) for ${product.name}`);
+              error.statusCode = 400;
+              error.code = 'WIDTH_REQUIRED';
+              throw error;
+            }
+            line.width = wantedWidth;
+          } else {
+            line.width = '';
+          }
           let sartlaSet = null;
           if (isSartla) {
             const offered = Sartla.offeredCounts(product);
@@ -515,7 +532,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
           // FR and FRN stay with the product's own stock; any other clasp of a
           // collier or gourmette is looked up by its own size rows.
           const claspKey = productOptions.stockClaspFor(product.type, line.clasp);
-          const sizeCandidates = productVariants.filter(variant => variant.sizeKey === sizeKey && (variant.clasp || '') === claspKey);
+          const sizeCandidates = productVariants.filter(variant => variant.sizeKey === sizeKey && (variant.clasp || '') === claspKey && (variant.width || '') === (line.width || ''));
           // A customer-level route is authoritative for every printable item in
           // their orders. Otherwise the product classification chooses the queue.
           const preferredMethod = forcedProductionMethod
@@ -544,7 +561,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             : (product.fulfillmentPolicy || 'stock_then_print');
           let available = selectedVariant
             ? Math.max(selectedVariant.onHandQuantity - selectedVariant.reservedQuantity, 0)
-            : (productVariants.length || isSartla || claspKey ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
+            : (productVariants.length || isSartla || claspKey || line.width ? 0 : (Number.isFinite(product.stock) ? product.stock : 0));
           let stockQuantity = policy === 'print_on_demand' ? 0 : Math.min(available, quantity);
           let printQuantity = quantity - stockQuantity;
 
@@ -672,6 +689,7 @@ router.post('/', auth, validateOrderData, async (req, res) => {
             name: product.name,
             size: line.size,
             clasp: line.clasp,
+            ...(line.width ? { width: line.width } : {}),
             ...(isSartla ? { braceletCount: line.braceletCount } : {}),
             ...(isPart ? { partOfItemId: line.partOfItemId, partOfName: line.partOfName } : {})
           };
@@ -1643,7 +1661,7 @@ router.get('/:id', auth, async (req, res) => {
   try {
     let query = Order.findById(req.params.id)
       .populate('catalogId', 'name description')
-      .populate('items.productId', 'name imageUrl price size serialNumber weight showWeight type clasp');
+      .populate('items.productId', 'name imageUrl price size serialNumber weight showWeight type clasp availableWidths');
     // Only populate userId when it's a valid ObjectId
     const tempOrder = await Order.findById(req.params.id).select('userId');
     if (tempOrder && mongoose.Types.ObjectId.isValid(tempOrder.userId)) {

@@ -45,6 +45,10 @@ const orderItemSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  width: {
+    type: String,
+    trim: true
+  },
   stockQuantity: {
     type: Number,
     min: 0,

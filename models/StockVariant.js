@@ -42,6 +42,12 @@ const stockVariantSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  // Width (mm) of a collier or gourmette; '' when the product has no widths.
+  width: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   onHandQuantity: {
     type: Number,
     min: 0,
@@ -82,8 +88,8 @@ const stockVariantSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 stockVariantSchema.index(
-  { canonicalReference: 1, printMethod: 1, sizeKey: 1, clasp: 1 },
-  { unique: true, name: 'unique_reference_method_size_clasp' }
+  { canonicalReference: 1, printMethod: 1, sizeKey: 1, clasp: 1, width: 1 },
+  { unique: true, name: 'unique_reference_method_size_clasp_width' }
 );
 stockVariantSchema.index({ productIds: 1, sizeKey: 1, printMethod: 1 });
 
@@ -104,6 +110,14 @@ StockVariant.dropLegacyIndex = async () => {
   } catch (error) {
     if (error?.codeName !== 'IndexNotFound' && error?.code !== 27 && error?.code !== 26) throw error;
   }
+  // The clasp-only unique index would refuse a second width of the same size.
+  try {
+    await StockVariant.collection.dropIndex('unique_reference_method_size_clasp');
+  } catch (error) {
+    if (error?.codeName !== 'IndexNotFound' && error?.code !== 27 && error?.code !== 26) throw error;
+  }
+  // Rows made before widths existed have no width field: they are width ''.
+  await StockVariant.updateMany({ width: { $exists: false } }, { $set: { width: '' } });
   await StockVariant.createIndexes();
   // Rows made before clasps existed have no clasp field: give them '' so every query finds them.
   const legacy = await StockVariant.find({ clasp: { $exists: false } }).lean();

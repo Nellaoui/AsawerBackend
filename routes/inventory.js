@@ -113,6 +113,7 @@ const serializeProduct = (product, stockVariants = []) => {
       printMethod: variant.printMethod,
       size: variant.size,
       clasp: variant.clasp || '',
+      width: variant.width || '',
       productIds: (variant.productIds || []).map(String),
       onHandQuantity: Number(variant.onHandQuantity || 0),
       reservedQuantity: Number(variant.reservedQuantity || 0),
@@ -129,6 +130,7 @@ const serializeVariant = (variant) => ({
   printMethod: variant.printMethod,
   size: variant.size,
   clasp: variant.clasp || '',
+  width: variant.width || '',
   productIds: (variant.productIds || []).map(String),
   onHandQuantity: Number(variant.onHandQuantity || 0),
   reservedQuantity: Number(variant.reservedQuantity || 0),
@@ -416,7 +418,7 @@ router.get('/needs-setup', operationsAuth, productSetupAuth, async (req, res) =>
     const search = String(req.query.search || '').trim();
     const filter = search ? { $or: await productSearchConditions(search) } : {};
     const products = await Product.find(filter)
-      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableClasps clasp sartlaSets setupIssue stock')
+      .select('name serialNumber type imageUrl price isActive removedFromShop stockSyncState fulfillmentPolicy printMethod catalogId availableSizes availableWidths availableClasps clasp sartlaSets setupIssue stock')
       .sort({ updatedAt: -1 })
       .limit(400)
       .lean();
@@ -503,10 +505,10 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     // same reference can be created again as a fresh product.
     const candidates = parts
       ? await Product.find({ serialNumber: new RegExp(`^\\s*${parts[1]}[\\s_-]*${parts[2]}\\b`, 'i'), removedFromShop: { $ne: true } })
-        .select('_id name serialNumber type imageUrl price isActive availableSizes availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId')
+        .select('_id name serialNumber type imageUrl price isActive availableSizes availableWidths availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId')
         .limit(50)
         .lean()
-      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
+      : await Product.find({ serialNumber, removedFromShop: { $ne: true } }).select('_id name serialNumber type imageUrl price isActive availableSizes availableWidths availableClasps clasp sartlaSets fulfillmentPolicy printMethod setupIssue catalogId').limit(50).lean();
     const duplicate = candidates.find((row) => canonicalProductReference(row.serialNumber) === canonical);
 
     if (duplicate) {
@@ -559,6 +561,7 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
     for (const row of stockSizes) if (!sizes.some(size => normalizeStockSize(size) === row.sizeKey)) sizes.push(row.size);
     const options = productOptions.productOptionsFor(type, {
       availableSizes: sizes,
+      availableWidths: req.body?.availableWidths,
       availableClasps: req.body?.availableClasps
     }, await loadSizePresets());
 
@@ -592,6 +595,7 @@ router.post('/products', operationsAuth, productSetupAuth, async (req, res) => {
       stock: startingTotal,
       reservedStock: 0,
       availableSizes: options.availableSizes,
+      availableWidths: options.availableWidths,
       availableClasps: options.availableClasps,
       sartlaSets,
       catalogId: catalog?._id,
@@ -780,11 +784,12 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
     }
 
     // Sizes and clasps follow the product type (see utils/productOptions).
-    const optionFields = ['availableSizes', 'availableClasps'];
+    const optionFields = ['availableSizes', 'availableWidths', 'availableClasps'];
     if (req.body?.type !== undefined || optionFields.some((field) => Array.isArray(req.body?.[field]))) {
       const pick = (field) => (Array.isArray(req.body?.[field]) ? req.body[field] : product[field]);
       const options = productOptions.productOptionsFor(product.type, {
         availableSizes: pick('availableSizes'),
+        availableWidths: pick('availableWidths'),
         availableClasps: pick('availableClasps')
       }, await loadSizePresets());
       for (const field of optionFields) product[field] = options[field];
@@ -877,6 +882,7 @@ router.patch('/products/:id/setup', operationsAuth, productSetupAuth, async (req
         fulfillmentPolicy: product.fulfillmentPolicy,
         printMethod: product.printMethod,
         availableSizes: product.availableSizes,
+        availableWidths: product.availableWidths,
         availableClasps: product.availableClasps,
         sartlaSets: product.sartlaSets,
         catalogId: product.catalogId,
@@ -906,10 +912,12 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
     if (!product) return res.status(404).json({ message: 'Product not found' });
     const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
     const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
+    const width = productOptions.stockWidthFor(product.type, req.body.width);
     const variant = await StockVariant.create({
       canonicalReference,
       displayReference: product.serialNumber,
       clasp,
+      width,
       productIds: [product._id],
       primaryProductId: product._id,
       printMethod,
@@ -921,16 +929,17 @@ router.post('/products/:id/variants', operationsAuth, inventoryRoleAuth, async (
       notes: 'Created manually in the stock portal'
     });
     // A sartla's stock sizes carry the bracelet count (5.4 x5); its customer sizes stay the bracelet sizes.
-    if (!clasp && !Sartla.isSartlaType(product.type)) {
-      product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
+    if ((!clasp && !Sartla.isSartlaType(product.type)) || (width && !(product.availableWidths || []).includes(width))) {
+      if (!clasp && !Sartla.isSartlaType(product.type)) product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), size])]
         .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      if (width && !(product.availableWidths || []).includes(width)) product.availableWidths = [...(product.availableWidths || []).map(String), width];
       await product.save();
     }
     if (quantity) await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: 0, stockAfter: quantity, notes: `Size ${size} (${printMethod}): created in stock portal` });
     await recomputeProductStock([product._id]);
     res.status(201).json(serializeVariant(variant));
   } catch (error) {
-    if (error?.code === 11000) return res.status(409).json({ message: 'That size already exists for this printing method and clasp' });
+    if (error?.code === 11000) return res.status(409).json({ message: 'That size already exists for this printing method, clasp and width' });
     console.error('Error adding stock size:', error);
     res.status(500).json({ message: 'Failed to add stock size' });
   }
@@ -966,6 +975,8 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
       if (!product) throw Object.assign(new Error('Product not found'), { status: 404 });
       const canonicalReference = canonicalProductReference(product.serialNumber || product.canonicalReference);
       const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
+      const width = productOptions.stockWidthFor(product.type, req.body.width);
+      const widthMatch = width || { $in: ['', null] };
       // A clasp count can serve several colliers/gourmettes; only those ticked are linked.
       let linkedIds = [product._id];
       const removedIds = new Set();
@@ -980,8 +991,8 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
       for (const row of cleaned) {
         // Rows made before clasps existed have no clasp field at all; they are the product's own stock.
         const claspMatch = clasp || { $in: ['', null] };
-        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey, clasp: claspMatch }).session(session)
-          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey, clasp: claspMatch }).session(session);
+        let variant = await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey: row.sizeKey, clasp: claspMatch, width: widthMatch }).session(session)
+          || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey: row.sizeKey, clasp: claspMatch, width: widthMatch }).session(session);
         let linksChanged = false;
         const before = Number(variant?.onHandQuantity || 0);
         if (variant && row.quantity < Number(variant.reservedQuantity || 0)) {
@@ -993,6 +1004,7 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
             canonicalReference,
             displayReference: product.serialNumber,
             clasp,
+            width,
             productIds: linkedIds,
             primaryProductId: product._id,
             printMethod,
@@ -1024,12 +1036,16 @@ router.put('/products/:id/size-stock', operationsAuth, inventoryRoleAuth, async 
           quantity: row.quantity - before,
           stockBefore: before,
           stockAfter: row.quantity,
-          notes: `Size ${row.size}${clasp ? ` · clasp ${clasp}` : ''} (${printMethod}): set in stock portal`
+          notes: `Size ${row.size}${clasp ? ` · clasp ${clasp}` : ''}${width ? ` · width ${width} mm` : ''} (${printMethod}): set in stock portal`
         }], { session });
       }
       if (!clasp && !Sartla.isSartlaType(product.type)) {
         product.availableSizes = [...new Set([...(product.availableSizes || []).map(String), ...cleaned.map(row => row.size)])]
           .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+        await product.save({ session });
+      }
+      if (width && !(product.availableWidths || []).includes(width)) {
+        product.availableWidths = [...(product.availableWidths || []).map(String), width];
         await product.save({ session });
       }
       await recomputeProductStock([...linkedIds, ...removedIds], session);
@@ -1062,8 +1078,10 @@ router.post('/products/:id/add-stock', operationsAuth, inventoryRoleAuth, async 
     const clasp = productOptions.stockClaspFor(product.type, req.body.clasp);
     // Rows made before clasps existed have no clasp field at all; they are the product's own stock.
     const claspMatch = clasp || { $in: ['', null] };
-    const findVariant = async () => await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey, clasp: claspMatch })
-      || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey, clasp: claspMatch });
+    const width = productOptions.stockWidthFor(product.type, req.body.width);
+    const widthMatch = width || { $in: ['', null] };
+    const findVariant = async () => await StockVariant.findOne({ productIds: product._id, printMethod, sizeKey, clasp: claspMatch, width: widthMatch })
+      || await StockVariant.findOne({ canonicalReference, printMethod, sizeKey, clasp: claspMatch, width: widthMatch });
     let variant = await findVariant();
     let before = 0;
     if (variant) {
@@ -1074,7 +1092,7 @@ router.post('/products/:id/add-stock', operationsAuth, inventoryRoleAuth, async 
     } else {
       try {
         variant = await StockVariant.create({
-          canonicalReference, displayReference: product.serialNumber, clasp,
+          canonicalReference, displayReference: product.serialNumber, clasp, width,
           productIds: [product._id], primaryProductId: product._id, printMethod, size, sizeKey,
           onHandQuantity: quantity, reservedQuantity: 0,
           sourceSheet: printMethod === 'wax' ? 'Wax' : 'Resin', notes: 'Created in the stock portal'
@@ -1093,13 +1111,17 @@ router.post('/products/:id/add-stock', operationsAuth, inventoryRoleAuth, async 
         .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
       await product.save();
     }
+    if (width && !(product.availableWidths || []).includes(width)) {
+      product.availableWidths = [...(product.availableWidths || []).map(String), width];
+      await product.save();
+    }
     const after = Number(variant.onHandQuantity || 0);
     // Two people adding at once: take the starting count from the atomic result so the history stays in order.
     before = after - quantity;
     await recomputeProductStock(variant.productIds);
     res.json(serializeVariant(variant));
     // The history line goes after the answer.
-    await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: before, stockAfter: after, notes: `Size ${variant.size}${clasp ? ` · clasp ${clasp}` : ''} (${printMethod}): added in stock portal` });
+    await InventoryMovement.create({ productId: product._id, actorId: req.user.id, type: 'receive', quantity, stockBefore: before, stockAfter: after, notes: `Size ${variant.size}${clasp ? ` · clasp ${clasp}` : ''}${width ? ` · width ${width} mm` : ''} (${printMethod}): added in stock portal` });
   } catch (error) {
     console.error('Error adding stock:', error);
     if (!res.headersSent) res.status(500).json({ message: 'Failed to add stock' });

@@ -25,6 +25,10 @@
   // The Size Presets entry a type reads its sizes from.
   const presetKey = (type) => (normalizeType(type) === 'sartla' ? 'bracelet' : normalizeType(type));
   const typeHasSizes = (type) => !NO_SIZE_TYPES.includes(normalizeType(type));
+  const typeHasWidths = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
+  /** Width as stored on stock rows and orders: '5 mm' and '5' are the same. '' for types without widths. */
+  const cleanWidth = (value) => String(value ?? '').trim().replace(/\s*mm$/i, '').trim();
+  const stockWidthFor = (type, width) => (typeHasWidths(type) ? cleanWidth(width) : '');
   const typeHasClasps = (type) => ['gourmette', 'collier'].includes(normalizeType(type));
 
   /** True when every product of this type offers the preset sizes. */
@@ -76,13 +80,14 @@
     }
     return {
       availableSizes,
+      availableWidths: typeHasWidths(type) ? cleanList((Array.isArray(body.availableWidths) ? body.availableWidths : []).map(cleanWidth)) : [],
       availableClasps: typeHasClasps(type) ? cleanClasps(body.availableClasps) : [],
     };
   };
 
   return {
     PRESET_SIZE_TYPES, NO_SIZE_TYPES, ONE_SIZE, CLASP_TYPES, CLASP_LABELS,
-    normalizeType, presetKey, typeHasSizes, typeHasClasps, usesPresetSizes,
+    normalizeType, presetKey, typeHasSizes, typeHasWidths, cleanWidth, stockWidthFor, typeHasClasps, usesPresetSizes,
     PRODUCT_FIXED_CLASPS, stockClaspFor, cleanList, cleanClasps, presetSizes, productOptionsFor,
   };
 });

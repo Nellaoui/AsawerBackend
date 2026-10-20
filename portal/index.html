@@ -248,6 +248,12 @@
         <p id="productPreviousClasp" class="size-note" hidden></p>
         <div id="productClasps" class="chip-row"></div>
       </div>
+      <div id="productWidthsBlock" hidden>
+        <span class="field-label">Widths this product comes in (mm)</span>
+        <p class="muted" style="margin:0">Tick each width that exists for this product. Customers can only order a ticked width. If none is ticked, nobody is asked for a width.</p>
+        <div id="productWidths" class="chip-row"></div>
+        <div class="size-heading"><input id="productNewWidth" type="number" min="0" step="0.1" inputmode="decimal" placeholder="New width, e.g. 5" style="max-width:180px"><button id="addProductWidth" class="button secondary small" type="button">+ Add width</button></div>
+      </div>
       <div id="productSartlaBlock" hidden>
         <span class="field-label">Bracelets in this sartla</span>
         <p class="muted" style="margin:0">Customers choose 3, 5 or 7 bracelets. Fill the list for each one you make; an empty list is not offered. When no finished sartla is on the shelf, an order takes these bracelets instead. Count finished sartlas later with Manage sizes.</p>
@@ -291,10 +297,11 @@
         </div>
         <div id="qsPicked" hidden><p class="muted" style="margin:0">1. Product</p><div class="share-chips"><strong id="qsProductName"></strong><button id="qsChange" type="button" class="button secondary small">Change</button><button id="qsEdit" type="button" class="button secondary small">Edit sizes / catalogue</button></div></div>
         <div id="qsMethodWrap" hidden><p class="muted" style="margin:8px 0 0">Printing method</p><div id="qsMethods" class="share-chips"></div></div>
-        <div id="qsClaspWrap" hidden><p class="muted" style="margin:8px 0 0">2. Clasp</p><div id="qsClasps" class="share-chips"></div></div>
-        <div id="qsSizeWrap" hidden><p class="muted" style="margin:8px 0 0">3. Size</p><div id="qsSizes" class="share-chips"></div><input id="qsOtherSize" maxlength="80" placeholder="Other size (type it)" aria-label="Other size"></div>
+        <div id="qsClaspWrap" hidden><p id="qsClaspStep" class="muted" style="margin:8px 0 0">2. Clasp</p><div id="qsClasps" class="share-chips"></div></div>
+        <div id="qsWidthWrap" hidden><p id="qsWidthStep" class="muted" style="margin:8px 0 0">Width (mm)</p><div id="qsWidths" class="share-chips"></div></div>
+        <div id="qsSizeWrap" hidden><p id="qsSizeStep" class="muted" style="margin:8px 0 0">3. Size</p><div id="qsSizes" class="share-chips"></div><input id="qsOtherSize" maxlength="80" placeholder="Other size (type it)" aria-label="Other size"></div>
         <div id="qsQtyWrap" hidden>
-          <p class="muted" style="margin:8px 0 0">4. How many pieces to add <span id="qsNow"></span></p>
+          <p id="qsQtyStep" class="muted" style="margin:8px 0 0">4. How many pieces to add <span id="qsNow"></span></p>
           <div class="stepper"><button type="button" class="step-btn" data-step="-1" aria-label="One less">−</button><input id="qsQty" type="number" min="1" step="1" inputmode="numeric" value="1"><button type="button" class="step-btn" data-step="1" aria-label="One more">+</button></div>
         </div>
       </div>
@@ -351,6 +358,7 @@
       <div id="sizeStockError" class="error" aria-live="assertive"></div>
       <label>Production method<select id="sizeStockMethod"><option value="wax">Wax</option><option value="resin">Resin</option></select></label>
       <label id="sizeStockClaspWrap" hidden>Clasp<select id="sizeStockClasp"></select></label>
+      <label id="sizeStockWidthWrap" hidden>Width (mm)<select id="sizeStockWidth"></select></label>
       <fieldset id="claspShare" hidden style="border:1px solid var(--line,#2a3442);border-radius:10px;margin:10px 0;padding:8px 12px"><legend class="muted">This clasp stock is used by</legend><div id="claspShareList" class="share-chips"></div><input id="claspSearch" type="search" placeholder="Add a product: type its reference or name" autocomplete="off" aria-label="Add a product to this clasp stock"><div id="claspResults" class="share-chips"></div><p class="muted" style="margin:6px 0 0">A product added here will also offer this clasp to customers.</p></fieldset>
       <div class="table-wrap"><table class="variant-table"><thead><tr><th>Size</th><th>On hand</th><th>Reserved</th><th>Available</th></tr></thead><tbody id="variantsBody"></tbody></table></div>
       <p class="muted">Use − and + or type how many pieces are on the shelf for each size, then save. Use + Add size for a size that is not listed.</p>
@@ -564,7 +572,7 @@ Cancel = hidden (private)`);
       for(const size of sizes)addProductSizeRow(size,0,locked);
       if(!sizes.length)addProductSizeRow();
     }
-    // ---- Sizes, heights and clasps follow the product type ------------------
+    // ---- Sizes, widths and clasps follow the product type ------------------
     // The rules live in product-options.js, shared with the backend routes.
     const Options=window.ProductOptions;
     state.sizePresets={};
@@ -626,6 +634,25 @@ Cancel = hidden (private)`);
       $('productPreviousClasp').textContent=old?'Clasp saved before: '+(Options.CLASP_LABELS[old]||old):'';
       $('productPreviousClasp').hidden=!old;
     }
+    // Widths (mm) of a collier or gourmette: chips to tick, plus a box for a new one.
+    const SUGGESTED_WIDTHS=['3','4','5','6','7','8'];
+    function renderWidths(selected=[]){
+      const show=Options.typeHasWidths(selectedType());
+      $('productWidthsBlock').hidden=!show;
+      if(!show)return;
+      const chosen=Options.cleanList(selected).map(Options.cleanWidth).filter(Boolean);
+      const options=[...new Set([...SUGGESTED_WIDTHS,...chosen])].sort((a,b)=>parseFloat(a)-parseFloat(b));
+      $('productWidths').innerHTML=options.map(w=>chip('width',w,w+' mm',chosen.includes(w))).join('');
+    }
+    function addNewWidth(){
+      const value=Options.cleanWidth($('productNewWidth').value);
+      if(!value||!(parseFloat(value)>0))return show('productError','Type a width in mm, for example 5.');
+      show('productError');
+      renderWidths([...checkedValues('productWidths','width'),value]);
+      $('productNewWidth').value='';
+    }
+    $('addProductWidth').addEventListener('click',addNewWidth);
+    $('productNewWidth').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addNewWidth()}});
     // ---- Sartla: which bracelets make each set ----------------------------
     // The rules live in sartla.js, shared with the backend routes.
     const SartlaRules=window.Sartla;
@@ -762,6 +789,8 @@ Cancel = hidden (private)`);
       state.previousClasp=prefill.clasp||'';
       renderSizeSection();
       renderClasps(prefill.clasps||[],state.previousClasp);
+      renderWidths(prefill.widths||[]);
+      $('productNewWidth').value='';
       renderSartlaSection(prefill.sartlaSets||[]);
       $('productPrintMethod').value=prefill.fulfillmentPolicy==='stock_only'?'none':(['wax','resin'].includes(prefill.printMethod)?prefill.printMethod:'');
       updateProductMethod();
@@ -779,7 +808,7 @@ Cancel = hidden (private)`);
       state.photoUrl=/placeholder/i.test(product.imageUrl||'')?'':(product.imageUrl||'');
       openProductDialog({
         serialNumber:product.serialNumber,name:product.name,type:product.type,
-        sizes:(product.availableSizes&&product.availableSizes.length?product.availableSizes:[...new Set((product.stockVariants||[]).filter(v=>!v.clasp).map(v=>v.size))]),clasps:product.availableClasps||[],clasp:product.clasp,
+        sizes:(product.availableSizes&&product.availableSizes.length?product.availableSizes:[...new Set((product.stockVariants||[]).filter(v=>!v.clasp).map(v=>v.size))]),clasps:product.availableClasps||[],widths:product.availableWidths||[],clasp:product.clasp,
         price:product.price,printMethod:product.printMethod,sartlaSets:product.sartlaSets||[],
         fulfillmentPolicy:product.fulfillmentPolicy,catalogId:product.catalogId,
         note:product.setupIssue&&product.setupIssue.note
@@ -847,6 +876,7 @@ Cancel = hidden (private)`);
       const clasps=checkedValues('productClasps','clasp');
       renderSizeSection();
       renderClasps(clasps,state.previousClasp);
+      renderWidths(checkedValues('productWidths','width'));
       const sets=$('productSartlaBlock').hidden?[]:readSartlaSets('productSartlaSets');
       renderSartlaSection(sets);
       if(state.productMode!=='fix')suggestLinkedBracelet();
@@ -888,6 +918,7 @@ Cancel = hidden (private)`);
       // Boucle/pendantif store no size (their stock row is "One size"); preset types store the preset list.
       const sizes=mode==='none'?[]:chosenSizes.map(row=>row.size);
       const availableClasps=Options.typeHasClasps(type)?checkedValues('productClasps','clasp'):[];
+      const availableWidths=Options.typeHasWidths(type)?checkedValues('productWidths','width'):[];
       const fulfillmentPolicy=method==='none'?'stock_only':state.productOriginalPolicy==='print_on_demand'?'print_on_demand':'stock_then_print';
       // A sartla's finished stock is counted per bracelet count later, in Manage sizes.
       const sartlaSets=isSartla(type)?readSartlaSets('productSartlaSets'):undefined;
@@ -897,7 +928,7 @@ Cancel = hidden (private)`);
         if(state.productMode==='fix'){
           const serial=$('productSerial').value.trim();
           if(!serial)return show('productError','Reference cannot be empty.');
-          const body={name,type,catalogId,availableSizes:sizes,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
+          const body={name,type,catalogId,availableSizes:sizes,availableWidths,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets};
           if(serial!==state.originalSerial)body.serialNumber=serial;
           if(state.photoUrl)body.imageUrl=state.photoUrl;
           const data=await api('/inventory/products/'+state.fixingId+'/setup',{method:'PATCH',body:JSON.stringify(body)});
@@ -908,7 +939,7 @@ Cancel = hidden (private)`);
           if(!serialNumber)return show('productError','Reference and name are required.');
           let data;
           try{
-            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId&&!sartlaSets?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
+            data=await api('/inventory/products',{method:'POST',body:JSON.stringify({serialNumber,name,type,catalogId,availableSizes:sizes,availableWidths,availableClasps,price,printMethod:method||'none',fulfillmentPolicy,sartlaSets,initialStockBySize:state.canManageStock&&['wax','resin'].includes(method)&&!state.pendingOrphanId&&!sartlaSets?chosenSizes:undefined,imageUrl:state.photoUrl||undefined,note:$('productNote').value.trim()})});
           }catch(error){
             // 409: the reference is already in the catalogue, however it was
             // spelled. Switch to fixing that product rather than making a second.
@@ -1043,7 +1074,9 @@ Cancel = hidden (private)`);
       if(!clasp)return;
       claspLinks0='';
       claspLinks=new Map([[product.productId,{name:product.name,serialNumber:product.serialNumber}]]);
-      for(const v of product.stockVariants||[])if((v.clasp||'')===clasp)for(const p of v.linkedProducts||[])claspLinks.set(String(p.id),{name:p.name,serialNumber:p.serialNumber});
+      const width=$('sizeStockWidth').value;
+      // Links belong to one width: another width of the same clasp may be shared with other products.
+      for(const v of product.stockVariants||[])if((v.clasp||'')===clasp&&(v.width||'')===width)for(const p of v.linkedProducts||[])claspLinks.set(String(p.id),{name:p.name,serialNumber:p.serialNumber});
       renderClaspLinks();claspLinks0=linkKey();
     }
     async function searchClaspProducts(){
@@ -1070,8 +1103,15 @@ Cancel = hidden (private)`);
       if(ProductOptions.usesPresetSizes(type,state.sizePresets)){const list=preset();return list.length?list:own}
       return own.length?own:(type==='gourmette'?preset():[]);
     }
-    function sizeRowsFor(product,method,clasp=''){
-      const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method&&(v.clasp||'')===clasp);
+    // Widths (mm) a collier or gourmette is counted in: the ones ticked on the product, plus any that already have stock.
+    function widthChoices(product){
+      if(!ProductOptions.typeHasWidths(product.type))return[];
+      const set=new Set((product.availableWidths||[]).map(ProductOptions.cleanWidth).filter(Boolean));
+      for(const v of product.stockVariants||[])if(v.width)set.add(v.width);
+      return [...set].sort((a,b)=>parseFloat(a)-parseFloat(b));
+    }
+    function sizeRowsFor(product,method,clasp='',width=''){
+      const variants=(product.stockVariants||[]).filter(v=>v.printMethod===method&&(v.clasp||'')===clasp&&(v.width||'')===width);
       // Finished sartlas are counted per size and per number of bracelets: 5.4 x5.
       const baseSizes=customerSizes(product);
       const listed=isSartla(product.type)
@@ -1087,7 +1127,7 @@ Cancel = hidden (private)`);
       return `<tr data-size-row data-size="${escapeHtml(row.size)}" data-original="${isNew?'':row.onHand}" data-reserved="${row.reserved}"><td>${sizeCell}</td><td>${stepperHtml(`<input data-size-qty type="number" min="${row.reserved}" step="1" inputmode="numeric" value="${row.onHand}" aria-label="On hand for size ${escapeHtml(row.size||'new')}">`,`for size ${escapeHtml(row.size||'new')}`)}</td><td style="color:var(--blue);font-weight:700">${row.reserved}</td><td><span data-size-available class="stock ${row.onHand-row.reserved<=0?'out':''}">${Math.max(row.onHand-row.reserved,0)}</span></td></tr>`;
     }
     function renderSizeRows(){
-      const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value,$('sizeStockClasp').value);
+      const rows=sizeRowsFor(state.selected,$('sizeStockMethod').value,$('sizeStockClasp').value,$('sizeStockWidth').value);
       renderClaspShare();
       $('variantsBody').innerHTML=rows.map(row=>sizeRowHtml(row)).join('')||'<tr data-empty><td colspan="4" class="muted">No sizes yet. Use + Add size.</td></tr>';
       syncSteppers($('variantsBody'));
@@ -1100,6 +1140,11 @@ Cancel = hidden (private)`);
       const choices=ProductOptions.typeHasClasps(product.type)?ownClaspChoices(product):[];
       $('sizeStockClaspWrap').hidden=!choices.length;
       $('sizeStockClasp').innerHTML='<option value="">Own stock (FR, FRN or no clasp)</option>'+choices.map(c=>`<option value="${c}">${escapeHtml(claspLabel(c))}</option>`).join('');
+      const widths=widthChoices(product);
+      const oldStock=(product.stockVariants||[]).some(v=>!v.width&&Number(v.onHandQuantity)>0);
+      $('sizeStockWidthWrap').hidden=!widths.length;
+      $('sizeStockWidth').innerHTML=(oldStock||!widths.length?'<option value="">No width (old stock)</option>':'')+widths.map(w=>`<option value="${escapeHtml(w)}">${escapeHtml(w)} mm</option>`).join('');
+      if(widths.length)$('sizeStockWidth').value=widths[0];
       renderSizeRows(); $('variantsDialog').showModal();
     }
     function addVariant() {
@@ -1154,19 +1199,20 @@ Cancel = hidden (private)`);
         const selected=state.selected;
         $('variantsDialog').close();
         show('message',`Saved ${sizes.length} size(s) for ${selected.serialNumber}.`);
-        await api(`/inventory/products/${selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,clasp:$('sizeStockClasp').value,productIds:[...claspLinks.keys()],sizes})});
+        await api(`/inventory/products/${selected.productId}/size-stock`,{method:'PUT',body:JSON.stringify({printMethod:$('sizeStockMethod').value,clasp:$('sizeStockClasp').value,width:$('sizeStockWidth').value,productIds:[...claspLinks.keys()],sizes})});
         loadInventory({live:true});
       }catch(error){$('variantsDialog').showModal();show('sizeStockError',error.message)}
       finally{$('saveSizeStock').disabled=false}
     });
     $('addVariant').addEventListener('click',addVariant);
     $('sizeStockClasp').addEventListener('change',renderSizeRows);
+    $('sizeStockWidth').addEventListener('change',renderSizeRows);
     $('claspSearch').addEventListener('input',()=>{clearTimeout(claspSearchTimer);claspSearchTimer=setTimeout(searchClaspProducts,250)});
     $('claspResults').addEventListener('click',event=>{const b=event.target.closest('[data-share-add]');if(!b)return;claspLinks.set(b.dataset.shareAdd,{name:b.dataset.name,serialNumber:b.dataset.ref});renderClaspLinks();b.remove()});
     $('claspShareList').addEventListener('click',event=>{const b=event.target.closest('[data-unshare]');if(!b)return;claspLinks.delete(b.dataset.unshare);renderClaspLinks()});
     $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
     // Quick "Add stock": product -> clasp -> size -> how many. The count goes up on screen at once and the server confirms in the background.
-    const qs={filter:'',product:null,method:'',clasp:'',size:'',timer:0,searchId:0};
+    const qs={filter:'',product:null,method:'',clasp:'',width:'',size:'',timer:0,searchId:0};
     const qsStockClasp=c=>ProductOptions.PRODUCT_FIXED_CLASPS.includes(c)?'':c;
     function qsClaspChoices(p){
       if(!ProductOptions.typeHasClasps(p.type))return[];
@@ -1186,7 +1232,7 @@ Cancel = hidden (private)`);
     function qsRender(){
       const p=qsCurrent();
       $('qsStep1').hidden=!!p;$('qsPicked').hidden=!p;
-      for(const id of ['qsMethodWrap','qsClaspWrap','qsSizeWrap','qsQtyWrap'])$(id).hidden=true;
+      for(const id of ['qsMethodWrap','qsClaspWrap','qsWidthWrap','qsSizeWrap','qsQtyWrap'])$(id).hidden=true;
       if(!p){$('qsAdd').disabled=true;return}
       $('qsProductName').textContent=`${p.name} · ${p.serialNumber}`;
       const methods=qsMethods(p);
@@ -1200,7 +1246,20 @@ Cancel = hidden (private)`);
       // With clasps ticked on the product, one has to be chosen before sizes show.
       const claspReady=!claspChoices.length||qs.clasp;
       if(!claspReady){$('qsAdd').disabled=true;return}
-      const rows=sizeRowsFor(p,qs.method,qsStockClasp(qs.clasp));
+      // A collier or gourmette with widths is counted per width: pick it before the sizes show.
+      const widths=widthChoices(p);
+      if(!widths.includes(qs.width))qs.width='';
+      $('qsWidthWrap').hidden=!widths.length;
+      $('qsWidths').innerHTML=widths.map(w=>qsChip('data-qs-width',w,escapeHtml(w)+' mm',w===qs.width)).join('');
+      // Number the steps that are showing.
+      let step=2;
+      const stepLabel=(id,text)=>{$(id).firstChild.nodeValue=(step++)+'. '+text};
+      if(claspChoices.length)stepLabel('qsClaspStep','Clasp');
+      if(widths.length)stepLabel('qsWidthStep','Width (mm)');
+      stepLabel('qsSizeStep','Size');
+      $('qsQtyStep').firstChild.nodeValue=step+'. How many pieces to add ';
+      if(widths.length&&!qs.width){$('qsAdd').disabled=true;$('qsAdd').textContent='Add';return}
+      const rows=sizeRowsFor(p,qs.method,qsStockClasp(qs.clasp),qs.width);
       $('qsSizeWrap').hidden=false;
       $('qsSizes').innerHTML=rows.map(r=>qsChip('data-qs-size',r.size,`${escapeHtml(r.size)} <span class="muted">· ${r.onHand}</span>`,sizeKeyOf(r.size)===sizeKeyOf(qs.size))).join('')||'<span class="muted">No sizes yet. Type one below.</span>';
       const size=qsSize();
@@ -1212,8 +1271,8 @@ Cancel = hidden (private)`);
       $('qsAdd').textContent=size?`Add ${Math.max(Number($('qsQty').value)||0,0)} → ${(row?row.onHand:0)+(Number($('qsQty').value)||0)} on the shelf`:'Add';
     }
     const qsSize=()=>$('qsOtherSize').value.trim()||qs.size;
-    function qsReset(){qs.product=null;qs.method='';qs.clasp='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';$('qsSearch').value='';$('qsResults').innerHTML='';show('qsError');show('qsOk');qsRender()}
-    function qsPick(p){qs.product=p;qs.clasp='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';qsRender()}
+    function qsReset(){qs.product=null;qs.method='';qs.clasp='';qs.width='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';$('qsSearch').value='';$('qsResults').innerHTML='';show('qsError');show('qsOk');qsRender()}
+    function qsPick(p){qs.product=p;qs.clasp='';qs.width='';qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';qsRender()}
     async function qsSearch(){
       const text=$('qsSearch').value.trim(),id=++qs.searchId;
       if(!text){$('qsResults').innerHTML='';return}
@@ -1234,27 +1293,28 @@ Cancel = hidden (private)`);
     $('qsResults').addEventListener('click',event=>{const b=event.target.closest('[data-qs-product]');if(!b)return;const p=(qs.found||[]).find(x=>x.productId===b.dataset.qsProduct);if(p)qsPick(p)});
     $('qsMethods').addEventListener('click',event=>{const b=event.target.closest('[data-qs-method]');if(!b)return;qs.method=b.dataset.qsMethod;qs.size='';$('qsOtherSize').value='';qsRender()});
     $('qsClasps').addEventListener('click',event=>{const b=event.target.closest('[data-qs-clasp]');if(!b)return;qs.clasp=b.dataset.qsClasp;qs.size='';$('qsOtherSize').value='';qsRender()});
+    $('qsWidths').addEventListener('click',event=>{const b=event.target.closest('[data-qs-width]');if(!b)return;qs.width=b.dataset.qsWidth;qs.size='';$('qsOtherSize').value='';qsRender()});
     $('qsSizes').addEventListener('click',event=>{const b=event.target.closest('[data-qs-size]');if(!b)return;qs.size=b.dataset.qsSize;$('qsOtherSize').value='';qsRender()});
     $('qsOtherSize').addEventListener('input',()=>{if($('qsOtherSize').value.trim())qs.size='';qsRender()});
     $('qsQty').addEventListener('input',qsRender);
     $('qsQtyWrap').addEventListener('click',event=>{if(event.target.closest('.step-btn'))setTimeout(qsRender,0)});
     $('quickStockForm').addEventListener('submit',event=>{
       event.preventDefault();
-      const p=qsCurrent(),size=qsSize(),quantity=Number($('qsQty').value),clasp=qsStockClasp(qs.clasp),method=qs.method;
+      const p=qsCurrent(),size=qsSize(),quantity=Number($('qsQty').value),clasp=qsStockClasp(qs.clasp),width=qs.width,method=qs.method;
       if(!p||!size)return;
       if(!Number.isSafeInteger(quantity)||quantity<1)return show('qsError','Type how many pieces to add (1 or more).');
       show('qsError');
       // Instant: raise the counts now; put them back with the server's message if it refuses.
       p.stockVariants=p.stockVariants||[];
-      let v=p.stockVariants.find(x=>x.printMethod===method&&(x.clasp||'')===clasp&&sizeKeyOf(x.size)===sizeKeyOf(size));
+      let v=p.stockVariants.find(x=>x.printMethod===method&&(x.clasp||'')===clasp&&(x.width||'')===width&&sizeKeyOf(x.size)===sizeKeyOf(size));
       const created=!v;
-      if(created){v={size,printMethod:method,clasp,onHandQuantity:0,reservedQuantity:0};p.stockVariants.push(v)}
+      if(created){v={size,printMethod:method,clasp,width,onHandQuantity:0,reservedQuantity:0};p.stockVariants.push(v)}
       v.onHandQuantity=Number(v.onHandQuantity||0)+quantity;p.stock=Number(p.stock||0)+quantity;
       renderProducts();
-      const label=`${p.serialNumber}${qs.clasp?' · '+claspLabel(qs.clasp):''} · ${size}`;
+      const label=`${p.serialNumber}${qs.clasp?' · '+claspLabel(qs.clasp):''}${width?' · '+width+' mm':''} · ${size}`;
       show('qsOk',`Added ${quantity} · ${label} · now ${v.onHandQuantity} on the shelf`);
       qs.size='';$('qsOtherSize').value='';$('qsQty').value='1';qsRender();
-      api(`/inventory/products/${p.productId}/add-stock`,{method:'POST',body:JSON.stringify({printMethod:method,clasp,size,quantity})})
+      api(`/inventory/products/${p.productId}/add-stock`,{method:'POST',body:JSON.stringify({printMethod:method,clasp,width,size,quantity})})
         .then(()=>loadInventory({live:true}))
         .catch(error=>{
           v.onHandQuantity-=quantity;p.stock-=quantity;

@@ -683,6 +683,7 @@ const attachOrderLines = async (cases) => {
         reference: row.productId?.serialNumber || '',
         imageUrl: row.productId?.imageUrl || '',
         size: orderItems.get(String(row.orderItemId))?.size || '',
+        width: orderItems.get(String(row.orderItemId))?.width || '',
         quantity: orderItems.get(String(row.orderItemId))?.quantity || row.quantity || 1,
         step: lineStepFor(row.status),
         detail: lineDetailFor(row),

@@ -125,6 +125,12 @@ const productSchema = new mongoose.Schema({
     type: String,
     trim: true
   }],
+  // Widths (mm) a customer may choose for a gourmette or collier. Empty means
+  // the product has no width option.
+  availableWidths: [{
+    type: String,
+    trim: true
+  }],
   clasp: {
     type: String,
     trim: true,

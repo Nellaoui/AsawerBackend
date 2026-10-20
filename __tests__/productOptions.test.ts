@@ -27,14 +27,14 @@ describe('productOptionsFor', () => {
 
   it('no longer has any height option', () => {
     const col = options.productOptionsFor('Collier', { availableHeights: ['6', '4'], availableClasps: ['FR'] });
-    expect(col).toEqual({ availableSizes: [], availableClasps: ['FR'] });
+    expect(col).toEqual({ availableSizes: [], availableWidths: [], availableClasps: ['FR'] });
     expect(options.presetHeights).toBeUndefined();
     expect(options.typeHasHeights).toBeUndefined();
   });
 
   it('keeps clasps only for gourmette and collier', () => {
     const gou = options.productOptionsFor('Gourmette', { availableSizes: ['19', '18'], availableClasps: ['SIMPLE', 'FR', 'XX'] }, presets);
-    expect(gou).toEqual({ availableSizes: ['18', '19'], availableClasps: ['FR', 'SIMPLE'] });
+    expect(gou).toEqual({ availableSizes: ['18', '19'], availableWidths: [], availableClasps: ['FR', 'SIMPLE'] });
     const bague = options.productOptionsFor('bague', { availableClasps: ['FR'] }, presets);
     expect(bague.availableClasps).toEqual([]);
     expect(options.productOptionsFor('collier', { availableClasps: ['FR'] }).availableClasps).toEqual(['FR']);
@@ -67,7 +67,27 @@ describe('StockVariant clasp', () => {
   it('allows one row per clasp for the same size', () => {
     const StockVariant = require('../models/StockVariant');
     const unique = StockVariant.schema.indexes().find(([, o]: any) => o.unique);
-    expect(unique[0]).toEqual({ canonicalReference: 1, printMethod: 1, sizeKey: 1, clasp: 1 });
+    expect(unique[0]).toEqual({ canonicalReference: 1, printMethod: 1, sizeKey: 1, clasp: 1, width: 1 });
+    expect(StockVariant.schema.path('width').options.default).toBe('');
     expect(StockVariant.schema.path('clasp').options.default).toBe('');
+  });
+});
+
+describe('widths', () => {
+  it('keeps widths only for collier and gourmette, as plain mm numbers', () => {
+    const gou = options.productOptionsFor('Gourmette', { availableSizes: ['18'], availableWidths: ['5 mm', '3', '5', ''] }, presets);
+    expect(gou.availableWidths).toEqual(['3', '5']);
+    expect(options.productOptionsFor('collier', { availableWidths: ['4'] }, presets).availableWidths).toEqual(['4']);
+    expect(options.productOptionsFor('bague', { availableWidths: ['4'] }, presets).availableWidths).toEqual([]);
+  });
+
+  it('no widths ticked means the product has none', () => {
+    expect(options.productOptionsFor('gourmette', { availableSizes: ['18'] }, presets).availableWidths).toEqual([]);
+  });
+
+  it('stock width is empty for types without widths', () => {
+    expect(options.stockWidthFor('gourmette', ' 5 mm ')).toBe('5');
+    expect(options.stockWidthFor('bague', '5')).toBe('');
+    expect(options.stockWidthFor('collier', undefined)).toBe('');
   });
 });

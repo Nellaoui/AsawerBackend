@@ -88,7 +88,7 @@ router.put('/:id', adminAuth, async (req, res) => {
   try {
     const { 
       name, description, price, image, imageUrl, category, accessibleTo, isActive,
-      weight, showWeight, type, size, clasp, serialNumber, relatedProducts, availableSizes,
+      weight, showWeight, type, size, clasp, serialNumber, relatedProducts, availableSizes, availableWidths,
       availableClasps
     } = req.body;
 
@@ -113,6 +113,7 @@ router.put('/:id', adminAuth, async (req, res) => {
     if (serialNumber) product.serialNumber = serialNumber;
     if (relatedProducts !== undefined) product.relatedProducts = relatedProducts;
     if (availableSizes !== undefined) product.availableSizes = availableSizes;
+    if (availableWidths !== undefined) product.availableWidths = availableWidths;
     if (availableClasps !== undefined) product.availableClasps = availableClasps;
     if (!Sartla.isSartlaType(product.type)) {
       if ((product.sartlaSets || []).length) product.sartlaSets = [];

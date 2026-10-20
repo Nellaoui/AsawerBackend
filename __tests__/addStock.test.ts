@@ -58,3 +58,22 @@ test('refuses a missing size', async () => {
   await handler(request({ printMethod: 'wax', size: '', quantity: 1 }), response);
   expect(response.status).toHaveBeenCalledWith(400);
 });
+
+test('a width gets its own row and is added to the product widths', async () => {
+  const save = jest.fn();
+  Product.findById.mockResolvedValue({ _id: ID, serialNumber: 'GOU 191 S', type: 'Gourmette', availableSizes: ['18'], availableWidths: ['3'], save });
+  StockVariant.findOne.mockResolvedValue(null);
+  StockVariant.create.mockResolvedValue({ _id: 'v3', size: '18', clasp: '', width: '5', printMethod: 'wax', onHandQuantity: 4, productIds: [ID] });
+  await handler(request({ printMethod: 'wax', width: '5 mm', size: '18', quantity: 4 }), response);
+  expect(StockVariant.findOne).toHaveBeenCalledWith(expect.objectContaining({ width: '5' }));
+  expect(StockVariant.create).toHaveBeenCalledWith(expect.objectContaining({ width: '5', onHandQuantity: 4 }));
+  expect(save).toHaveBeenCalled();
+});
+
+test('a product type without widths ignores a width', async () => {
+  Product.findById.mockResolvedValue({ _id: ID, serialNumber: 'BAG 1', type: 'Bague', availableSizes: ['52'], save: jest.fn() });
+  StockVariant.findOne.mockResolvedValue(null);
+  StockVariant.create.mockResolvedValue({ _id: 'v4', size: '52', clasp: '', width: '', printMethod: 'wax', onHandQuantity: 1, productIds: [ID] });
+  await handler(request({ printMethod: 'wax', width: '5', size: '52', quantity: 1 }), response);
+  expect(StockVariant.create).toHaveBeenCalledWith(expect.objectContaining({ width: '' }));
+});
