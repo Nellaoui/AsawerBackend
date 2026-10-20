@@ -808,9 +808,13 @@ router.get('/cases', operationsAuth, async (req, res) => {
       const methodOrderIds = await Order.find({
         $and: [{ 'items.productionMethod': method }, { 'items.productionMethod': { $ne: otherMethod } }]
       }).distinct('_id');
+      // Stock check tasks are saved as 'undecided' until something must be printed,
+      // so they follow the product's own print method.
+      const methodProductIds = await Product.find({ printMethod: method }).distinct('_id');
       filter.$and = [...(filter.$and || []), {
         $or: [
           { productionMethod: method },
+          ...(methodProductIds.length ? [{ productionMethod: 'undecided', requestType: { $ne: 'pack_order' }, productId: { $in: methodProductIds } }] : []),
           ...(methodOrderIds.length ? [{ requestType: 'pack_order', orderId: { $in: methodOrderIds } }] : [])
         ]
       }];

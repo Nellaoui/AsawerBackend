@@ -2,6 +2,7 @@ export {};
 
 const sift = require('sift').default || require('sift');
 const Order = require('../models/Order');
+const Product = require('../models/Product');
 const WorkflowCase = require('../models/WorkflowCase');
 const router = require('../routes/workflow');
 
@@ -21,7 +22,18 @@ const pack = (orderId: string) => ({
   productionMethod: 'undecided', status: 'packing', taskKind: 'order', archivedAt: null, createdAt,
   customer: { name: 'Client' }
 });
+const products = [
+  { _id: 'wax-product', printMethod: 'wax' },
+  { _id: 'resin-product', printMethod: 'resin' }
+];
+const stockCheck = (id: string, productId: string) => ({
+  _id: id, orderId: 'o-' + id, productId, requestType: 'stock_check', requestedName: id,
+  productionMethod: 'undecided', status: 'stock_picking', taskKind: 'order', archivedAt: null, createdAt,
+  customer: { name: 'Client' }
+});
 const cases = [
+  stockCheck('stock-wax', 'wax-product'),
+  stockCheck('stock-resin', 'resin-product'),
   pack('wax-order'),
   pack('resin-order'),
   pack('mixed-order'),
@@ -49,6 +61,7 @@ describe('print method filter', () => {
   beforeEach(() => {
     jest.spyOn(WorkflowCase, 'find').mockImplementation((filter: any) => findQuery(cases.filter(sift(filter))));
     jest.spyOn(WorkflowCase, 'countDocuments').mockImplementation(async (filter: any) => cases.filter(sift(filter)).length);
+    jest.spyOn(Product, 'find').mockImplementation((filter: any) => findQuery(products.filter(sift(filter))));
     jest.spyOn(Order, 'find').mockImplementation((filter: any) => findQuery(orders.filter(sift(filter))));
   });
 
@@ -64,6 +77,11 @@ describe('print method filter', () => {
 
   test('Wax and resin shows every packing task', async () => {
     expect(await list({ stage: 'packing' })).toEqual(['pack-wax-order', 'pack-resin-order', 'pack-mixed-order']);
+  });
+
+  test('stock check tasks follow the product print method', async () => {
+    expect(await list({ stage: 'stock_check', method: 'wax' })).toEqual(['stock-wax']);
+    expect(await list({ stage: 'stock_check', method: 'resin' })).toEqual(['stock-resin']);
   });
 
   test('product tasks still match on their own method', async () => {

@@ -152,6 +152,7 @@
         <form id="searchForm" class="toolbar">
           <input id="search" type="search" aria-label="Search products by name, reference, type, catalogue or location" placeholder="Search product, reference, type, catalogue or location">
           <label class="check"><input id="lowStock" type="checkbox"> Low stock only</label>
+          <div id="stockMethodChips" class="share-chips" role="group" aria-label="Print method"><span class="muted">Print method</span><button type="button" class="button small" data-stock-method="" aria-pressed="true">All</button><button type="button" class="button secondary small" data-stock-method="wax" aria-pressed="false">Wax</button><button type="button" class="button secondary small" data-stock-method="resin" aria-pressed="false">Resin</button></div>
           <button id="refresh" class="button secondary" type="button">Refresh</button>
         </form>
         <!-- One list at a time: the stock list and the problem list used to sit
@@ -285,6 +286,7 @@
         <div id="qsStep1">
           <p class="muted" style="margin:0">1. Product</p>
           <input id="qsSearch" type="search" placeholder="Type the reference or name" autocomplete="off" aria-label="Search the product to add stock to">
+          <div id="qsFilter" class="share-chips" role="group" aria-label="Print method"><button type="button" class="button small" data-qs-filter="" aria-pressed="true">All</button><button type="button" class="button secondary small" data-qs-filter="wax" aria-pressed="false">Wax</button><button type="button" class="button secondary small" data-qs-filter="resin" aria-pressed="false">Resin</button></div>
           <div id="qsResults" class="share-chips"></div>
         </div>
         <div id="qsPicked" hidden><p class="muted" style="margin:0">1. Product</p><div class="share-chips"><strong id="qsProductName"></strong><button id="qsChange" type="button" class="button secondary small">Change</button><button id="qsEdit" type="button" class="button secondary small">Edit sizes / catalogue</button></div></div>
@@ -427,13 +429,14 @@
       const params=new URLSearchParams({ page:String(state.page), limit:'25' });
       if($('search').value.trim()) params.set('search',$('search').value.trim());
       if($('lowStock').checked) params.set('lowStock','true');
+      if(state.stockMethod) params.set('method',state.stockMethod);
       try {
         const [inventory,movements]=await Promise.all([api(`/inventory?${params}`),live?Promise.resolve(null):api('/inventory/movements?limit=30')]);
         if(requestId!==inventoryRequestId)return;
         state.products=inventory.products; state.pages=inventory.pagination.pages; state.total=inventory.pagination.total; $('tabProductsCount').textContent=String(state.total);
         renderSummary(inventory.summary); renderProducts(); if(movements)renderHistory(movements);
-        $('inventorySync').textContent='Updated '+new Date().toLocaleTimeString('en-GB',{timeZone:'Africa/Casablanca',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
-      } catch(error) { if(requestId!==inventoryRequestId)return; if(/token|authorization|sign in/i.test(error.message)) return signOut(error.message); show('workspaceError',error.message); $('inventorySync').textContent='Sync paused'; }
+        $('inventorySync').textContent='Updated '+new Date().toLocaleTimeString('en-GB',{timeZone:'Africa/Casablanca',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});return true;
+      } catch(error) { if(requestId!==inventoryRequestId)return; if(/token|authorization|sign in/i.test(error.message)) return signOut(error.message); show('workspaceError',error.message); $('inventorySync').textContent='Sync paused'; return false; }
       finally { if(requestId===inventoryRequestId)$('refresh').disabled=false; }
     }
     // One search box serves both tabs, so it refreshes both lists.
@@ -494,7 +497,7 @@ Cancel = hidden (private)`);
         if(selected&&focus)button.focus();
       }
       // Low stock is a stock filter; it means nothing on the problem list.
-      $('lowStock').closest('label').hidden=issues;
+      $('lowStock').closest('label').hidden=issues;$('stockMethodChips').hidden=issues;
       try{localStorage.setItem('portalProductTab',state.tab)}catch{}
     }
     document.querySelectorAll('[data-tab]').forEach(button=>{
@@ -1110,6 +1113,10 @@ Cancel = hidden (private)`);
     $('logout').addEventListener('click',()=>signOut());
     $('search').addEventListener('input',event=>{if(!event.isComposing)queueInventorySearch()});$('search').addEventListener('compositionend',queueInventorySearch);
     $('searchForm').addEventListener('submit',event=>{event.preventDefault();clearTimeout(inventorySearchTimer);state.page=1;loadInventory({live:true});});
+    // Wax / Resin / All: the list on screen narrows at once, then the server sends the full page quietly.
+    const productHasMethod=(p,m)=>!m||p.printMethod===m||(p.stockVariants||[]).some(v=>v.printMethod===m);
+    function setChipPress(box,attr,value){box.querySelectorAll('['+attr+']').forEach(b=>{const on=b.getAttribute(attr)===value;b.classList.toggle('secondary',!on);b.setAttribute('aria-pressed',on?'true':'false')})}
+    $('stockMethodChips').addEventListener('click',event=>{const b=event.target.closest('[data-stock-method]');if(!b)return;const m=b.dataset.stockMethod;if(m===(state.stockMethod||''))return;const before={method:state.stockMethod||'',products:state.products};state.stockMethod=m;state.page=1;setChipPress($('stockMethodChips'),'data-stock-method',m);state.products=before.products.filter(p=>productHasMethod(p,m));renderProducts();loadInventory({live:true}).then(ok=>{if(ok===false&&state.stockMethod===m){state.stockMethod=before.method;setChipPress($('stockMethodChips'),'data-stock-method',before.method);state.products=before.products;renderProducts()}});});
     $('lowStock').addEventListener('change',()=>{state.page=1;loadInventory();}); $('refresh').addEventListener('click',loadInventory);
     $('previous').addEventListener('click',()=>{if(state.page>1){state.page--;loadInventory();}}); $('next').addEventListener('click',()=>{if(state.page<state.pages){state.page++;loadInventory();}});
     $('products').addEventListener('click',event=>{const button=event.target.closest('button[data-id]');if(!button)return;const product=state.products.find(p=>p.productId===button.dataset.id);if(!product)return;if(button.dataset.mode==='sizes')openVariants(product);else if(button.dataset.mode==='sartla')openSartla(product);else if(button.dataset.mode==='production')openProduction(product);else if(button.dataset.mode==='damage')openDamage(product);else if(button.dataset.mode==='edit')openFixDialogFor({...product,_id:product.productId,catalogId:product.catalogId&&product.catalogId._id||product.catalogId});else if(button.dataset.mode==='delete')deleteProduct(product);else if(button.dataset.mode==='shop')toggleShop(product);else openStock(product,button.dataset.mode);});
@@ -1159,7 +1166,7 @@ Cancel = hidden (private)`);
     $('claspShareList').addEventListener('click',event=>{const b=event.target.closest('[data-unshare]');if(!b)return;claspLinks.delete(b.dataset.unshare);renderClaspLinks()});
     $('closeVariants').addEventListener('click',()=>$('variantsDialog').close());
     // Quick "Add stock": product -> clasp -> size -> how many. The count goes up on screen at once and the server confirms in the background.
-    const qs={product:null,method:'',clasp:'',size:'',timer:0,searchId:0};
+    const qs={filter:'',product:null,method:'',clasp:'',size:'',timer:0,searchId:0};
     const qsStockClasp=c=>ProductOptions.PRODUCT_FIXED_CLASPS.includes(c)?'':c;
     function qsClaspChoices(p){
       if(!ProductOptions.typeHasClasps(p.type))return[];
@@ -1211,7 +1218,7 @@ Cancel = hidden (private)`);
       const text=$('qsSearch').value.trim(),id=++qs.searchId;
       if(!text){$('qsResults').innerHTML='';return}
       try{
-        const data=await api(`/inventory?${new URLSearchParams({search:text,limit:'10'})}`);
+        const data=await api(`/inventory?${new URLSearchParams({search:text,limit:'10',...(qs.filter?{method:qs.filter}:{})})}`);
         if(id!==qs.searchId)return;
         qs.found=data.products;
         $('qsResults').innerHTML=data.products.map(p=>`<button type="button" class="button secondary small" data-qs-product="${escapeHtml(p.productId)}">${escapeHtml(p.name)} · ${escapeHtml(p.serialNumber)}</button>`).join('')||'<span class="muted">No product found.</span>';
@@ -1222,6 +1229,7 @@ Cancel = hidden (private)`);
     $('qsChange').addEventListener('click',()=>{qsReset();$('qsSearch').focus()});
     // Shortcut to the same Edit / catalogue window as the product list, to tick sizes or clasps.
     $('qsEdit').addEventListener('click',()=>{const p=qsCurrent();if(!p)return;$('quickStockDialog').close();openFixDialogFor({...p,_id:p.productId,catalogId:p.catalogId&&p.catalogId._id||p.catalogId})});
+    $('qsFilter').addEventListener('click',event=>{const b=event.target.closest('[data-qs-filter]');if(!b)return;qs.filter=b.dataset.qsFilter;setChipPress($('qsFilter'),'data-qs-filter',qs.filter);qsSearch()});
     $('qsSearch').addEventListener('input',()=>{clearTimeout(qs.timer);qs.timer=setTimeout(qsSearch,250)});
     $('qsResults').addEventListener('click',event=>{const b=event.target.closest('[data-qs-product]');if(!b)return;const p=(qs.found||[]).find(x=>x.productId===b.dataset.qsProduct);if(p)qsPick(p)});
     $('qsMethods').addEventListener('click',event=>{const b=event.target.closest('[data-qs-method]');if(!b)return;qs.method=b.dataset.qsMethod;qs.size='';$('qsOtherSize').value='';qsRender()});

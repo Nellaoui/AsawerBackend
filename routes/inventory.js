@@ -145,6 +145,7 @@ router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
     const search = String(req.query.search || '').trim();
     const lowStockOnly = String(req.query.lowStock || '') === 'true';
     const filter = {};
+    const method = String(req.query.method || '');
 
     if (search) {
       filter.$or = await productSearchConditions(search, [{ stockLocation: new RegExp(escapeRegExp(search), 'i') }]);
@@ -157,6 +158,12 @@ router.get('/', operationsAuth, inventoryRoleAuth, async (req, res) => {
           { $ifNull: ['$lowStockThreshold', 2] }
         ]
       };
+    }
+
+    if (['wax', 'resin'].includes(method)) {
+      // Wax or resin: the product is set to that method, or it holds stock sizes of that method.
+      const stockProductIds = await StockVariant.distinct('productIds', { printMethod: method });
+      filter.$and = [...(filter.$and || []), { $or: [{ printMethod: method }, { _id: { $in: stockProductIds } }] }];
     }
 
     const [products, total, totals] = await Promise.all([
