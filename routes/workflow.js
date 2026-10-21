@@ -2684,16 +2684,6 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       }
     }
 
-    // Packing a product needs its weight typed first (see /orders/:orderId/pack-weight); the whole-order pack task is exempt.
-    if (!adminMove && workflowCase.status === 'packing' && nextStatus === 'completed' && workflowCase.orderId
-      && !['pack_order', 'order_validation'].includes(workflowCase.requestType)) {
-      const order = await Order.findById(workflowCase.orderId).select('packedWeights').lean();
-      const key = packItemKey(workflowCase);
-      if (!(order?.packedWeights || []).some(entry => (entry.itemKeys || []).includes(key))) {
-        return res.status(409).json({ message: `Type the weight in grams before Packing done for ${workflowCase.requestedName}.` });
-      }
-    }
-
     const now = new Date();
     const previousStatus = workflowCase.status;
     const previousMachineCode = workflowCase.print?.machineId || '';

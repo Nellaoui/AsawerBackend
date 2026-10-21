@@ -57,12 +57,18 @@ describe('weight typed at Packing', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
-  test('Packing done is refused until the weight is saved', async () => {
-    jest.spyOn(WorkflowCase, 'findById').mockResolvedValue({ ...packingCase('507f1f77bcf86cd799439021', 'a'), requestType: 'print_required', assignedTeam: 'packing', save: jest.fn() } as any);
-    jest.spyOn(Order, 'findById').mockReturnValue(query({ packedWeights: [{ itemKeys: ['other'], weightGrams: 3 }] }));
+  test('Packing done does not ask for a weight', async () => {
+    const save = jest.fn();
+    const workflowCase = { ...packingCase('507f1f77bcf86cd799439021', 'a'), requestType: 'print_required', assignedTeam: 'packing', history: [], save };
+    jest.spyOn(WorkflowCase, 'findById').mockReturnValue(query(workflowCase));
+    // Another product of the order is still printing, so the order refresh after the move stays simple.
+    jest.spyOn(WorkflowCase, 'find').mockReturnValue(query([{ status: 'printing', isBlocked: false }]));
+    jest.spyOn(Order, 'findById').mockReturnValue(query({ packedWeights: [], items: [{}, {}] }));
+    jest.spyOn(Order, 'updateOne').mockResolvedValue({} as any);
     const res = response();
     await transition({ params: { id: '507f1f77bcf86cd799439021' }, body: { status: 'completed' }, user: packer, app: {} }, res);
-    expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json.mock.calls[0][0].message).toMatch(/weight/i);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalled();
+    expect(workflowCase.status).toBe('completed');
   });
 });
