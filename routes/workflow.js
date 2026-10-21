@@ -44,6 +44,7 @@ const { effectiveDeadline, lateMinutes: stepLateMinutes, stepTimesSnapshot, MIN_
 const { stepMinutes } = require('../utils/workingTime');
 const { buildOverview } = require('../utils/bossOverview');
 
+const { ensurePickupCode } = require('../utils/pickupCode');
 const router = express.Router();
 
 const MANUAL_CASE_TYPES = ['general_task', 'product_missing', 'model_file_missing', 'dimensions_missing', 'customization'];
@@ -340,13 +341,14 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
   // Packing was the last step: tell the customer on their phone. The dedupe
   // key keeps it to one message per order however often this runs.
   if (fulfillmentState === 'ready') {
+    await ensurePickupCode(orderId).catch(error => console.error('Pickup code failed:', error.message));
     const order = await Order.findById(orderId).select('userId orderNumber').lean();
     if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId))) {
       const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
       safelyNotify(() => notifyUser(app, {
         userId: order.userId,
         title: '🎉 Your order is ready',
-        body: `Order ${label}: all your products are done and ready for you.`,
+        body: `Order ${label}: all your products are done and ready for you. Show the code in the app when you collect it.`,
         type: 'order_ready',
         data: { type: 'order', orderId: String(orderId), status: 'ready' },
         dedupeKey: `order-ready-${orderId}`

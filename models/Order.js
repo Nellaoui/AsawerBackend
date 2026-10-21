@@ -158,6 +158,11 @@ const orderSchema = new mongoose.Schema({
     enum: ['clear', 'blocked', 'in_progress', 'ready'],
     default: 'clear'
   },
+  // Four digits the customer shows at the counter once the order is ready.
+  pickupCode: { type: String, default: null },
+  pickedUpAt: { type: Date, default: null },
+  pickedUpBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  pickedUpByName: { type: String, default: '' },
   validationStatus: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],

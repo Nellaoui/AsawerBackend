@@ -193,6 +193,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/products', broadcastCatalogsOnWrite, require('./routes/products'));
 app.use('/api/catalogs', broadcastCatalogsOnWrite, require('./routes/catalogs'));
 app.use('/api/orders', broadcastOnWrite('orders'), require('./routes/orders'));
+app.use('/api/pickups', broadcastOnWrite('orders'), require('./routes/pickups'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/workflow', broadcastOnWrite('workflow'), require('./routes/workflow'));
 app.use('/api/machines', require('./routes/machines'));

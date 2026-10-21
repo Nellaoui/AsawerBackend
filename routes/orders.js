@@ -13,6 +13,7 @@ const User = require('../models/User');
 const Wishlist = require('../models/Wishlist');
 const { auth, operationsAuth } = require('../middlewares/auth');
 const { sendPushToUser } = require('../utils/pushNotification');
+const { ensurePickupCode } = require('../utils/pickupCode');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
 const { teamForStatus, targetMinutesForTeam } = require('../utils/workflowRules');
 const { planPrintTask, planStockTask } = require('../utils/orderWorkflowRoute');
@@ -1608,8 +1609,18 @@ router.get('/my', auth, async (req, res) => {
     if (limit) options.limit = parseInt(limit);
 
     const orders = await Order.findByUser(req.user.id, options);
+    // Orders that became ready before pickup codes existed get theirs now.
+    const out = [];
+    for (const order of orders) {
+      const plain = typeof order.toObject === 'function' ? order.toObject() : order;
+      if (plain.fulfillmentState === 'ready' && !plain.pickedUpAt && !plain.pickupCode) {
+        plain.pickupCode = await ensurePickupCode(plain._id);
+        order.pickupCode = plain.pickupCode;
+      }
+      out.push(plain);
+    }
     const progress = await progressForOrders(WorkflowCase, orders);
-    res.json(orders.map(order => ({ ...withoutSartlaParts(order), progress: progress.get(String(order._id)) })));
+    res.json(out.map(order => ({ ...withoutSartlaParts(order), progress: progress.get(String(order._id)) })));
   } catch (error) {
     console.error('Error fetching user orders:', error);
     res.status(500).json({ message: 'Server error' });
@@ -1683,6 +1694,9 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     // Ensure size is properly set in the response
+    if (order.fulfillmentState === 'ready' && !order.pickedUpAt && !order.pickupCode) {
+      order.pickupCode = await ensurePickupCode(order._id);
+    }
     const orderWithSizes = {
       ...order.toObject(),
       items: order.items.map(item => ({

@@ -14,7 +14,7 @@ const customerProgress = (order, cases = []) => {
   const base = { stage: 'confirmed', done: 0, total: visibleItems.length };
   if (order.status === 'cancelled') return { ...base, stage: 'cancelled' };
   if (order.status === 'pending') return { ...base, stage: 'pending' };
-  if (['shipped', 'delivered'].includes(order.status)) return { ...base, stage: 'picked_up', done: base.total };
+  if (order.pickedUpAt || ['shipped', 'delivered'].includes(order.status)) return { ...base, stage: 'picked_up', done: base.total };
 
   const groups = new Map();
   for (const item of cases) {

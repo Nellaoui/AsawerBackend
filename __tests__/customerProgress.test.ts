@@ -26,6 +26,7 @@ describe('customerProgress', () => {
     expect(customerProgress(order(), [task('a', 'cancelled'), task('b', 'packing')]).stage).toBe('packing');
     expect(customerProgress(order({ status: 'cancelled' }), []).stage).toBe('cancelled');
     expect(customerProgress(order({ status: 'delivered' }), []).stage).toBe('picked_up');
+    expect(customerProgress(order({ fulfillmentState: 'ready', pickedUpAt: new Date() }), []).stage).toBe('picked_up');
   });
   it('folds hidden sartla bracelets into their parent product', () => {
     const o = order({ items: [{ _id: 'p' }, { _id: 'b1', partOfItemId: 'p' }, { _id: 'b2', partOfItemId: 'p' }] });
