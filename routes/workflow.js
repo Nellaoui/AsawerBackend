@@ -325,6 +325,8 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     const done = [...itemCases.values()].filter(group =>
       group.every(item => item.status === 'completed') && group.some(item => (item.history || []).some(entry => entry.fromStatus === 'packing'))
     ).length;
+    // The customer can collect what is ready: give the pickup code as soon as one product is done.
+    if (done > 0) await ensurePickupCode(orderId, { partial: true }).catch(error => console.error('Pickup code failed:', error.message));
     if (order?.userId && mongoose.Types.ObjectId.isValid(String(order.userId)) && total > 1 && done > 0 && done < total) {
       const label = order.orderNumber || `#${String(orderId).slice(-6).toUpperCase()}`;
       safelyNotify(() => notifyUser(app, {
@@ -2545,6 +2547,43 @@ router.post('/cases/:id/delete', operationsAuth, async (req, res) => {
   }
 });
 
+// Packing types one weight (grams) for the products it packs together; it is kept on the order for the sales numbers.
+router.post('/orders/:orderId/pack-weight', operationsAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.orderId)) return res.status(400).json({ message: 'Invalid order ID' });
+    const weightGrams = Math.round(Number(String(req.body?.weightGrams ?? '').replace(',', '.')) * 100) / 100;
+    if (!Number.isFinite(weightGrams) || weightGrams <= 0 || weightGrams > 1000000) {
+      return res.status(400).json({ message: 'Type the weight in grams of the products you pack.' });
+    }
+    const caseIds = (Array.isArray(req.body?.caseIds) ? req.body.caseIds : []).map(String).filter(id => mongoose.Types.ObjectId.isValid(id));
+    if (!caseIds.length) return res.status(400).json({ message: 'Choose the products you are packing.' });
+    const cases = await WorkflowCase.find({ _id: { $in: caseIds }, orderId: req.params.orderId, requestType: { $nin: ['order_validation', 'pack_order'] } })
+      .select('orderItemId productId status assignedTeam assignedTo');
+    if (cases.length !== caseIds.length) return res.status(404).json({ message: 'Some of these products do not belong to this order.' });
+    for (const workflowCase of cases) {
+      if (workflowCase.status !== 'packing') return res.status(409).json({ message: 'Only products waiting at Packing can get a packing weight.' });
+      const ownershipError = requireOwnedCase(req.user, workflowCase);
+      if (ownershipError) return res.status(isUnassigned(workflowCase) ? 409 : 403).json({ message: ownershipError });
+    }
+    const keys = cases.map(workflowCase => packItemKey(workflowCase));
+    const order = await Order.findById(req.params.orderId).select('packedWeights').lean();
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    // Typing the weight again for the same products replaces the earlier one.
+    const kept = (order.packedWeights || [])
+      .map(entry => ({ ...entry, itemKeys: (entry.itemKeys || []).filter(key => !keys.includes(key)) }))
+      .filter(entry => entry.itemKeys.length);
+    kept.push({ at: new Date(), byId: mongoose.Types.ObjectId.isValid(req.user.id) ? req.user.id : null, byName: req.user.name || req.user.email || 'Staff', itemKeys: keys, weightGrams });
+    await Order.updateOne({ _id: req.params.orderId }, { $set: { packedWeights: kept } });
+    res.json({ weightGrams, itemKeys: keys });
+  } catch (error) {
+    console.error('Error saving packing weight:', error);
+    res.status(500).json({ message: 'Failed to save the packing weight' });
+  }
+});
+
+// Same key the handover and the "X of N ready" message use for a product.
+const packItemKey = (workflowCase) => String(workflowCase.orderItemId || workflowCase.productId?._id || workflowCase.productId || workflowCase._id);
+
 router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
   try {
     const adminMove = req.body.adminMove === true;
@@ -2642,6 +2681,16 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
         if (selectedMachine.currentCaseId && String(selectedMachine.currentCaseId) !== String(workflowCase._id)) {
           return res.status(409).json({ message: 'Selected printer is already assigned to another task' });
         }
+      }
+    }
+
+    // Packing a product needs its weight typed first (see /orders/:orderId/pack-weight); the whole-order pack task is exempt.
+    if (!adminMove && workflowCase.status === 'packing' && nextStatus === 'completed' && workflowCase.orderId
+      && !['pack_order', 'order_validation'].includes(workflowCase.requestType)) {
+      const order = await Order.findById(workflowCase.orderId).select('packedWeights').lean();
+      const key = packItemKey(workflowCase);
+      if (!(order?.packedWeights || []).some(entry => (entry.itemKeys || []).includes(key))) {
+        return res.status(409).json({ message: `Type the weight in grams before Packing done for ${workflowCase.requestedName}.` });
       }
     }
 

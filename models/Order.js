@@ -163,6 +163,28 @@ const orderSchema = new mongoose.Schema({
   pickedUpAt: { type: Date, default: null },
   pickedUpBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   pickedUpByName: { type: String, default: '' },
+  // Weight typed at Packing for a batch of products packed together (grams, one number per batch).
+  packedWeights: {
+    type: [new mongoose.Schema({
+      at: { type: Date, default: Date.now },
+      byId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      byName: { type: String, default: '' },
+      itemKeys: { type: [String], default: [] },
+      weightGrams: { type: Number, min: 0, required: true }
+    }, { _id: false })],
+    default: []
+  },
+  // Each time products are given to the customer: which ones.
+  handovers: {
+    type: [new mongoose.Schema({
+      at: { type: Date, default: Date.now },
+      byId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      byName: { type: String, default: '' },
+      itemKeys: { type: [String], default: [] },
+      weightGrams: { type: Number, min: 0, default: 0 }
+    }, { _id: false })],
+    default: []
+  },
   validationStatus: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],

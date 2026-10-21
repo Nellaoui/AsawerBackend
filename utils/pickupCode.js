@@ -4,9 +4,9 @@ const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
 // A code is unique among the orders still waiting to be collected, so the
 // counter can find an order from the digits alone. Taken orders free theirs.
-const ensurePickupCode = async (orderId) => {
+const ensurePickupCode = async (orderId, { partial = false } = {}) => {
   const order = await Order.findById(orderId).select('fulfillmentState pickupCode pickedUpAt status').lean();
-  if (!order || order.fulfillmentState !== 'ready' || order.pickedUpAt || order.status === 'cancelled') return order?.pickupCode || null;
+  if (!order || (!partial && order.fulfillmentState !== 'ready') || order.pickedUpAt || order.status === 'cancelled') return order?.pickupCode || null;
   if (order.pickupCode) return order.pickupCode;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const code = randomCode();

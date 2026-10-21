@@ -40,6 +40,13 @@ const stageOf = (cases) => {
   return 'setup';
 };
 
+// Orders given to the customer: weight typed at Packing and the order totals, counted on the day they are given.
+const salesOf = (orders) => ({
+  orders: orders.length,
+  weightGrams: Math.round(orders.reduce((sum, order) => sum + (order.packedWeights || []).reduce((inner, entry) => inner + Number(entry.weightGrams || 0), 0), 0) * 100) / 100,
+  money: Math.round(orders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0) * 100) / 100
+});
+
 const buildOverview = async ({ range = 'today', now = new Date(), isLateCase }) => {
   const key = RANGES[range] ? range : 'today';
   const days = RANGES[key];
@@ -52,7 +59,9 @@ const buildOverview = async ({ range = 'today', now = new Date(), isLateCase }) 
   for (let back = days - 1; back >= 0; back -= 1) dayKeys.push(shopDayKey(shopDayStart(nowMs, back) + 3 * 60 * 60 * 1000));
   const lowStockFilter = { removedFromShop: { $ne: true }, isActive: { $ne: false }, $expr: { $lte: [{ $ifNull: ['$stock', 0] }, { $ifNull: ['$lowStockThreshold', 2] }] } };
 
-  const [lineCases, activeCases, ordersInRange, previousOrders, openPacking, lowStock, lowStockTotal, machines, historyEvents, customers, newCustomers, pendingPhones, previousNewCustomers, reprintRequests] = await Promise.all([
+  const [givenOrders, previousGiven, lineCases, activeCases, ordersInRange, previousOrders, openPacking, lowStock, lowStockTotal, machines, historyEvents, customers, newCustomers, pendingPhones, previousNewCustomers, reprintRequests] = await Promise.all([
+    Order.find({ pickedUpAt: { $gte: start } }).select('totalAmount packedWeights.weightGrams').lean(),
+    Order.find({ pickedUpAt: { $gte: previousStart, $lt: start } }).select('totalAmount packedWeights.weightGrams').lean(),
     WorkflowCase.find({ ...visibleTaskFilter(), archivedAt: null, requestType: { $in: PRODUCT_LINE_TYPES }, taskKind: 'order', orderId: { $ne: null }, status: { $nin: ['cancelled', 'rejected'] } })
       .sort({ createdAt: -1 }).limit(MAX_CASES)
       .select('orderId orderItemId status isBlocked productionMethod completedAt updatedAt createdAt history.toStatus history.createdAt')
@@ -210,6 +219,7 @@ const buildOverview = async ({ range = 'today', now = new Date(), isLateCase }) 
     since: start,
     finished: { inRange: finishedInRange, previous: finishedPrevious, total: finishedTotal, series: finishedSeries, perHour: hourly },
     orders: { received: ordersInRange.length, previous: previousOrders, ready: readyOrders, readyPrevious },
+    sales: { ...salesOf(givenOrders), previous: salesOf(previousGiven) },
     late,
     blocked,
     lowStock: { total: lowStockTotal, products: lowStock },
