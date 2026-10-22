@@ -1,5 +1,9 @@
 export {};
 
+jest.mock('../utils/completeOrder', () => ({ completeOrder: jest.fn() }));
+const { completeOrder } = require('../utils/completeOrder');
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
 const Order = require('../models/Order');
 const AuditLog = require('../models/AuditLog');
 const WorkflowCase = require('../models/WorkflowCase');
@@ -21,6 +25,7 @@ const staff = { id: '64b000000000000000000001', name: 'Salma', role: 'employee',
 const readyOrder = { _id: '64b0000000000000000000aa', orderNumber: 'ASW-1', userId: { name: 'Karim' }, items: [{}, {}], pickupCode: '4729', pickedUpAt: null, pickedUpByName: '' };
 
 describe('pickup code at the counter', () => {
+  beforeEach(() => { (completeOrder as jest.Mock).mockReset().mockResolvedValue({ completed: true }); });
   afterEach(() => jest.restoreAllMocks());
 
   test('lookup needs four digits', async () => {
@@ -75,6 +80,8 @@ describe('pickup code at the counter', () => {
     await handler('/:id/picked-up', 'post')({ params: { id: readyOrder._id }, body: { itemKeys: ['a'] }, user: staff }, res);
     expect((push.mock.calls[0] as any)[1].$push.handovers).toMatchObject({ itemKeys: ['a'], byName: 'Salma' });
     expect(done).not.toHaveBeenCalled();
+    await flush();
+    expect(completeOrder).not.toHaveBeenCalled();
     expect(res.json.mock.calls[0][0]).toMatchObject({ givenCount: 1, weightGrams: 12.5 });
   });
 
@@ -88,6 +95,25 @@ describe('pickup code at the counter', () => {
     const res = response();
     await handler('/:id/picked-up', 'post')({ params: { id: readyOrder._id }, body: { itemKeys: ['b'] }, user: staff }, res);
     expect((done.mock.calls[0] as any)[1].$set).toMatchObject({ pickedUpByName: 'Salma' });
+    await flush();
+    expect(completeOrder).toHaveBeenCalledWith(readyOrder._id, staff.id);
+  });
+
+  test('if completing the order fails, the handover stays and the failure is logged', async () => {
+    jest.spyOn(Order, 'findOne').mockReturnValue(query({ ...readyOrder, handovers: [{ itemKeys: ['a'] }] }));
+    withCases([packedCase('a'), packedCase('b')]);
+    jest.spyOn(Order, 'findOneAndUpdate').mockReturnValue(query({ _id: readyOrder._id }));
+    jest.spyOn(Order, 'updateOne').mockResolvedValue({} as any);
+    jest.spyOn(Order, 'findById').mockReturnValue(query({ ...readyOrder, pickedUpAt: new Date() }));
+    const audit = jest.spyOn(AuditLog, 'create').mockResolvedValue({});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    (completeOrder as jest.Mock).mockRejectedValue(new Error('Reserved inventory is inconsistent'));
+    const res = response();
+    await handler('/:id/picked-up', 'post')({ params: { id: readyOrder._id }, body: { itemKeys: ['b'] }, user: staff }, res);
+    await flush();
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json.mock.calls[0][0].pickedUpAt).toBeTruthy();
+    expect(audit.mock.calls.map((call: any) => call[0].action)).toContain('order_complete_failed');
   });
 
   test('a product that is not ready or already given is refused', async () => {

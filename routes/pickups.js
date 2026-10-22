@@ -6,6 +6,7 @@ const { operationsAuth } = require('../middlewares/auth');
 const WorkflowCase = require('../models/WorkflowCase');
 const { ensurePickupCode } = require('../utils/pickupCode');
 const { handoverStates } = require('../utils/handover');
+const { completeOrder } = require('../utils/completeOrder');
 const { notifyOrderChange } = require('../utils/liveUpdates');
 
 const router = express.Router();
@@ -128,7 +129,18 @@ router.post('/:id/picked-up', counterAuth, async (req, res) => {
       actorId: req.user.id,
       details: { by: name, products: keys.length || undefined }
     }).catch(error => console.error('Pickup audit failed:', error.message));
-    notifyOrderChange(fresh.userId?._id || fresh.userId);
+    // The last product given makes the order Completed. If its stock rules refuse, the handover
+    // stays recorded and the failure is written to the audit log.
+    const completion = finished
+      ? completeOrder(order._id, req.user.id).catch(error => {
+        console.error('Completing the picked-up order failed:', error.message);
+        return AuditLog.create({
+          category: 'workflow', action: 'order_complete_failed', entityType: 'Order', entityId: String(order._id),
+          actorId: req.user.id, details: { error: error.message }
+        }).catch(() => {});
+      })
+      : Promise.resolve();
+    completion.then(() => notifyOrderChange(fresh.userId?._id || fresh.userId));
   } catch (error) {
     console.error('Error marking pickup:', error);
     res.status(500).json({ message: 'Server error' });

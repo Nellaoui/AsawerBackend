@@ -1964,4 +1964,7 @@ router.delete('/:id', operationsAuth, async (req, res) => {
   }
 });
 
+// The counter finishes an order through the same stock rules as every other status change.
+router.transitionOrder = transitionOrder;
+
 module.exports = router;

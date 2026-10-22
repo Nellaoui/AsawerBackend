@@ -20,6 +20,7 @@ const buildHandoverState = (order, cases) => {
       key,
       name: first.requestedName || line?.name || 'Product',
       reference: first.productId?.serialNumber || '',
+      imageUrl: first.productId?.imageUrl || '',
       size: line?.size || '',
       quantity: line?.quantity || first.quantity || 1,
       ready: group.every(item => item.status === 'completed')
@@ -44,7 +45,7 @@ const handoverStates = async (orders) => {
     status: { $nin: ['cancelled', 'rejected'] },
     requestType: { $nin: ['order_validation', 'pack_order'] },
     archivedAt: null
-  }).select(CASE_FIELDS).populate('productId', 'serialNumber').lean() : [];
+  }).select(CASE_FIELDS).populate('productId', 'serialNumber imageUrl').lean() : [];
   const byOrder = new Map();
   for (const item of cases) {
     const key = String(item.orderId);
