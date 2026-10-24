@@ -85,6 +85,19 @@ describe('pickup code at the counter', () => {
     expect(res.json.mock.calls[0][0]).toMatchObject({ givenCount: 1, weightGrams: 12.5 });
   });
 
+  test('"all" gives every product that is ready now', async () => {
+    jest.spyOn(Order, 'findOne').mockReturnValue(query(readyOrder));
+    withCases([packedCase('a'), packedCase('b')]);
+    const push = jest.spyOn(Order, 'findOneAndUpdate').mockReturnValue(query({ _id: readyOrder._id }));
+    jest.spyOn(Order, 'updateOne').mockResolvedValue({} as any);
+    jest.spyOn(Order, 'findById').mockReturnValue(query({ ...readyOrder, pickedUpAt: new Date() }));
+    jest.spyOn(AuditLog, 'create').mockResolvedValue({});
+    const res = response();
+    await handler('/:id/picked-up', 'post')({ params: { id: readyOrder._id }, body: { all: true }, user: staff }, res);
+    expect((push.mock.calls[0] as any)[1].$push.handovers.itemKeys.sort()).toEqual(['a', 'b']);
+    await flush();
+  });
+
   test('giving the last products closes the order as picked up', async () => {
     jest.spyOn(Order, 'findOne').mockReturnValue(query({ ...readyOrder, handovers: [{ itemKeys: ['a'] }] }));
     withCases([packedCase('a'), packedCase('b')]);

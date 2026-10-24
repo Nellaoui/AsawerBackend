@@ -206,7 +206,7 @@ const normalizeDimensions = (input = {}, fallback = {}) => {
 const populateCase = (query) => query
   .populate({
     path: 'orderId',
-    select: 'orderNumber status totalAmount notes createdAt userId urgent items validationStatus validationCaseId validatedAt operationsArchivedAt archivePurgeAt',
+    select: 'orderNumber status totalAmount notes createdAt userId urgent items validationStatus validationCaseId validatedAt operationsArchivedAt archivePurgeAt pickedUpAt',
     populate: [
       { path: 'items.productId', select: 'name serialNumber imageUrl printMethod stockLocation' },
       { path: 'userId', select: 'name email phone forcedProductionMethod' }

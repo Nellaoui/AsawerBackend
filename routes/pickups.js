@@ -99,7 +99,10 @@ router.post('/:id/picked-up', counterAuth, async (req, res) => {
     if (!canGive(order, state)) return res.status(409).json({ message: 'No product of this order is ready to give yet.' });
 
     const whole = state.products.length === 0;
-    const keys = whole ? [] : [...new Set((Array.isArray(req.body?.itemKeys) ? req.body.itemKeys : []).map(String))];
+    // "all" (Ready cards in the portal): give every product that is ready now.
+    const keys = whole ? [] : (req.body?.all === true
+      ? state.toGive.map(product => product.key)
+      : [...new Set((Array.isArray(req.body?.itemKeys) ? req.body.itemKeys : []).map(String))]);
     if (!whole) {
       if (!keys.length) return res.status(400).json({ message: 'Tick at least one product the customer takes.' });
       const allowed = new Set(state.toGive.map(product => product.key));
