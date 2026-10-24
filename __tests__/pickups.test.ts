@@ -85,6 +85,15 @@ describe('pickup code at the counter', () => {
     expect(res.json.mock.calls[0][0]).toMatchObject({ givenCount: 1, weightGrams: 12.5 });
   });
 
+  test('one order for the Ready card lists each product with its stage', async () => {
+    jest.spyOn(Order, 'findById').mockReturnValue(query(readyOrder));
+    withCases([packedCase('a'), packedCase('b', { status: 'printing', history: [] })]);
+    const res = response();
+    await handler('/:id', 'get')({ params: { id: readyOrder._id }, user: staff }, res);
+    const list = res.json.mock.calls[0][0].productList;
+    expect(list.map((product: any) => [product.key, product.ready, product.stage])).toEqual([['a', true, ''], ['b', false, 'printing']]);
+  });
+
   test('"all" gives every product that is ready now', async () => {
     jest.spyOn(Order, 'findOne').mockReturnValue(query(readyOrder));
     withCases([packedCase('a'), packedCase('b')]);

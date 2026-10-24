@@ -73,6 +73,19 @@ router.get('/', counterAuth, async (req, res) => {
   }
 });
 
+// One order for the Ready card in the portal: what can be given, what is still in a stage, what was given.
+router.get('/:id', counterAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Order not found' });
+    const order = await Order.findById(req.params.id).select(FIELDS).populate('userId', 'name email').lean();
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.json(summary(order, (await handoverStates([order])).get(String(order._id))));
+  } catch (error) {
+    console.error('Error reading pickup order:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.post('/lookup', counterAuth, async (req, res) => {
   try {
     const code = String(req.body?.code || '').replace(/\D/g, '');

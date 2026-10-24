@@ -25,7 +25,9 @@ const buildHandoverState = (order, cases) => {
       quantity: line?.quantity || first.quantity || 1,
       ready: group.every(item => item.status === 'completed')
         && group.some(item => (item.history || []).some(entry => entry.fromStatus === 'packing')),
-      given: given.has(key)
+      given: given.has(key),
+      // Where a product that is not ready yet is now (its oldest open task).
+      stage: (group.find(item => item.status !== 'completed') || {}).status || ''
     };
   });
   const toGive = products.filter(product => product.ready && !product.given);
