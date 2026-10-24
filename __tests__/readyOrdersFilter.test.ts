@@ -10,13 +10,14 @@ const listCases = (() => {
 })();
 
 const createdAt = new Date('2026-10-01T10:00:00Z');
-const task = (_id: string, requestType: string, status: string) => ({
-  _id, orderId: 'order-1', requestType, requestedName: _id, productionMethod: 'wax', status,
+const task = (_id: string, requestType: string, status: string, history: any[] = []) => ({
+  _id, history, orderId: 'order-1', requestType, requestedName: _id, productionMethod: 'wax', status,
   taskKind: 'order', archivedAt: null, createdAt, customer: { name: 'Client' }
 });
 const cases = [
   task('confirmation', 'order_validation', 'completed'),
   task('quality-done', 'print_required', 'completed'),
+  task('packed-product', 'print_required', 'completed', [{ fromStatus: 'packing', toStatus: 'completed' }]),
   task('printing', 'print_required', 'printing'),
   task('packed', 'pack_order', 'completed'),
   task('packing', 'pack_order', 'packing')
@@ -42,11 +43,11 @@ describe('ready orders filter', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  test('Ready orders shows only orders whose packing is finished', async () => {
-    expect(await list('ready_orders')).toEqual(['packed']);
+  test('Ready orders shows every product or order whose packing is finished', async () => {
+    expect(await list('ready_orders')).toEqual(['packed-product', 'packed']);
   });
 
   test('Finished tasks still lists every finished step', async () => {
-    expect(await list('ready')).toEqual(['confirmation', 'quality-done', 'packed']);
+    expect(await list('ready')).toEqual(['confirmation', 'quality-done', 'packed-product', 'packed']);
   });
 });

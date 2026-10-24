@@ -716,9 +716,17 @@ router.get('/cases', operationsAuth, async (req, res) => {
         return res.status(400).json({ message: 'Invalid workflow stage' });
       }
       filter.status = { $in: WORKFLOW_STAGE_FILTERS[stage] };
-      // An order is ready only once its packing task is done; other finished
+      // Ready = packing is done: the whole-order packing task, or a product
+      // that left Packing (products are packed one by one). Other finished
       // tasks are steps of orders that may still be printing.
-      if (stage === 'ready_orders') filter.requestType = 'pack_order';
+      if (stage === 'ready_orders') {
+        filter.$and = [...(filter.$and || []), {
+          $or: [
+            { requestType: 'pack_order' },
+            { requestType: { $nin: ['order_validation', 'stock_pick', 'pack_order'] }, 'history.fromStatus': 'packing' }
+          ]
+        }];
+      }
     } else if (req.query.status) filter.status = String(req.query.status);
     else if (req.query.active === 'true') filter.status = ACTIVE_STATUSES;
     // "My completed work" lists every product the person passed on to the next
@@ -801,7 +809,7 @@ router.get('/cases', operationsAuth, async (req, res) => {
       if (filter.$or) {
         const scopeOr = filter.$or;
         delete filter.$or;
-        filter.$and = [{ $or: scopeOr }, { $or: searchFilter }];
+        filter.$and = [...(filter.$and || []), { $or: scopeOr }, { $or: searchFilter }];
       } else {
         filter.$or = searchFilter;
       }
