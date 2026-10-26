@@ -24,8 +24,9 @@ describe('Packing shows the plate each product was printed on', () => {
     const packing = { _id: 'pack', orderId: 'order-1', orderItemId: 'item-1', requestType: 'pack_order', requestedName: 'Pack', status: 'packing', taskKind: 'order', archivedAt: null, createdAt: new Date() };
     const printed = { _id: 'print', orderId: '507f1f77bcf86cd799439011', orderItemId: 'item-1', requestType: 'print_required', requestedName: 'COL 112', status: 'packing', print: { plateNumber: 14, machineId: 'W2' } };
     const fromStock = { _id: 'stock', orderId: '507f1f77bcf86cd799439011', orderItemId: 'item-2', requestType: 'stock_pick', requestedName: 'BRA 490', status: 'completed', print: {} };
-    packing.orderId = '507f1f77bcf86cd799439011';
-    jest.spyOn(WorkflowCase, 'find').mockImplementation((filter: any) => query(filter.requestType?.$nin ? [printed, fromStock] : [packing]));
+    packing.orderId = { _id: '507f1f77bcf86cd799439011', items: [{ _id: 'item-2', stockPickedQuantity: 1 }, { _id: 'item-3', stockPickedQuantity: 0 }] } as any;
+    const allMissing = { _id: 'miss', orderId: '507f1f77bcf86cd799439011', orderItemId: 'item-3', requestType: 'stock_pick', requestedName: 'GO 001', status: 'completed', print: {} };
+    jest.spyOn(WorkflowCase, 'find').mockImplementation((filter: any) => query(filter.requestType?.$nin ? [printed, fromStock, allMissing] : [packing]));
     jest.spyOn(WorkflowCase, 'countDocuments').mockResolvedValue(1 as any);
     jest.spyOn(Order, 'find').mockReturnValue(query([]) as any);
     jest.spyOn(Machine, 'find').mockReturnValue(query([{ code: 'W2', name: 'Wax 2' }]) as any);
@@ -35,5 +36,8 @@ describe('Packing shows the plate each product was printed on', () => {
     const lines = res.json.mock.calls[0][0].cases[0].orderLines;
     expect(lines.find((line: any) => line.orderItemId === 'item-1').plate).toEqual({ number: 14, printer: 'Wax 2' });
     expect(lines.find((line: any) => line.orderItemId === 'item-2').plate).toBeNull();
+    expect(lines.find((line: any) => line.orderItemId === 'item-2')).toMatchObject({ fromStock: true, detail: 'Taken from stock' });
+    expect(lines.find((line: any) => line.orderItemId === 'item-1').fromStock).toBe(false);
+    expect(lines.find((line: any) => line.orderItemId === 'item-3')).toMatchObject({ fromStock: false, detail: 'Done' });
   });
 });

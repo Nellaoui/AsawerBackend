@@ -651,7 +651,7 @@ const attachOrderLines = async (cases) => {
     requestType: { $nin: ['order_validation', 'pack_order'] },
     status: { $nin: ['cancelled', 'rejected'] },
     archivedAt: null
-  }).select('orderId orderItemId productId requestedName status isBlocked reprintParts print.plateNumber print.machineId').populate('productId', 'serialNumber name imageUrl').lean();
+  }).select('orderId orderItemId productId requestType requestedName status isBlocked reprintParts print.plateNumber print.machineId').populate('productId', 'serialNumber name imageUrl').lean();
   // Printer names for the plate each product was printed on (Packing shows where a product came from).
   const printerCodes = [...new Set(rows.map(row => row.print?.machineId).filter(Boolean))];
   const printerNames = new Map((printerCodes.length ? await Machine.find({ code: { $in: printerCodes } }).select('code name label').lean() : []).map(machine => [machine.code, machine.label ? `${machine.label} · ${machine.name}` : machine.name]));
@@ -679,7 +679,11 @@ const attachOrderLines = async (cases) => {
     if (!lines) return item;
     return {
       ...item,
-      orderLines: [...lines.values()].map(row => ({
+      orderLines: [...lines.values()].map(row => {
+        const orderItem = orderItems.get(String(row.orderItemId));
+        // Only units really collected count: a stock task closed as 'all missing' was sent to printing.
+        const fromStock = row.status === 'completed' && row.requestType === 'stock_pick' && Number(orderItem?.stockPickedQuantity || 0) > 0;
+        return {
         id: row._id,
         orderItemId: row.orderItemId || null,
         plate: row.print?.plateNumber ? { number: row.print.plateNumber, printer: printerNames.get(row.print.machineId) || row.print.machineId || '' } : null,
@@ -690,10 +694,12 @@ const attachOrderLines = async (cases) => {
         width: orderItems.get(String(row.orderItemId))?.width || '',
         quantity: orderItems.get(String(row.orderItemId))?.quantity || row.quantity || 1,
         step: lineStepFor(row.status),
-        detail: lineDetailFor(row),
+        detail: fromStock ? 'Taken from stock' : lineDetailFor(row),
+        fromStock,
         reprint: row.status !== 'completed' && (row.reprintParts || []).length > 0,
         isBlocked: Boolean(row.isBlocked)
-      }))
+        };
+      })
     };
   });
 };
