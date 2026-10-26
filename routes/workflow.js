@@ -700,6 +700,7 @@ const attachOrderLines = async (cases) => {
 
 router.get('/cases', operationsAuth, async (req, res) => {
   try {
+    const requestedAt = new Date();
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
     const scope = ['mine', 'available', 'all'].includes(String(req.query.scope)) ? String(req.query.scope) : 'mine';
@@ -833,6 +834,28 @@ router.get('/cases', operationsAuth, async (req, res) => {
       }];
     }
 
+    // Quick refresh: the portal already shows a list and asks only for what
+    // changed since `since`. Every task of a touched order comes back, because
+    // the product lines on a card depend on the other tasks of the same order.
+    // `gone` lists shown tasks that no longer belong in this list.
+    const sinceDate = req.query.since ? new Date(String(req.query.since)) : null;
+    if (sinceDate && !Number.isNaN(sinceDate.getTime()) && !mineDone) {
+      const serverTime = requestedAt;
+      const known = [...new Set(String(req.query.known || '').split(',').filter(id => mongoose.Types.ObjectId.isValid(id)))].slice(0, 400);
+      const touchedOrderIds = await WorkflowCase.find({ updatedAt: { $gt: sinceDate }, orderId: { $ne: null } }).distinct('orderId');
+      const deltaFilter = {
+        ...filter,
+        $and: [...(filter.$and || []), { $or: [{ updatedAt: { $gt: sinceDate } }, ...(touchedOrderIds.length ? [{ orderId: { $in: touchedOrderIds } }] : [])] }]
+      };
+      const [changedDocs, stillShown] = await Promise.all([
+        populateCase(WorkflowCase.find(deltaFilter).sort(taskSort).limit(300)),
+        known.length ? WorkflowCase.find({ ...filter, _id: { $in: known } }).select('_id').lean() : []
+      ]);
+      const kept = new Set(stillShown.map(row => String(row._id)));
+      const changed = await attachOrderLines(await hydrateCaseCustomers(changedDocs));
+      return res.json({ delta: true, serverTime: serverTime.toISOString(), cases: changed, gone: known.filter(id => !kept.has(id)) });
+    }
+
     // A page holds whole orders, not product tasks: one order with many
     // products used to fill a page and push every other order to later pages.
     let rows = await WorkflowCase.find(filter).sort(taskSort).select(mineDone ? '_id orderId history' : '_id orderId priority status reprintParts').lean();
@@ -869,6 +892,7 @@ router.get('/cases', operationsAuth, async (req, res) => {
 
     res.json({
       cases,
+      serverTime: requestedAt.toISOString(),
       pagination: { page, limit, total: rows.length, orders, pages: Math.max(Math.ceil(orders / limit), 1) }
     });
   } catch (error) {

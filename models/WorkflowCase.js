@@ -112,6 +112,7 @@ const workflowCaseSchema = new mongoose.Schema({
 
 workflowCaseSchema.index({ assignedTeam: 1, assignedTo: 1, status: 1, priority: -1, deadlineAt: 1, createdAt: 1 });
 workflowCaseSchema.index({ orderId: 1, createdAt: 1 });
+workflowCaseSchema.index({ updatedAt: 1 });
 workflowCaseSchema.index({ customerId: 1, status: 1, createdAt: -1 });
 
 // A task made for an Urgent order is born urgent, wherever in the code it is created.
