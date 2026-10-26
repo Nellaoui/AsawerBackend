@@ -94,6 +94,18 @@ describe('pickup code at the counter', () => {
     expect(list.map((product: any) => [product.key, product.ready, product.stage])).toEqual([['a', true, ''], ['b', false, 'printing']]);
   });
 
+  test('the Given list shows who gave each product and when', async () => {
+    const at = new Date('2026-10-24T16:12:00Z');
+    jest.spyOn(Order, 'find').mockReturnValue(query([{ ...readyOrder, handovers: [{ at, byName: 'Salma', itemKeys: ['a'] }] }]));
+    withCases([packedCase('a'), packedCase('b')]);
+    const res = response();
+    await handler('/given', 'get')({ user: staff }, res);
+    const order = res.json.mock.calls[0][0].orders[0];
+    expect(order.givenInfo).toEqual({ a: { at, byName: 'Salma' } });
+    expect(order.lastGivenBy).toBe('Salma');
+    expect(order.productList.map((product: any) => product.given)).toEqual([true, false]);
+  });
+
   test('"all" gives every product that is ready now', async () => {
     jest.spyOn(Order, 'findOne').mockReturnValue(query(readyOrder));
     withCases([packedCase('a'), packedCase('b')]);

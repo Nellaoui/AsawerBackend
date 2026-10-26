@@ -73,6 +73,28 @@ router.get('/', counterAuth, async (req, res) => {
   }
 });
 
+// Orders where at least one product was already given, newest handover first (the "Given" tab of the Ready stage).
+router.get('/given', counterAuth, async (req, res) => {
+  try {
+    const orders = await Order.find({ 'handovers.0': { $exists: true }, status: { $ne: 'cancelled' } })
+      .sort({ updatedAt: -1 }).limit(60).select(FIELDS).populate('userId', 'name email').lean();
+    const states = await handoverStates(orders);
+    res.json({
+      orders: orders.map(order => {
+        const info = {};
+        for (const entry of order.handovers || []) {
+          for (const key of entry.itemKeys || []) info[key] = { at: entry.at, byName: entry.byName || '' };
+        }
+        const last = (order.handovers || []).reduce((latest, entry) => (!latest || new Date(entry.at) > new Date(latest.at) ? entry : latest), null);
+        return { ...summary(order, states.get(String(order._id))), givenInfo: info, lastGivenAt: last?.at || null, lastGivenBy: last?.byName || '' };
+      }).sort((a, b) => new Date(b.lastGivenAt || 0) - new Date(a.lastGivenAt || 0))
+    });
+  } catch (error) {
+    console.error('Error listing given orders:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // One order for the Ready card in the portal: what can be given, what is still in a stage, what was given.
 router.get('/:id', counterAuth, async (req, res) => {
   try {
