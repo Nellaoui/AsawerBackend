@@ -756,6 +756,11 @@ router.get('/cases', operationsAuth, async (req, res) => {
     }
     const method = String(req.query.method || '');
     if (method && !['wax', 'resin'].includes(method)) filter.productionMethod = method;
+    // Quality plate tiles: every product of one plate, not only those on the loaded page.
+    if (req.query.plate && !req.query.stage && !req.query.status && Number.isInteger(Number(req.query.plate))) {
+      filter['print.plateNumber'] = Number(req.query.plate);
+      filter.status = 'quality_check';
+    }
     if (req.query.taskKind && ['order', 'extra'].includes(String(req.query.taskKind))) filter.taskKind = String(req.query.taskKind);
     if (req.query.orderId && mongoose.Types.ObjectId.isValid(req.query.orderId)) filter.orderId = req.query.orderId;
     if (req.query.customerId) {
