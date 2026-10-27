@@ -15,6 +15,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 const { operationsAuth } = require('../middlewares/auth');
 const { buildCustomerInsights, recommendProducts } = require('../utils/customerInsights');
 const { findTeamAssignee } = require('../utils/workflowAssignment');
+const { stockLinesNeedingPacking } = require('../utils/packingNeeds');
 const { visibleTaskFilter } = require('../utils/workflowVisibility');
 const { assignMachineToCase, findMachine, releaseMachineFromCase } = require('../utils/machineRegistry');
 const { takePickedStockOffShelf } = require('../utils/stockPicking');
@@ -264,12 +265,21 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
     ? 'blocked'
     : (openCases.length ? 'in_progress' : 'ready');
 
-    if (!openCases.length) {
+  // Products taken from stock finish at the stock check and never pass through
+  // Packing like printed ones, so they get a pack task as soon as they are done,
+  // even when other products of the order are still being printed.
+  const [stockCases, stockOrder] = await Promise.all([
+    WorkflowCase.find({ orderId, requestType: { $in: ['stock_pick', 'print_required'] } }).select('requestType status orderItemId').lean(),
+    Order.findById(orderId).select('status items._id items.stockPickedQuantity').lean()
+  ]);
+  const stockLinesToPack = stockOrder && stockOrder.status !== 'cancelled' ? stockLinesNeedingPacking({ cases: stockCases, orderItems: Array.isArray(stockOrder.items) ? stockOrder.items : [] }) : [];
+
+  if (!openCases.length || stockLinesToPack.length) {
     // Lines that passed quality already went to packing one by one, so no extra pack task is needed.
     const linesWentToPacking = await WorkflowCase.exists({ orderId, requestType: { $ne: 'pack_order' }, 'history.toStatus': 'packing' });
     // A packing task the boss cancelled because it opened too early does not count.
     const existingPackingTask = await WorkflowCase.findOne({ orderId, requestType: 'pack_order', status: { $ne: 'cancelled' } }).select('_id status');
-    if (!existingPackingTask && !linesWentToPacking) {
+    if (!existingPackingTask && (!linesWentToPacking || stockLinesToPack.length)) {
       const order = await Order.findById(orderId).select('items workflowCaseIds');
       if (order) {
         const assignedTo = await findTeamAssignee('packing');
@@ -291,13 +301,13 @@ const refreshOrderFulfillment = async (orderId, actorId, app) => {
           productionMethod: 'undecided',
           customerApproval: 'not_required',
           createdBy: actorId,
-          history: [{ actorId, action: 'packing_task_created', toStatus: 'packing', note: 'All stock and production tasks are complete.' }]
+          history: [{ actorId, action: 'packing_task_created', toStatus: 'packing', note: openCases.length ? 'Products taken from stock are ready to pack.' : 'All stock and production tasks are complete.' }]
         });
         await Order.updateOne({ _id: orderId }, { $addToSet: { workflowCaseIds: packingTask._id } });
         await safelyNotify(() => notifyCaseAssignment(app, packingTask));
-        fulfillmentState = 'in_progress';
+        if (!openCases.length) fulfillmentState = 'in_progress';
       }
-    } else if (existingPackingTask.status !== 'completed') {
+    } else if (existingPackingTask && existingPackingTask.status !== 'completed') {
       fulfillmentState = 'in_progress';
     }
   }
