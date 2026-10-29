@@ -117,6 +117,8 @@ const plateLine = workflowCase => {
     reference: product.serialNumber || '',
     imageUrl: product.imageUrl || '',
     size: orderItem?.size || workflowCase.dimensions?.ringSize || '',
+    width: orderItem?.width || '',
+    clasp: orderItem?.clasp || '',
     quantity: workflowCase.quantity,
     orderNumber: order?.orderNumber || '',
     status: workflowCase.status,
