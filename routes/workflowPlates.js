@@ -393,6 +393,40 @@ module.exports = function registerPlateRoutes(router, { refreshOrderFulfillment,
   router.post('/plates/:id/finish', operationsAuth, finishPlate('printing', 'printing', 'finished'));
   router.post('/plates/:id/printed', operationsAuth, finishPlate('open', 'ready_to_print', 'already printed'));
 
+  // Take the plate back off the printer: the printer is free again and the plate is open with the same products, ready to edit and send again.
+  router.post('/plates/:id/unsend', operationsAuth, async (req, res) => {
+    try {
+      const plate = await loadPlate(req, 'printing');
+      const cases = await plateCases(plate, { status: 'printing' });
+      const now = new Date();
+      const team = teamForStatus('ready_to_print', plate.productionMethod);
+      const machineCode = plate.machineCode;
+      const saves = [];
+      for (const workflowCase of cases) {
+        workflowCase.status = 'ready_to_print';
+        workflowCase.assignedTeam = team;
+        workflowCase.stageQueuedAt = now;
+        workflowCase.targetMinutes = targetMinutesForTeam(team);
+        workflowCase.startedAt = null;
+        workflowCase.print = { machineId: '', sentAt: null, startedAt: null, completedAt: null, plateId: plate._id, plateNumber: plate.number };
+        workflowCase.history.push({
+          actorId: req.user.id, action: 'status_changed', fromStatus: 'printing', toStatus: 'ready_to_print',
+          note: `Plate ${plate.number} taken back off ${machineCode || 'the printer'}`
+        });
+        saves.push(workflowCase.save());
+      }
+      plate.status = 'open';
+      plate.machineCode = '';
+      plate.sentAt = null;
+      saves.push(plate.save());
+      await Promise.all(saves);
+      await releasePrinter({ plate: { _id: plate._id, number: plate.number, machineCode }, actorId: req.user.id, failed: false, reason: '' });
+      res.json({ unsent: true, plate: { _id: plate._id, number: plate.number }, products: cases.length });
+    } catch (error) {
+      respond(res, error, 'take the plate back off the printer');
+    }
+  });
+
   // The print failed: every product goes back to To print, ready for a new plate.
   router.post('/plates/:id/fail', operationsAuth, async (req, res) => {
     try {

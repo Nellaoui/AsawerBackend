@@ -21,6 +21,7 @@ const move = handler('/plates/:id/move', 'post');
 const send = handler('/plates/:id/send', 'post');
 const finish = handler('/plates/:id/finish', 'post');
 const printed = handler('/plates/:id/printed', 'post');
+const unsend = handler('/plates/:id/unsend', 'post');
 const failPlate = handler('/plates/:id/fail', 'post');
 const transition = handler('/cases/:id/transition', 'post');
 
@@ -306,6 +307,22 @@ describe('printing plates', () => {
     expect(cases[0].print.plateId).toBeNull();
     expect(plate.status).toBe('failed');
     expect(notifyFailedPrint).toHaveBeenCalled();
+  });
+
+  test('taking a plate back off the printer frees it and keeps the same products on an open plate', async () => {
+    const plate = makePlate(17, { status: 'printing', machineCode: 'W2', sentAt: new Date() });
+    const cases = [1, 2].map(n => makeCase(n, { status: 'printing', startedAt: new Date(), print: { plateId: plate._id, plateNumber: 17, machineId: 'W2' } }));
+    const machine: any = { code: 'W2', currentPlateId: plate._id, status: 'busy', save: jest.fn() };
+    jest.spyOn(Plate, 'findById').mockResolvedValue(plate as any);
+    (findMachine as jest.Mock).mockResolvedValue(machine);
+    jest.spyOn(WorkflowCase, 'find').mockResolvedValue(cases as any);
+    const res = response();
+    await unsend({ params: { id: plate._id }, body: {}, user: waxUser, app: {} }, res);
+    expect(plate).toMatchObject({ status: 'open', machineCode: '', sentAt: null });
+    expect(cases[0]).toMatchObject({ status: 'ready_to_print', startedAt: null });
+    expect(cases[0].print).toMatchObject({ plateId: plate._id, plateNumber: 17, machineId: '' });
+    expect(machine).toMatchObject({ status: 'available', currentPlateId: null });
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ unsent: true, products: 2 }));
   });
 
   test('the old one-by-one Send to printing path is closed', async () => {
