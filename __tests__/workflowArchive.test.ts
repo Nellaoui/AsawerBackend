@@ -55,6 +55,14 @@ describe('blocked order archive and resume', () => {
     expect(session.endSession).toHaveBeenCalled();
   });
 
+  test('an employee cannot archive an order with products in production', async () => {
+    const res = response();
+    await archive({ ...request(), user: { id: 'wax-id', role: 'employee', workRole: 'wax_print' } }, res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({ message: '2 products are still in production. Only the boss can archive this order.' });
+    expect(order.save).not.toHaveBeenCalled();
+  });
+
   test('does not add new tasks to an archived order', async () => {
     order.operationsArchivedAt = new Date();
     (Order.findById as jest.Mock).mockResolvedValue(order);

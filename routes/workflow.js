@@ -133,6 +133,12 @@ const requireOwnedCase = (user, workflowCase) => {
   return null;
 };
 
+// The person who last put this product on a plate, so a reprint can go back to them.
+const lastPlateOwnerId = (workflowCase) => {
+  const entries = (workflowCase.history || []).filter(entry => entry.action === 'plate_assigned' && entry.actorId);
+  return entries.length ? String(entries[entries.length - 1].actorId) : null;
+};
+
 const unassignedFilter = () => ({ $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }] });
 
 const scopedCaseFilter = (user, scope = 'mine') => {
@@ -1334,6 +1340,8 @@ router.post('/orders/:id/urgent', operationsAuth, async (req, res) => {
   }
 });
 
+const IN_PRODUCTION_STATUSES = ['stock_picking', 'ready_to_print', 'printing', 'quality_check', 'packing'];
+
 router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid order ID' });
   let session;
@@ -1345,6 +1353,14 @@ router.post('/orders/:id/archive', operationsAuth, async (req, res) => {
       if (!order) { const error = new Error('Order not found'); error.statusCode = 404; throw error; }
       if (order.operationsArchivedAt) { const error = new Error('Order is already archived'); error.statusCode = 409; throw error; }
       const cases = await WorkflowCase.find({ orderId: order._id }).session(session);
+      // Archiving hides every task from the teams, so only the boss or an administrator
+      // may archive an order whose products are already in production.
+      const inProduction = cases.filter(item => IN_PRODUCTION_STATUSES.includes(item.status) && !item.archivedAt);
+      if (inProduction.length && !isManagerUser(req.user)) {
+        const error = new Error(`${inProduction.length} product${inProduction.length === 1 ? ' is' : 's are'} still in production. Only the boss can archive this order.`);
+        error.statusCode = 409;
+        throw error;
+      }
       const incoming = isIncomingOrder(order);
       const now = new Date();
       purgeAt = incoming ? archivePurgeDate(now) : null;
@@ -2772,7 +2788,9 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       // Starting in the portal records the manufacturer-app print start.
       workflowCase.startedAt = nextStatus === 'printing' ? now : null;
       if (adminMove || previousTeam !== targetTeam) {
-        const automaticAssignee = await findTeamAssignee(targetTeam);
+        // A reprint goes back to the person who put the product on the plate, when they still work in that team.
+        const plateOwnerId = qualityReprint ? lastPlateOwnerId(workflowCase) : null;
+        const automaticAssignee = (plateOwnerId && await findTeamAssignee(targetTeam, null, { preferredId: plateOwnerId })) || await findTeamAssignee(targetTeam);
         workflowCase.assignedTo = automaticAssignee?._id || null;
         workflowCase.assignedAt = automaticAssignee ? now : null;
       } else if (workflowCase.assignedTo) {
