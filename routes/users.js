@@ -112,8 +112,12 @@ router.put('/:id', auth, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admin privileges required.' });
     }
 
-    const { name, email, role, workRole, isActive } = req.body;
+    const { name, email, role, workRole, isActive, password } = req.body;
     const userId = req.params.id;
+
+    if (password !== undefined && password !== '' && (typeof password !== 'string' || password.length < 6)) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
 
     // Find user
     const user = await User.findById(userId);
@@ -148,6 +152,7 @@ router.put('/:id', auth, async (req, res) => {
     }
     if (workRole !== undefined && (role || user.role) === 'employee') user.workRole = workRole;
     if (isActive !== undefined) user.isActive = isActive;
+    if (password) user.password = password; // hashed by the User model on save
 
     await user.save();
 
