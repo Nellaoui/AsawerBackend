@@ -13,6 +13,17 @@ const teamEmployeeFilter = team => ({
   isActive: { $ne: false }
 });
 
+// The reprint desk is left out of the automatic sharing of new work.
+const sharedWorkFilter = team => (team === 'wax_print' ? { ...teamEmployeeFilter(team), getsReprints: { $ne: true } } : teamEmployeeFilter(team));
+
+// The active reprint desk account of a team, or null.
+const findReprintAssignee = async (team, session = null) => {
+  if (team !== 'wax_print') return null;
+  let query = User.findOne({ ...teamEmployeeFilter(team), getsReprints: true }).sort({ createdAt: 1, _id: 1 }).select('_id');
+  if (session) query = query.session(session);
+  return query;
+};
+
 const leastBusy = async (employees, team, session) => {
   if (employees.length < 2) return employees[0] || null;
   let aggregate = WorkflowCase.aggregate([
@@ -36,14 +47,14 @@ const findTeamAssignee = async (team, session = null, { preferredId = null } = {
   }
 
   if (BALANCED_TEAMS.includes(team)) {
-    let query = User.find(teamEmployeeFilter(team)).sort({ createdAt: 1, _id: 1 }).select('_id');
+    let query = User.find(sharedWorkFilter(team)).sort({ createdAt: 1, _id: 1 }).select('_id');
     if (session) query = query.session(session);
     return leastBusy(await query, team, session);
   }
 
-  let query = User.findOne(teamEmployeeFilter(team)).sort({ createdAt: 1, _id: 1 }).select('_id');
+  let query = User.findOne(sharedWorkFilter(team)).sort({ createdAt: 1, _id: 1 }).select('_id');
   if (session) query = query.session(session);
   return query;
 };
 
-module.exports = { ASSIGNABLE_TEAMS, findTeamAssignee };
+module.exports = { ASSIGNABLE_TEAMS, findTeamAssignee, findReprintAssignee };

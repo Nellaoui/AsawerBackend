@@ -32,6 +32,8 @@ const userSchema = new mongoose.Schema({
     enum: ['user', 'employee', 'admin'],
     default: 'user'
   },
+  // Reprint desk: gets every product Quality sends back, and no new orders by itself.
+  getsReprints: { type: Boolean, default: false },
   workRole: {
     type: String,
     enum: ['general', 'stock', 'customer_service', 'boss', 'wax_print', 'resin_print', 'quality', 'packing'],

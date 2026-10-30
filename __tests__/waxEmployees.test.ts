@@ -41,6 +41,12 @@ describe('wax employees', () => {
     expect(String((await findTeamAssignee('wax_print'))._id)).toBe(oid(2));
   });
 
+  test('new work is never shared to the reprint desk', async () => {
+    const find = jest.spyOn(User, 'find').mockReturnValue(chain([{ _id: oid(1) }]) as any);
+    await findTeamAssignee('wax_print');
+    expect(find).toHaveBeenCalledWith(expect.objectContaining({ getsReprints: { $ne: true } }));
+  });
+
   test('a tie keeps the oldest wax account', async () => {
     jest.spyOn(User, 'find').mockReturnValue(chain([{ _id: oid(1) }, { _id: oid(2) }]) as any);
     jest.spyOn(WorkflowCase, 'aggregate').mockResolvedValue([] as any);

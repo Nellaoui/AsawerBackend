@@ -1,5 +1,7 @@
 export {};
+const mockReprintDesk = jest.fn(async () => null as any);
 jest.mock('../utils/workflowAssignment', () => ({
+  findReprintAssignee: (...args: any[]) => (mockReprintDesk as any)(...args),
   findTeamAssignee: jest.fn(async (_team: string, _session: any, options: any = {}) => ({ _id: options.preferredId === 'wax-two' ? 'wax-two' : 'oldest-wax' }))
 }));
 jest.mock('../utils/workflowNotifications', () => ({
@@ -30,6 +32,13 @@ describe('a reprint goes back to the person who put the product on the plate', (
     await transition(req, res);
     expect(res.status).not.toHaveBeenCalled();
     expect(task).toMatchObject({ status: 'ready_to_print', assignedTeam: 'wax_print', assignedTo: 'wax-two' });
+  });
+
+  test('the reprint desk account gets every reprint', async () => {
+    mockReprintDesk.mockResolvedValueOnce({ _id: 'reprint-desk' });
+    task.history.push({ action: 'plate_assigned', actorId: 'wax-two' });
+    await transition(req, response());
+    expect(task.assignedTo).toBe('reprint-desk');
   });
 
   test('uses the normal pick when nobody plated it', async () => {

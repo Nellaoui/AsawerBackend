@@ -14,7 +14,7 @@ const StockVariant = require('../models/StockVariant');
 const InventoryMovement = require('../models/InventoryMovement');
 const { operationsAuth } = require('../middlewares/auth');
 const { buildCustomerInsights, recommendProducts } = require('../utils/customerInsights');
-const { findTeamAssignee } = require('../utils/workflowAssignment');
+const { findTeamAssignee, findReprintAssignee } = require('../utils/workflowAssignment');
 const { stockLinesNeedingPacking } = require('../utils/packingNeeds');
 const { visibleTaskFilter } = require('../utils/workflowVisibility');
 const { assignMachineToCase, findMachine, releaseMachineFromCase } = require('../utils/machineRegistry');
@@ -421,7 +421,7 @@ router.get('/team', operationsAuth, async (req, res) => {
   try {
     if (!isManagerUser(req.user)) return res.status(403).json({ message: 'Only the boss or an administrator can manage the team' });
     const employees = await User.find({ role: 'employee', isActive: { $ne: false } })
-      .select('name email role workRole isActive createdAt')
+      .select('name email role workRole getsReprints isActive createdAt')
       .sort({ name: 1, email: 1 })
       .lean();
     res.json(employees.map(employee => ({ ...employee, id: String(employee._id) })));
@@ -437,11 +437,14 @@ router.patch('/team/:id', operationsAuth, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Invalid employee ID' });
     const workRole = String(req.body.workRole || '');
     if (!WORK_ROLES.includes(workRole)) return res.status(400).json({ message: 'Invalid employee work role' });
+    const update = { workRole };
+    if (req.body.getsReprints !== undefined) update.getsReprints = req.body.getsReprints === true && workRole === 'wax_print';
+    else if (workRole !== 'wax_print') update.getsReprints = false;
     const employee = await User.findOneAndUpdate(
       { _id: req.params.id, role: 'employee', isActive: { $ne: false } },
-      { $set: { workRole } },
+      { $set: update },
       { new: true }
-    ).select('name email role workRole isActive createdAt');
+    ).select('name email role workRole getsReprints isActive createdAt');
     if (!employee) return res.status(404).json({ message: 'Active employee not found' });
     res.json({ ...employee.toObject(), id: String(employee._id) });
   } catch (error) {
@@ -2790,7 +2793,8 @@ router.post('/cases/:id/transition', operationsAuth, async (req, res) => {
       if (adminMove || previousTeam !== targetTeam) {
         // A reprint goes back to the person who put the product on the plate, when they still work in that team.
         const plateOwnerId = qualityReprint ? lastPlateOwnerId(workflowCase) : null;
-        const automaticAssignee = (plateOwnerId && await findTeamAssignee(targetTeam, null, { preferredId: plateOwnerId })) || await findTeamAssignee(targetTeam);
+        const reprintDesk = qualityReprint ? await findReprintAssignee(targetTeam) : null;
+        const automaticAssignee = reprintDesk || (plateOwnerId && await findTeamAssignee(targetTeam, null, { preferredId: plateOwnerId })) || await findTeamAssignee(targetTeam);
         workflowCase.assignedTo = automaticAssignee?._id || null;
         workflowCase.assignedAt = automaticAssignee ? now : null;
       } else if (workflowCase.assignedTo) {
