@@ -29,6 +29,7 @@ const summary = (order, state) => {
   return {
     _id: String(order._id),
     orderNumber: order.orderNumber || `#${String(order._id).slice(-6).toUpperCase()}`,
+    customerId: order.userId?._id ? String(order.userId._id) : '',
     customerName: order.userId?.name || order.userId?.email || 'Customer',
     products: products.length || (order.items || []).length,
     readyCount: products.filter(product => product.ready || product.given).length,
